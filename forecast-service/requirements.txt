@@ -1,0 +1,14 @@
+fastapi
+uvicorn
+python-multipart
+pandas
+numpy
+scikit-learn
+statsmodels
+xgboost
+prophet
+plotly
+openpyxl
+psycopg[binary]
+dash
+xlsxwriter

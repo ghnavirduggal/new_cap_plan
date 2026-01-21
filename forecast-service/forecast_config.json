@@ -1,0 +1,50 @@
+{
+  "prophet": {
+    "changepoint_prior_scale": 0.03,
+    "changepoint_range": 0.5,
+    "seasonality_prior_scale": 0.15,
+    "holidays_prior_scale": 0.1,
+    "yearly_seasonality": true,
+    "yearly_fourier_order": 5,
+    "weekly_seasonality": false,
+    "daily_seasonality": false,
+    "use_holidays": true,
+    "use_iq_value_scaled": false
+  },
+  "random_forest": {
+    "n_estimators": 400,
+    "max_depth": 6,
+    "use_holidays": true,
+    "use_iq_value_scaled": false
+  },
+  "xgboost": {
+    "n_estimators": 500,
+    "learning_rate": 0.03,
+    "max_depth": 4,
+    "use_holidays": true,
+    "use_iq_value_scaled": false
+  },
+  "var": {
+    "lags": 2,
+    "use_holidays": true,
+    "use_iq_value_scaled": false
+  },
+  "sarimax": {
+    "order": [
+      1,
+      1,
+      1
+    ],
+    "seasonal_order": [
+      1,
+      1,
+      1,
+      12
+    ],
+    "use_holidays": true,
+    "use_iq_value_scaled": false
+  },
+  "general": {
+    "use_seasonality": true
+  }
+}
