@@ -2212,6 +2212,26 @@ def _fill_tables_fixed_monthly(ptype, pid, fw_cols, _tick, whatif=None):
     # Build shrink table (+ What-If ? onto Overall % display)
     import os as _os
     _debug_shr_m = bool(_os.environ.get("CAP_DEBUG_SHRINK_M"))
+    def _overall_pct_from_parts(ooo_pct: float, ino_pct: float) -> float:
+        availability = (1.0 - (ooo_pct / 100.0)) * (1.0 - (ino_pct / 100.0))
+        overall = (1.0 - availability) * 100.0
+        return max(0.0, min(100.0, overall))
+
+    def _solve_base_from_overall(ooo: float, ino: float, overall_frac: float) -> float:
+        try:
+            if overall_frac <= 0.0:
+                return 0.0
+            a = float(overall_frac)
+            b = -float(ooo + ino)
+            c = float(ooo * ino)
+            disc = (b * b) - (4.0 * a * c)
+            if disc < 0.0:
+                return 0.0
+            import math as _math
+            root = (-(b) + _math.sqrt(disc)) / (2.0 * a)
+            return float(root) if root > 0 else 0.0
+        except Exception:
+            return 0.0
     for m in month_ids:
         if m not in shr.columns:
             shr[m] = np.nan
@@ -2226,9 +2246,9 @@ def _fill_tables_fixed_monthly(ptype, pid, fw_cols, _tick, whatif=None):
         saved_ino_pct_val = saved_ino_pct.get(m) if isinstance(saved_ino_pct, dict) else None
         if base <= 0 and (ooo or ino):
             if saved_overall_pct not in (None, 0):
-                base = (ooo + ino) * 100.0 / saved_overall_pct if (ooo + ino) > 0 else 0.0
+                base = _solve_base_from_overall(ooo, ino, float(saved_overall_pct) / 100.0)
             elif planned_shrink_fraction > 0:
-                base = (ooo + ino) / planned_shrink_fraction if planned_shrink_fraction > 0 else 0.0
+                base = _solve_base_from_overall(ooo, ino, float(planned_shrink_fraction))
             else:
                 base = ooo + ino
             base_hours_m[m] = base
@@ -2242,12 +2262,12 @@ def _fill_tables_fixed_monthly(ptype, pid, fw_cols, _tick, whatif=None):
             # Back Office rule: OOO% = Downtime/SC, In-Office% = Divert/TTW
             ooo_pct = (100.0 * ooo / scm) if scm > 0 else 0.0
             ino_pct = (100.0 * ino / ttwm) if ttwm > 0 else 0.0
-            ov_pct  = (ooo_pct + ino_pct)
+            ov_pct  = _overall_pct_from_parts(ooo_pct, ino_pct)
         else:
             # Voice and other non-BO channels: use Base hours as denominator
             ooo_pct = (100.0 * ooo / base) if base > 0 else 0.0
             ino_pct = (100.0 * ino / base) if base > 0 else 0.0
-            ov_pct  = (ooo_pct + ino_pct)
+            ov_pct  = _overall_pct_from_parts(ooo_pct, ino_pct)
         if _wf_active_month(m) and shrink_delta:
             ov_pct = min(100.0, max(0.0, ov_pct + shrink_delta))
         planned_pct = float(saved_plan_pct.get(m, 100.0 * planned_shrink_fraction))
