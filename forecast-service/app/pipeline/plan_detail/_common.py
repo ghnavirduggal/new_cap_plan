@@ -1025,6 +1025,22 @@ def _assemble_bo(scope_key, which):
     which = (which or "forecast").strip().lower()
     vol = _load_ts_with_fallback(f"bo_{which}_volume", scope_key)
     sut = _load_ts_with_fallback(f"bo_{which}_sut",    scope_key)
+    # Fallback: some uploads persist combined datasets (bo_{which}) with SUT + items included.
+    combo = pd.DataFrame()
+    used_combo_for_vol = False
+    if (vol is None or vol.empty) or (sut is None or sut.empty):
+        for cand in (f"bo_{which}", f"bo_{which}_sut_volume", f"bo_{which}_volume_sut"):
+            try:
+                combo = _load_ts_with_fallback(cand, scope_key)
+            except Exception:
+                combo = pd.DataFrame()
+            if isinstance(combo, pd.DataFrame) and not combo.empty:
+                break
+    if (vol is None or vol.empty) and isinstance(combo, pd.DataFrame) and not combo.empty:
+        vol = combo
+        used_combo_for_vol = True
+    if (sut is None or sut.empty) and isinstance(combo, pd.DataFrame) and not combo.empty:
+        sut = combo
 
     if vol is None or vol.empty:
         return pd.DataFrame(columns=["date","items","aht_sec","program"])
@@ -1060,7 +1076,38 @@ def _assemble_bo(scope_key, which):
                 if alt in su.columns:
                     su = su.rename(columns={alt: "aht_sec"})
                     break
-        df = df.merge(su[["date","aht_sec"]], on="date", how="left")
+        df = df.merge(su[["date","aht_sec"]], on="date", how="left", suffixes=("", "_sut"))
+        # Prefer combined (volume) SUT when it exists; only fill gaps from SUT series.
+        if "aht_sec_sut" in df.columns:
+            if "aht_sec" in df.columns:
+                if used_combo_for_vol:
+                    df["aht_sec"] = df["aht_sec"].combine_first(df["aht_sec_sut"])
+                else:
+                    df["aht_sec"] = df["aht_sec_sut"].combine_first(df["aht_sec"])
+            else:
+                df["aht_sec"] = df["aht_sec_sut"]
+            df = df.drop(columns=["aht_sec_sut"])
+        # Backward safety for older merge suffixes
+        if "aht_sec" not in df.columns and ("aht_sec_x" in df.columns or "aht_sec_y" in df.columns):
+            ax = df["aht_sec_x"] if "aht_sec_x" in df.columns else None
+            ay = df["aht_sec_y"] if "aht_sec_y" in df.columns else None
+            if ay is not None and ax is not None:
+                df["aht_sec"] = ay.combine_first(ax)
+            elif ay is not None:
+                df["aht_sec"] = ay
+            elif ax is not None:
+                df["aht_sec"] = ax
+            df = df.drop(columns=[c for c in ("aht_sec_x", "aht_sec_y") if c in df.columns])
+
+    # If still missing SUT, try to detect in the same upload before fallback to settings
+    if "aht_sec" not in df.columns or df["aht_sec"].isna().all():
+        L2 = {str(c).strip().lower(): c for c in df.columns}
+        for nm in ("aht_sec","sut_sec","sut","avg_sut","aht","aht_seconds","sut_seconds"):
+            c = L2.get(str(nm).lower())
+            if c and c in df.columns:
+                if c != "aht_sec":
+                    df = df.rename(columns={c: "aht_sec"})
+                break
 
     if "aht_sec" not in df.columns or df["aht_sec"].isna().all():
         s = _settings_for_scope_key(scope_key)
