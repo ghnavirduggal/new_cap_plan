@@ -794,6 +794,10 @@ def _fill_tables_fixed_daily(ptype, pid, _fw_cols_unused, _tick, whatif=None):
                 ooo_map = {}
                 ino_map = {}
                 ov_map  = {}
+                def _overall_pct_from_parts(ooo_pct: float, ino_pct: float) -> float:
+                    availability = (1.0 - (ooo_pct / 100.0)) * (1.0 - (ino_pct / 100.0))
+                    overall = (1.0 - availability) * 100.0
+                    return max(0.0, min(100.0, overall))
                 for _, r in (g.iterrows() if isinstance(g, pd.DataFrame) and not g.empty else []):
                     try:
                         d = str(pd.to_datetime(r["date"]).date())
@@ -807,7 +811,7 @@ def _fill_tables_fixed_daily(ptype, pid, _fw_cols_unused, _tick, whatif=None):
                     ino_pct = (100.0 * ino / ttw)  if ttw  > 0 else 0.0
                     ooo_map[d] = ooo_pct
                     ino_map[d] = ino_pct
-                    ov_map[d]  = ooo_pct + ino_pct
+                    ov_map[d]  = _overall_pct_from_parts(ooo_pct, ino_pct)
                 # Build shrinkage rows for lower grid (hours and %)
                 def row_map(label, m):
                     return {"metric": label, **{d: float(m.get(d, 0.0)) for d in day_ids}}
