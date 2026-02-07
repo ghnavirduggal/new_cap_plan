@@ -195,6 +195,8 @@ export default function ShrinkageClient() {
 
   const [weeklyRows, setWeeklyRows] = useState<Array<Record<string, any>>>([]);
   const [weeklyMessage, setWeeklyMessage] = useState("");
+  const [saveRawModalOpen, setSaveRawModalOpen] = useState(false);
+  const [saveRawKind, setSaveRawKind] = useState("voice");
 
   const [rawStates, setRawStates] = useState<Record<string, RawState>>({
     voice: { sourceRows: [], rawRows: [], dailyRows: [], weeklyRows: [], message: "" },
@@ -274,7 +276,7 @@ export default function ShrinkageClient() {
     }
   };
 
-  const saveRaw = async (kind: string) => {
+  const saveRaw = async (kind: string, mode: "replace" | "append" = "replace") => {
     const state = rawStates[kind];
     if (!state?.sourceRows.length) {
       setRawStates((prev) => ({ ...prev, [kind]: { ...prev[kind], message: "No raw rows to save." } }));
@@ -285,7 +287,8 @@ export default function ShrinkageClient() {
       const res = await apiPost<{ combined?: any[]; weekly?: any[] }>("/api/forecast/shrinkage/raw", {
         kind,
         rows: state.sourceRows,
-        save: true
+        save: true,
+        mode
       });
       const weeklyCount = res.weekly?.length ?? 0;
       const detailParts = [`raw rows: ${state.sourceRows.length}`];
@@ -358,6 +361,7 @@ export default function ShrinkageClient() {
       }
       const res = await apiPost<{ rows?: any[] }>("/api/forecast/attrition", { rows: attrRows });
       setAttrRows(res.rows ?? attrRows);
+      setAttrMessage("");
       notify("success", "Saved attrition.");
       notifySettingsUpdated();
     } catch (error: any) {
@@ -372,6 +376,21 @@ export default function ShrinkageClient() {
   };
 
   const activeRaw = rawStates[activeShrinkTab] ?? rawStates.voice;
+
+  const openSaveRawModal = (kind: string) => {
+    const state = rawStates[kind];
+    if (!state?.sourceRows.length) {
+      setRawStates((prev) => ({ ...prev, [kind]: { ...prev[kind], message: "No raw rows to save." } }));
+      return;
+    }
+    setSaveRawKind(kind);
+    setSaveRawModalOpen(true);
+  };
+
+  const confirmSaveRaw = (mode: "replace" | "append") => {
+    setSaveRawModalOpen(false);
+    void saveRaw(saveRawKind, mode);
+  };
 
   return (
     <section className="section shrinkage-page">
@@ -418,7 +437,7 @@ export default function ShrinkageClient() {
                     accept=".csv,.xlsx,.xls"
                     onChange={(event) => handleRawUpload(activeShrinkTab, event.target.files?.[0] ?? null)}
                   />
-                  <button type="button" className="btn btn-primary" onClick={() => saveRaw(activeShrinkTab)}>
+                  <button type="button" className="btn btn-primary" onClick={() => openSaveRawModal(activeShrinkTab)}>
                     Save {activeShrinkTab.toUpperCase()}
                   </button>
                 {["bo", "chat", "ob"].includes(activeShrinkTab) ? (
@@ -465,6 +484,38 @@ export default function ShrinkageClient() {
           {attrMessage ? <div className="forecast-muted" style={{ marginTop: 8 }}>{attrMessage}</div> : null}
           <EditableTable data={attrRows} onChange={setAttrRows} maxRows={10} />
           <LineChart data={attrChart} />
+        </div>
+      ) : null}
+
+      {saveRawModalOpen ? (
+        <div className="ws-modal-backdrop">
+          <div className="ws-modal ws-modal-sm">
+            <div className="ws-modal-header" style={{ background: "#2f3747", color: "white" }}>
+              <h3>Save Shrinkage Upload</h3>
+              <button type="button" className="btn btn-light closeOptions" onClick={() => setSaveRawModalOpen(false)}>
+                <svg width="16" height="16" viewBox="0 0 16 16">
+                  <line x1="2" y1="2" x2="14" y2="14" stroke="white" strokeWidth="2"/>
+                  <line x1="14" y1="2" x2="2" y2="14" stroke="white" strokeWidth="2"/>
+                </svg>
+              </button>
+            </div>
+            <div className="ws-modal-body">
+              <p style={{ margin: 0 }}>
+                Do you want to replace existing shrinkage values for the same weeks, or append this upload on top?
+              </p>
+            </div>
+            <div className="ws-modal-footer">
+              <button type="button" className="btn btn-primary" onClick={() => confirmSaveRaw("replace")}>
+                Replace Existing
+              </button>
+              <button type="button" className="btn btn-light" onClick={() => confirmSaveRaw("append")}>
+                Append to Existing
+              </button>
+              <button type="button" className="btn btn-light" onClick={() => setSaveRawModalOpen(false)}>
+                Cancel
+              </button>
+            </div>
+          </div>
         </div>
       ) : null}
     </section>
