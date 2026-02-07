@@ -2,6 +2,7 @@ from __future__ import annotations
 from typing import Dict, List
 
 import dash
+import numpy as np
 import pandas as pd
 from dash import dash_table
 
@@ -183,7 +184,12 @@ def _fill_tables_fixed_daily(ptype, pid, _fw_cols_unused, _tick, whatif=None):
         out = {}
         for dd, grp in d.groupby("date"):
             w = grp[wcol].sum()
-            out[str(dd)] = float((grp[wcol] * grp[aht_col]).sum() / w) if w > 0 else 0.0
+            if w > 0:
+                out[str(dd)] = float((grp[wcol] * grp[aht_col]).sum() / w)
+            else:
+                # If volume is zero but AHT/SUT exists, use simple mean to avoid default fallback.
+                vals = pd.to_numeric(grp[aht_col], errors="coerce").replace({0.0: np.nan}).dropna()
+                out[str(dd)] = float(vals.mean()) if not vals.empty else 0.0
         return out
 
     def _daily_weighted_occ(df: pd.DataFrame) -> dict:
