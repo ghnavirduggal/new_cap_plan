@@ -464,6 +464,8 @@ def _fill_tables_fixed_monthly(ptype, pid, fw_cols, _tick, whatif=None):
         meta = {}
     lower_opts = set(_meta_list(meta.get("fw_lower_options")))
     upper_opts = set(_meta_list(meta.get("upper_options")))
+    # Backlog logic is enabled only when a backlog/queue metric is selected
+    backlog_enabled = ("backlog" in lower_opts) or ("queue" in lower_opts) or ("req_queue" in upper_opts)
 
     fw_rows = [r for r in spec["fw"] if not (str(r) == "Backlog (Items)" and ("backlog" not in lower_opts))]
     if "queue" in lower_opts and "Queue (Items)" not in fw_rows:
@@ -762,7 +764,7 @@ def _fill_tables_fixed_monthly(ptype, pid, fw_cols, _tick, whatif=None):
 
     # Compute Backlog/Queue based on current FW values (honor selection)
     backlog_m_local = {}
-    if "Backlog (Items)" in fw_rows:
+    if backlog_enabled:
         for m in month_ids:
             try:
                 fval = float(pd.to_numeric(fw.loc[fw["metric"] == "Forecast", m], errors="coerce").fillna(0.0).iloc[0]) if m in fw.columns else 0.0
@@ -774,9 +776,10 @@ def _fill_tables_fixed_monthly(ptype, pid, fw_cols, _tick, whatif=None):
                 aval = 0.0
             bl = max(0.0, aval - fval)
             backlog_m_local[m] = bl
-            fw.loc[fw["metric"] == "Backlog (Items)", m] = bl
+            if "Backlog (Items)" in fw_rows:
+                fw.loc[fw["metric"] == "Backlog (Items)", m] = bl
     queue_m = {}
-    if "Queue (Items)" in fw_rows:
+    if backlog_enabled:
         for i, m in enumerate(month_ids):
             prev_bl = float(backlog_m_local.get(month_ids[i-1], 0.0)) if i > 0 else 0.0
             try:
@@ -785,7 +788,8 @@ def _fill_tables_fixed_monthly(ptype, pid, fw_cols, _tick, whatif=None):
                 fval = 0.0
             qv = max(0.0, prev_bl + fval)
             queue_m[m] = qv
-            fw.loc[fw["metric"] == "Queue (Items)", m] = qv
+            if "Queue (Items)" in fw_rows:
+                fw.loc[fw["metric"] == "Queue (Items)", m] = qv
 
     # Save current FW to support Backlog/Overtime/Shrinkage readback
     fw_saved = load_df(f"plan_{pid}_fw")
@@ -878,8 +882,8 @@ def _fill_tables_fixed_monthly(ptype, pid, fw_cols, _tick, whatif=None):
         return {str(r["month"]): float(r["hours"]) for _, r in agg.iterrows()}
 
     _ot_m_raw = _compute_monthly_ot_from_raw()
-    backlog_m  = _row_to_month_dict(fw_saved, "Backlog (Items)")
-    if backlog_m_local and ("backlog" in lower_opts):
+    backlog_m = _row_to_month_dict(fw_saved, "Backlog (Items)") if backlog_enabled else {}
+    if backlog_m_local and backlog_enabled:
         backlog_m = backlog_m_local
  
     # Voice overtime from SC_OVERTIME_DELIVERED
@@ -924,7 +928,7 @@ def _fill_tables_fixed_monthly(ptype, pid, fw_cols, _tick, whatif=None):
                 
 
     # ---- Apply Backlog carryover (Back Office only): add previous month's backlog to next month's BO forecast ----
-    if backlog_carryover and str(ch_first).strip().lower() in ("back office", "bo") and backlog_m and ("backlog" in lower_opts):
+    if backlog_carryover and str(ch_first).strip().lower() in ("back office", "bo") and backlog_m and backlog_enabled:
         for i in range(len(month_ids) - 1):
             cur_m = month_ids[i]; nxt_m = month_ids[i+1]
             add = float(backlog_m.get(cur_m, 0.0) or 0.0)
@@ -1132,6 +1136,15 @@ def _fill_tables_fixed_monthly(ptype, pid, fw_cols, _tick, whatif=None):
         d["date"] = pd.to_datetime(d["date"], errors="coerce")
         d = d.dropna(subset=["date"])
         d["month"] = _mid(d["date"])
+        bo_model = str(settings.get("bo_capacity_model", "tat")).lower()
+        if is_bo and bo_model in ("tat", "linear"):
+            g = d.groupby("month", as_index=False)["total_req_fte"].sum()
+            bo_wpd = float(settings.get("bo_workdays_per_week", 5.0) or 5.0)
+            bo_wpd = bo_wpd if bo_wpd > 0 else 5.0
+            denom = bo_wpd * (52.0 / 12.0)
+            denom = denom if denom > 0 else bo_wpd
+            return {str(r["month"]): float(r["total_req_fte"]) / denom for _, r in g.iterrows()}
+
         if "arrival_load" in d.columns:
             d["arrival_load"] = pd.to_numeric(d["arrival_load"], errors="coerce").fillna(0.0)
             d["total_req_fte"] = pd.to_numeric(d["total_req_fte"], errors="coerce").fillna(0.0)
