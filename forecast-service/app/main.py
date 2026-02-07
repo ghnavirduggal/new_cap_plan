@@ -537,7 +537,7 @@ def _normalize_timeseries(kind: str, df: pd.DataFrame) -> tuple[pd.DataFrame, di
                 "aht (sec)",
                 "aht_seconds",
                 "talk_sec",
-                
+
             ],
         )
         base = _build_base(volume_col, aht_col, "volume")
@@ -2081,6 +2081,9 @@ def shrinkage_raw_endpoint(payload: dict):
     kind = str(payload.get("kind") or "").strip().lower()
     rows = payload.get("rows") or []
     save_flag = bool(payload.get("save"))
+    mode = str(payload.get("mode") or "replace").strip().lower()
+    if mode not in {"replace", "append"}:
+        mode = "replace"
     df = df_from_payload(rows)
 
     def _apply_voice_channel(frame: pd.DataFrame, channel: str) -> pd.DataFrame:
@@ -2139,7 +2142,17 @@ def shrinkage_raw_endpoint(payload: dict):
         weekly = weekly_shrinkage_from_voice_summary(daily)
         raw_kind = "voice"
 
-    combined = merge_shrink_weekly(load_shrinkage_weekly(), weekly)
+    existing = load_shrinkage_weekly()
+    if mode == "append":
+        combined = merge_shrink_weekly(existing, weekly)
+    else:
+        if existing is None or existing.empty:
+            combined = weekly
+        else:
+            combined = pd.concat([existing, weekly], ignore_index=True)
+            combined = normalize_shrink_weekly(combined)
+            combined = combined.drop_duplicates(subset=["week", "program"], keep="last")
+            combined = combined.sort_values(["week", "program"]).reset_index(drop=True)
     if save_flag:
         save_shrinkage_raw(raw_kind, norm)
         save_shrinkage_weekly(combined)
