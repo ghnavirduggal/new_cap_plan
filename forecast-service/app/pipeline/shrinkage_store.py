@@ -517,7 +517,12 @@ def weekly_shrinkage_from_voice_summary(daily: pd.DataFrame) -> pd.DataFrame:
 
 
 def normalize_shrink_weekly(data) -> pd.DataFrame:
-    df = pd.DataFrame(data or [])
+    if isinstance(data, pd.DataFrame):
+        df = data.copy()
+    elif data is None:
+        df = pd.DataFrame()
+    else:
+        df = pd.DataFrame(data)
     if df.empty:
         return pd.DataFrame(columns=SHRINK_WEEKLY_FIELDS)
     rename_map = {}
