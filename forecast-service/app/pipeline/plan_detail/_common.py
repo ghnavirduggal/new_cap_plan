@@ -1134,6 +1134,22 @@ def _assemble_chat(scope_key, which):
     which = (which or "forecast").strip().lower()
     vol = _load_ts_with_fallback(f"chat_{which}_volume", scope_key)
     aht = _load_ts_with_fallback(f"chat_{which}_aht",    scope_key)
+    # Fallback: some uploads persist combined datasets (chat_{which}) with AHT + items included.
+    combo = pd.DataFrame()
+    used_combo_for_vol = False
+    if (vol is None or vol.empty) or (aht is None or aht.empty):
+        for cand in (f"chat_{which}", f"chat_{which}_aht_volume", f"chat_{which}_volume_aht"):
+            try:
+                combo = _load_ts_with_fallback(cand, scope_key)
+            except Exception:
+                combo = pd.DataFrame()
+            if isinstance(combo, pd.DataFrame) and not combo.empty:
+                break
+    if (vol is None or vol.empty) and isinstance(combo, pd.DataFrame) and not combo.empty:
+        vol = combo
+        used_combo_for_vol = True
+    if (aht is None or aht.empty) and isinstance(combo, pd.DataFrame) and not combo.empty:
+        aht = combo
 
     if vol is None or vol.empty:
         return pd.DataFrame(columns=["date","items","aht_sec","program"])
@@ -1167,8 +1183,38 @@ def _assemble_chat(scope_key, which):
             for alt in ("aht","avg_aht","sut","sut_sec","aht_seconds"):
                 if alt in ah.columns:
                     ah = ah.rename(columns={alt: "aht_sec"}); break
-        df = df.merge(ah[["date","aht_sec"]], on="date", how="left")
+        df = df.merge(ah[["date","aht_sec"]], on="date", how="left", suffixes=("", "_aht"))
+        # Prefer combined (volume) AHT when it exists; only fill gaps from AHT series.
+        if "aht_sec_aht" in df.columns:
+            if "aht_sec" in df.columns:
+                if used_combo_for_vol:
+                    df["aht_sec"] = df["aht_sec"].combine_first(df["aht_sec_aht"])
+                else:
+                    df["aht_sec"] = df["aht_sec_aht"].combine_first(df["aht_sec"])
+            else:
+                df["aht_sec"] = df["aht_sec_aht"]
+            df = df.drop(columns=["aht_sec_aht"])
+        # Backward safety for older merge suffixes
+        if "aht_sec" not in df.columns and ("aht_sec_x" in df.columns or "aht_sec_y" in df.columns):
+            ax = df["aht_sec_x"] if "aht_sec_x" in df.columns else None
+            ay = df["aht_sec_y"] if "aht_sec_y" in df.columns else None
+            if ay is not None and ax is not None:
+                df["aht_sec"] = ay.combine_first(ax)
+            elif ay is not None:
+                df["aht_sec"] = ay
+            elif ax is not None:
+                df["aht_sec"] = ax
+            df = df.drop(columns=[c for c in ("aht_sec_x", "aht_sec_y") if c in df.columns])
 
+    if "aht_sec" not in df.columns or df["aht_sec"].isna().all():
+        # Try to detect in the same upload before fallback to settings
+        L2 = {str(c).strip().lower(): c for c in df.columns}
+        for alt in ("aht_sec","aht","avg_aht","sut","sut_sec","aht_seconds"):
+            c = L2.get(str(alt).lower())
+            if c and c in df.columns:
+                if c != "aht_sec":
+                    df = df.rename(columns={c: "aht_sec"})
+                break
     if "aht_sec" not in df.columns or df["aht_sec"].isna().all():
         s = _settings_for_scope_key(scope_key)
         df["aht_sec"] = float(s.get("chat_aht_sec", s.get("target_aht", 240)) or 240)
@@ -1208,6 +1254,29 @@ def _assemble_ob(scope_key, which):
     rpc   = _load_ts_with_fallback(f"ob_{which}_rpc", scope_key)
     rpc_r = _load_ts_with_fallback(f"ob_{which}_rpc_rate", scope_key)
     aht   = _load_ts_with_fallback(f"ob_{which}_aht", scope_key)
+    # Fallback: combined datasets may include OPC + AHT in ob_{which} uploads
+    combo = pd.DataFrame()
+    used_combo_for_opc = False
+    if (opc is None or opc.empty) or (aht is None or aht.empty):
+        for cand in (
+            f"ob_{which}",
+            f"outbound_{which}",
+            f"ob_{which}_aht_opc",
+            f"ob_{which}_opc_aht",
+            f"outbound_{which}_aht_opc",
+            f"outbound_{which}_opc_aht",
+        ):
+            try:
+                combo = _load_ts_with_fallback(cand, scope_key)
+            except Exception:
+                combo = pd.DataFrame()
+            if isinstance(combo, pd.DataFrame) and not combo.empty:
+                break
+    if (opc is None or opc.empty) and isinstance(combo, pd.DataFrame) and not combo.empty:
+        opc = combo
+        used_combo_for_opc = True
+    if (aht is None or aht.empty) and isinstance(combo, pd.DataFrame) and not combo.empty:
+        aht = combo
 
     if opc is None or opc.empty:
         return pd.DataFrame(columns=["date","opc","connect_rate","rpc","rpc_rate","aht_sec","program"])
@@ -1297,7 +1366,48 @@ def _assemble_ob(scope_key, which):
         c_aht = cols.get("aht_sec") or cols.get("talk_sec") or cols.get("avg_talk_sec") or cols.get("aht")
         if c_aht and c_aht != "aht_sec":
             ah = ah.rename(columns={c_aht: "aht_sec"})
-        d = d.merge(ah[["date","aht_sec"]], on="date", how="left")
+        join_keys = [k for k in ["date","interval"] if k in d.columns and k in ah.columns]
+        if not join_keys:
+            join_keys = ["date"]
+        d = d.merge(
+            ah[[*join_keys, *(["aht_sec"] if "aht_sec" in ah.columns else [])]],
+            on=join_keys,
+            how="left",
+            suffixes=("", "_aht"),
+        )
+        # Coalesce when OPC data already carried aht_sec (combined uploads)
+        if "aht_sec_aht" in d.columns:
+            if "aht_sec" in d.columns:
+                if used_combo_for_opc:
+                    d["aht_sec"] = d["aht_sec"].combine_first(d["aht_sec_aht"])
+                else:
+                    d["aht_sec"] = d["aht_sec_aht"].combine_first(d["aht_sec"])
+            else:
+                d["aht_sec"] = d["aht_sec_aht"]
+            d = d.drop(columns=["aht_sec_aht"])
+        # Backward safety for older merge suffixes
+        if "aht_sec" not in d.columns and ("aht_sec_x" in d.columns or "aht_sec_y" in d.columns):
+            ax = d["aht_sec_x"] if "aht_sec_x" in d.columns else None
+            ay = d["aht_sec_y"] if "aht_sec_y" in d.columns else None
+            if ay is not None and ax is not None:
+                d["aht_sec"] = ay.combine_first(ax)
+            elif ay is not None:
+                d["aht_sec"] = ay
+            elif ax is not None:
+                d["aht_sec"] = ax
+            d = d.drop(columns=[c for c in ("aht_sec_x", "aht_sec_y") if c in d.columns])
+    # If still missing AHT, try to detect from the same upload before fallback to settings
+    if "aht_sec" not in d.columns or d["aht_sec"].isna().all():
+        L2 = {str(c).strip().lower(): c for c in d.columns}
+        for alt in ("aht_sec","aht","avg_talk_sec","talk_sec"):
+            c = L2.get(str(alt).lower())
+            if c and c in d.columns:
+                if c != "aht_sec":
+                    d = d.rename(columns={c: "aht_sec"})
+                break
+    if "aht_sec" not in d.columns or d["aht_sec"].isna().all():
+        s = _settings_for_scope_key(scope_key)
+        d["aht_sec"] = float(s.get("target_aht", s.get("budgeted_aht", 300)) or 300)
 
     d["program"] = "Outbound"
     # Ensure columns present
