@@ -411,7 +411,7 @@ def weekly_shrinkage_from_bo_summary(daily: pd.DataFrame) -> pd.DataFrame:
     ttw = grp["TTW Hours"].replace({0.0: np.nan})
     grp["ooo_pct"] = np.where(base.gt(0), (grp["OOO Hours"] / base) * 100.0, np.nan)
     grp["ino_pct"] = np.where(ttw.gt(0), (grp["In Office Hours"] / ttw) * 100.0, np.nan)
-    grp["overall_pct"] = grp["ooo_pct"].fillna(0.0) + grp["ino_pct"].fillna(0.0)
+    grp["overall_pct"] = _compound_overall_pct(grp["ooo_pct"], grp["ino_pct"])
     grp = grp.rename(
         columns={
             "OOO Hours": "ooo_hours",
@@ -507,7 +507,7 @@ def weekly_shrinkage_from_voice_summary(daily: pd.DataFrame) -> pd.DataFrame:
     base = agg["Base Hours"].replace({0.0: np.nan})
     agg["ooo_pct"] = np.where(base.gt(0), (agg["OOO Hours"] / base) * 100.0, np.nan)
     agg["ino_pct"] = np.where(base.gt(0), (agg["In Office Hours"] / base) * 100.0, np.nan)
-    agg["overall_pct"] = np.where(base.gt(0), ((agg["OOO Hours"] + agg["In Office Hours"]) / base) * 100.0, np.nan)
+    agg["overall_pct"] = _compound_overall_pct(agg["ooo_pct"], agg["ino_pct"])
     agg = agg.rename(
         columns={
             "OOO Hours": "ooo_hours",
@@ -544,6 +544,15 @@ def normalize_shrink_weekly(data) -> pd.DataFrame:
     return df[SHRINK_WEEKLY_FIELDS]
 
 
+def _compound_overall_pct(ooo_pct: pd.Series, ino_pct: pd.Series) -> pd.Series:
+    ooo = pd.to_numeric(ooo_pct, errors="coerce")
+    ino = pd.to_numeric(ino_pct, errors="coerce")
+    mask = ooo.notna() & ino.notna()
+    availability = (1.0 - (ooo / 100.0)) * (1.0 - (ino / 100.0))
+    overall = (1.0 - availability) * 100.0
+    return overall.where(mask)
+
+
 def _compute_shrink_weekly_percentages(df: pd.DataFrame) -> pd.DataFrame:
     if df.empty:
         return df
@@ -554,10 +563,7 @@ def _compute_shrink_weekly_percentages(df: pd.DataFrame) -> pd.DataFrame:
     if "ino_pct" not in out.columns or out["ino_pct"].isna().all():
         out["ino_pct"] = (pd.to_numeric(out["ino_hours"], errors="coerce") / base) * 100.0
     if "overall_pct" not in out.columns or out["overall_pct"].isna().all():
-        out["overall_pct"] = (
-            (pd.to_numeric(out["ooo_hours"], errors="coerce") + pd.to_numeric(out["ino_hours"], errors="coerce"))
-            / base
-        ) * 100.0
+        out["overall_pct"] = _compound_overall_pct(out["ooo_pct"], out["ino_pct"])
     return out
 
 
@@ -591,9 +597,6 @@ def merge_shrink_weekly(*frames: pd.DataFrame) -> pd.DataFrame:
     combo["_den_ooo"] = _den("ooo_pct")
     combo["_num_ino"] = _num("ino_pct")
     combo["_den_ino"] = _den("ino_pct")
-    combo["_num_all"] = _num("overall_pct")
-    combo["_den_all"] = _den("overall_pct")
-
     agg = combo.groupby(["week", "program"], as_index=False).agg(
         {
             "ooo_hours": "sum",
@@ -603,8 +606,6 @@ def merge_shrink_weekly(*frames: pd.DataFrame) -> pd.DataFrame:
             "_den_ooo": "sum",
             "_num_ino": "sum",
             "_den_ino": "sum",
-            "_num_all": "sum",
-            "_den_all": "sum",
         }
     )
 
@@ -614,8 +615,8 @@ def merge_shrink_weekly(*frames: pd.DataFrame) -> pd.DataFrame:
 
     agg["ooo_pct"] = _safe_div(agg["_num_ooo"], agg["_den_ooo"]).astype(float)
     agg["ino_pct"] = _safe_div(agg["_num_ino"], agg["_den_ino"]).astype(float)
-    agg["overall_pct"] = _safe_div(agg["_num_all"], agg["_den_all"]).astype(float)
-    agg = agg.drop(columns=["_num_ooo", "_den_ooo", "_num_ino", "_den_ino", "_num_all", "_den_all"])
+    agg["overall_pct"] = _compound_overall_pct(agg["ooo_pct"], agg["ino_pct"]).astype(float)
+    agg = agg.drop(columns=["_num_ooo", "_den_ooo", "_num_ino", "_den_ino"])
     agg = _compute_shrink_weekly_percentages(agg)
     agg = agg.sort_values(["week", "program"]).reset_index(drop=True)
     return agg[SHRINK_WEEKLY_FIELDS]
