@@ -1,0 +1,91 @@
+services:
+  db:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: cap
+      POSTGRES_PASSWORD: cap
+      POSTGRES_DB: cap_planner
+    ports:
+      - "5432:5432"
+    volumes:
+      - db_data:/var/lib/postgresql/data
+      - ./db/init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U cap -d cap_planner"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  redis:
+    image: redis:7
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+
+  api:
+    build: ./services/api
+    environment:
+      DATABASE_URL: postgres://cap:cap@db:5432/cap_planner?sslmode=disable
+      REDIS_URL: redis://redis:6379/0
+      ENGINE_URL: http://engine:8081
+      MODELS_URL: http://models:8000
+      CORS_ORIGINS: http://localhost:3000
+    ports:
+      - "8080:8080"
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_started
+      engine:
+        condition: service_started
+      models:
+        condition: service_started
+    restart: unless-stopped
+
+  engine:
+    build: ./services/engine
+    environment:
+      DATABASE_URL: postgres://cap:cap@db:5432/cap_planner?sslmode=disable
+      REDIS_URL: redis://redis:6379/0
+    ports:
+      - "8081:8081"
+    depends_on:
+      - db
+      - redis
+
+  models:
+    build: ./services/models
+    environment:
+      MODEL_STORE: /app/models
+    ports:
+      - "8000:8000"
+
+  forecast-service:
+    build: ./apps/forecast-service
+    environment:
+      DATABASE_URL: postgres://cap:cap@db:5432/cap_planner?sslmode=disable
+      CORS_ORIGINS: http://localhost:3000
+      PLAN_CALC_REALTIME: "0"
+      PLAN_CALC_WORKERS: "2"
+    ports:
+      - "8082:8080"
+    volumes:
+      - ./apps/forecast-service/exports:/app/exports
+
+  web:
+    build: ./apps/web
+    environment:
+      NEXT_PUBLIC_API_URL: http://api:8080
+      NEXT_PUBLIC_FORECAST_URL: http://forecast-service:8080
+      NEXT_PUBLIC_BROWSER_API_URL: http://localhost:8080
+      NEXT_PUBLIC_BROWSER_FORECAST_URL: http://localhost:8082
+    ports:
+      - "3000:3000"
+    depends_on:
+      - api
+
+volumes:
+  db_data:
+  redis_data:
