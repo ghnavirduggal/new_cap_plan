@@ -1195,6 +1195,8 @@ def _fill_tables_fixed(ptype, pid, fw_cols, _tick, whatif=None, grain: str = 'we
         meta = {}
     lower_opts = set(_meta_list(meta.get("fw_lower_options")))
     upper_opts = set(_meta_list(meta.get("upper_options")))
+    # Backlog logic is enabled only when a backlog/queue metric is selected
+    backlog_enabled = ("backlog" in lower_opts) or ("queue" in lower_opts) or ("req_queue" in upper_opts)
 
     fw_rows = [r for r in spec["fw"] if not (str(r) == "Backlog (Items)" and ("backlog" not in lower_opts))]
     if "queue" in lower_opts and "Queue (Items)" not in fw_rows:
@@ -1497,7 +1499,7 @@ def _fill_tables_fixed(ptype, pid, fw_cols, _tick, whatif=None, grain: str = 'we
 
     # Compute Backlog (Items) and Queue (Items) as selected
     backlog_w_local = {}
-    if "Backlog (Items)" in fw_rows:
+    if backlog_enabled:
         for w in week_ids:
             try:
                 fval = float(pd.to_numeric(fw.loc[fw["metric"] == "Forecast", w], errors="coerce").fillna(0.0).iloc[0]) if w in fw.columns else 0.0
@@ -1510,9 +1512,10 @@ def _fill_tables_fixed(ptype, pid, fw_cols, _tick, whatif=None, grain: str = 'we
             # Business rule: Backlog = Actual - Forecast (clamped at 0)
             bl = max(0.0, aval - fval)
             backlog_w_local[w] = bl
-            fw.loc[fw["metric"] == "Backlog (Items)", w] = bl
+            if "Backlog (Items)" in fw_rows:
+                fw.loc[fw["metric"] == "Backlog (Items)", w] = bl
     queue_w = {}
-    if "Queue (Items)" in fw_rows:
+    if backlog_enabled:
         for i, w in enumerate(week_ids):
             prev_bl = float(backlog_w_local.get(week_ids[i-1], 0.0)) if i > 0 else 0.0
             try:
@@ -1521,7 +1524,8 @@ def _fill_tables_fixed(ptype, pid, fw_cols, _tick, whatif=None, grain: str = 'we
                 fval = 0.0
             qv = max(0.0, prev_bl + fval)
             queue_w[w] = qv
-            fw.loc[fw["metric"] == "Queue (Items)", w] = qv
+            if "Queue (Items)" in fw_rows:
+                fw.loc[fw["metric"] == "Queue (Items)", w] = qv
 
     fw_saved = load_df(f"plan_{pid}_fw")
 
@@ -1641,13 +1645,13 @@ def _fill_tables_fixed(ptype, pid, fw_cols, _tick, whatif=None, grain: str = 'we
         agg = tmp.groupby("week", as_index=False)["hours"].sum()
         return {str(r["week"]): float(r["hours"]) for _, r in agg.iterrows()}
     _ot_voice_w_raw = _compute_weekly_ot_voice_from_raw()
-    backlog_w  = _row_to_week_dict(fw_saved, "Backlog (Items)")
-    # Prefer freshly computed backlog for carryover if user selected Backlog in this plan
-    if backlog_w_local and ("backlog" in lower_opts):
+    backlog_w = _row_to_week_dict(fw_saved, "Backlog (Items)") if backlog_enabled else {}
+    # Prefer freshly computed backlog for carryover if user selected Backlog/Queue in this plan
+    if backlog_w_local and backlog_enabled:
         backlog_w = backlog_w_local
 
     # ---- Apply Backlog carryover (Back Office only): add previous week's backlog to next week's BO forecast ----
-    if backlog_carryover and str(ch_first).strip().lower() in ("back office", "bo") and backlog_w and ("backlog" in lower_opts):
+    if backlog_carryover and str(ch_first).strip().lower() in ("back office", "bo") and backlog_w and backlog_enabled:
         for i in range(len(week_ids) - 1):
             cur_w = week_ids[i]; nxt_w = week_ids[i+1]
             add = float(backlog_w.get(cur_w, 0.0) or 0.0)
@@ -1939,6 +1943,16 @@ def _fill_tables_fixed(ptype, pid, fw_cols, _tick, whatif=None, grain: str = 'we
         d["date"] = pd.to_datetime(d["date"], errors="coerce")
         d = d.dropna(subset=["date"])
         d["week"] = (d["date"] - pd.to_timedelta(d["date"].dt.weekday, unit="D")).dt.date.astype(str)
+
+        ch_low = str(ch_first or "").strip().lower()
+        is_bo = ch_low in ("back office", "bo")
+        bo_model = str(settings.get("bo_capacity_model", "tat")).lower()
+        if is_bo and bo_model in ("tat", "linear"):
+            g = d.groupby("week", as_index=False)["total_req_fte"].sum()
+            bo_wpd = float(settings.get("bo_workdays_per_week", 5.0) or 5.0)
+            bo_wpd = bo_wpd if bo_wpd > 0 else 5.0
+            return {str(r["week"]): float(r["total_req_fte"]) / bo_wpd for _, r in g.iterrows()}
+
         if "arrival_load" in d.columns:
             g = d.groupby("week", as_index=False).agg(
                 total_req_fte=("total_req_fte", "sum"),
