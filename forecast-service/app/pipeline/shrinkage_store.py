@@ -50,6 +50,8 @@ _SHRINK_COLUMN_ALIASES = {
 
 
 def _json_safe_value(value):
+    if pd.isna(value):
+        return None
     if isinstance(value, (dt.date, dt.datetime, pd.Timestamp)):
         return pd.to_datetime(value, errors="coerce").date().isoformat()
     if isinstance(value, np.generic):
@@ -646,28 +648,29 @@ def save_shrinkage_weekly(df: pd.DataFrame) -> int:
         return 0
     data["week"] = pd.to_datetime(data["week"], errors="coerce").dt.date
     with db_conn() as conn:
-        conn.execute("DELETE FROM shrinkage_weekly_entries")
-        conn.executemany(
-            """
-            INSERT INTO shrinkage_weekly_entries (
-                week, program, ooo_hours, ino_hours, base_hours, ooo_pct, ino_pct, overall_pct
-            )
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
-            """,
-            [
-                (
-                    row.get("week"),
-                    row.get("program"),
-                    row.get("ooo_hours"),
-                    row.get("ino_hours"),
-                    row.get("base_hours"),
-                    row.get("ooo_pct"),
-                    row.get("ino_pct"),
-                    row.get("overall_pct"),
+        with conn.cursor() as cur:
+            cur.execute("DELETE FROM shrinkage_weekly_entries")
+            cur.executemany(
+                """
+                INSERT INTO shrinkage_weekly_entries (
+                    week, program, ooo_hours, ino_hours, base_hours, ooo_pct, ino_pct, overall_pct
                 )
-                for _, row in data.iterrows()
-            ],
-        )
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                """,
+                [
+                    (
+                        row.get("week"),
+                        row.get("program"),
+                        row.get("ooo_hours"),
+                        row.get("ino_hours"),
+                        row.get("base_hours"),
+                        row.get("ooo_pct"),
+                        row.get("ino_pct"),
+                        row.get("overall_pct"),
+                    )
+                    for _, row in data.iterrows()
+                ],
+            )
     return int(len(data.index))
 
 
@@ -692,12 +695,13 @@ def save_shrinkage_raw(kind: str, df: pd.DataFrame) -> int:
         return 0
     rows = df.to_dict("records") if isinstance(df, pd.DataFrame) else []
     with db_conn() as conn:
-        conn.execute("DELETE FROM shrinkage_raw_entries WHERE kind = %s", (kind,))
-        if rows:
-            conn.executemany(
-                "INSERT INTO shrinkage_raw_entries (kind, payload) VALUES (%s, %s)",
-                [(kind, Json(_json_safe_row(row))) for row in rows],
-            )
+        with conn.cursor() as cur:
+            cur.execute("DELETE FROM shrinkage_raw_entries WHERE kind = %s", (kind,))
+            if rows:
+                cur.executemany(
+                    "INSERT INTO shrinkage_raw_entries (kind, payload) VALUES (%s, %s)",
+                    [(kind, Json(_json_safe_row(row))) for row in rows],
+                )
     return int(len(rows))
 
 
@@ -816,7 +820,12 @@ def save_attrition_weekly(df: pd.DataFrame) -> int:
     ensure_shrinkage_schema()
     if not has_dsn():
         return 0
-    data = pd.DataFrame(df or [])
+    if isinstance(df, pd.DataFrame):
+        data = df.copy()
+    elif df is None:
+        data = pd.DataFrame()
+    else:
+        data = pd.DataFrame(df)
     if data.empty:
         return 0
     if "program" not in data.columns:
@@ -826,25 +835,26 @@ def save_attrition_weekly(df: pd.DataFrame) -> int:
         if col in data.columns:
             data[col] = pd.to_numeric(data[col], errors="coerce")
     with db_conn() as conn:
-        conn.execute("DELETE FROM attrition_weekly_entries")
-        conn.executemany(
-            """
-            INSERT INTO attrition_weekly_entries (
-                week, program, leavers_fte, avg_active_fte, attrition_pct
-            )
-            VALUES (%s, %s, %s, %s, %s)
-            """,
-            [
-                (
-                    row.get("week"),
-                    row.get("program"),
-                    row.get("leavers_fte"),
-                    row.get("avg_active_fte"),
-                    row.get("attrition_pct"),
+        with conn.cursor() as cur:
+            cur.execute("DELETE FROM attrition_weekly_entries")
+            cur.executemany(
+                """
+                INSERT INTO attrition_weekly_entries (
+                    week, program, leavers_fte, avg_active_fte, attrition_pct
                 )
-                for _, row in data.iterrows()
-            ],
-        )
+                VALUES (%s, %s, %s, %s, %s)
+                """,
+                [
+                    (
+                        row.get("week"),
+                        row.get("program"),
+                        row.get("leavers_fte"),
+                        row.get("avg_active_fte"),
+                        row.get("attrition_pct"),
+                    )
+                    for _, row in data.iterrows()
+                ],
+            )
     return int(len(data.index))
 
 
@@ -866,10 +876,11 @@ def save_attrition_raw(df: pd.DataFrame) -> int:
         return 0
     rows = df.to_dict("records") if isinstance(df, pd.DataFrame) else []
     with db_conn() as conn:
-        conn.execute("DELETE FROM attrition_raw_entries")
-        if rows:
-            conn.executemany(
-                "INSERT INTO attrition_raw_entries (payload) VALUES (%s)",
-                [(Json(_json_safe_row(row)),) for row in rows],
-            )
+        with conn.cursor() as cur:
+            cur.execute("DELETE FROM attrition_raw_entries")
+            if rows:
+                cur.executemany(
+                    "INSERT INTO attrition_raw_entries (payload) VALUES (%s)",
+                    [(Json(_json_safe_row(row)),) for row in rows],
+                )
     return int(len(rows))
