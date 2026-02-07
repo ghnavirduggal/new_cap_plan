@@ -292,10 +292,7 @@ export default function ShrinkageClient() {
       if (weeklyCount) detailParts.push(`weekly points: ${weeklyCount}`);
       const label = SHRINK_LABELS[kind] || kind;
       setWeeklyRows(res.combined ?? weeklyRows);
-      setRawStates((prev) => ({
-        ...prev,
-        [kind]: { ...prev[kind], message: `Saved ${label} shrinkage (${detailParts.join(", ")})` }
-      }));
+      notify("success", `Saved ${label} shrinkage (${detailParts.join(", ")})`);
       notifySettingsUpdated();
     } catch (error: any) {
       notify("error", error?.message || "Could not save shrinkage rows.");
@@ -309,7 +306,7 @@ export default function ShrinkageClient() {
     try {
       const res = await apiPost<{ rows?: any[] }>("/api/forecast/shrinkage", { rows: weeklyRows });
       setWeeklyRows(res.rows ?? weeklyRows);
-      setWeeklyMessage("Saved ✓");
+      notify("success", "Saved weekly shrinkage.");
       notifySettingsUpdated();
     } catch (error: any) {
       notify("error", error?.message || "Could not save weekly shrinkage.");
@@ -361,7 +358,7 @@ export default function ShrinkageClient() {
       }
       const res = await apiPost<{ rows?: any[] }>("/api/forecast/attrition", { rows: attrRows });
       setAttrRows(res.rows ?? attrRows);
-      setAttrMessage("Saved ✓");
+      notify("success", "Saved attrition.");
       notifySettingsUpdated();
     } catch (error: any) {
       notify("error", error?.message || "Could not save attrition rows.");
