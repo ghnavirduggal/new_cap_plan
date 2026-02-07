@@ -108,6 +108,9 @@ def _fill_tables_fixed_daily(ptype, pid, _fw_cols_unused, _tick, whatif=None):
             return list(val)
         return []
     lower_opts = set(_meta_list(meta.get("fw_lower_options")))
+    upper_opts = set(_meta_list(meta.get("upper_options")))
+    # Backlog logic is enabled only when a backlog/queue metric is selected
+    backlog_enabled = ("backlog" in lower_opts) or ("queue" in lower_opts) or ("req_queue" in upper_opts)
 
     # Build scope key and assemble RAW uploads
     ch = ch_name.lower()
@@ -489,18 +492,62 @@ def _fill_tables_fixed_daily(ptype, pid, _fw_cols_unused, _tick, whatif=None):
     var_tac = [ (m_fte_t.get(c, 0.0) - m_fte_a.get(c, 0.0)) for c in day_ids ]
     var_bud = [ (m_fte_b.get(c, 0.0) - m_fte_a.get(c, 0.0)) for c in day_ids ]
 
+    # Daily roll-ups used for backlog/queue and FW grid
+    volF = _daily_sum(dfF, weight_col_upload)
+    volA = _daily_sum(dfA, weight_col_upload)
+    volT = _daily_sum(dfT, weight_col_upload)
+
+    backlog_map: dict[str, float] = {}
+    queue_map: dict[str, float] = {}
+    if backlog_enabled:
+        for i, d in enumerate(day_ids):
+            try:
+                fval = float(volF.get(d, 0.0) or 0.0)
+            except Exception:
+                fval = 0.0
+            try:
+                aval = float(volA.get(d, 0.0) or 0.0)
+            except Exception:
+                aval = 0.0
+            bl = max(0.0, aval - fval)
+            backlog_map[d] = bl
+            prev_bl = float(backlog_map.get(day_ids[i-1], 0.0)) if i > 0 else 0.0
+            queue_map[d] = max(0.0, prev_bl + fval)
+
+    req_queue_vals = None
+    if "req_queue" in upper_opts and backlog_enabled:
+        req_queue_vals = []
+        for d in day_ids:
+            fval = float(volF.get(d, 0.0) or 0.0)
+            qval = float(queue_map.get(d, 0.0) or 0.0)
+            base_req = float(m_fte_f.get(d, 0.0) or 0.0)
+            req_queue_vals.append((base_req * (qval / fval)) if fval > 0 else 0.0)
+
+    # Apply backlog carryover to next day's forecast (Back Office only)
+    backlog_carryover = bool((whatif or {}).get("backlog_carryover", True))
+    if backlog_carryover and is_bo and backlog_enabled:
+        for i in range(len(day_ids) - 1):
+            cur_d = day_ids[i]
+            nxt_d = day_ids[i + 1]
+            add = float(backlog_map.get(cur_d, 0.0) or 0.0)
+            if add:
+                volF[nxt_d] = float(volF.get(nxt_d, 0.0) or 0.0) + add
+
     # Build the upper DataFrame
+    upper_payload = {
+        "FTE Required @ Forecast Volume":   [m_fte_f.get(c, 0.0) for c in day_ids],
+        "FTE Required @ Actual Volume":     [m_fte_a.get(c, 0.0) for c in day_ids],
+        "FTE Over/Under MTP Vs Actual":     var_mtp,
+        "FTE Over/Under Tactical Vs Actual":var_tac,
+        "FTE Over/Under Budgeted Vs Actual":var_bud,
+        "Projected Supply HC":              [m_supply.get(c, 0.0) for c in day_ids],
+        "Projected Handling Capacity (#)":  [m_phc.get(c, 0.0) for c in day_ids],
+        "Projected Service Level":          [m_sl.get(c, 0.0) for c in day_ids],
+    }
+    if req_queue_vals is not None:
+        upper_payload["FTE Required @ Queue"] = req_queue_vals
     upper_df = pd.DataFrame.from_dict(
-        {
-            "FTE Required @ Forecast Volume":   [m_fte_f.get(c, 0.0) for c in day_ids],
-            "FTE Required @ Actual Volume":     [m_fte_a.get(c, 0.0) for c in day_ids],
-            "FTE Over/Under MTP Vs Actual":     var_mtp,
-            "FTE Over/Under Tactical Vs Actual":var_tac,
-            "FTE Over/Under Budgeted Vs Actual":var_bud,
-            "Projected Supply HC":              [m_supply.get(c, 0.0) for c in day_ids],
-            "Projected Handling Capacity (#)":  [m_phc.get(c, 0.0) for c in day_ids],
-            "Projected Service Level":          [m_sl.get(c, 0.0) for c in day_ids],
-        },
+        upper_payload,
         orient="index", columns=day_ids,
     ).reset_index().rename(columns={"index":"metric"}).fillna(0.0)
 
@@ -591,11 +638,7 @@ def _fill_tables_fixed_daily(ptype, pid, _fw_cols_unused, _tick, whatif=None):
     upper_tbl = _make_upper_table(upper_df, day_cols_meta)
 
         # -------- FW (Forecast/Tactical/Actual Volume + AHT/SUT + Occupancy/Budget) --------
-    # Daily roll-ups
-    volF = _daily_sum(dfF, weight_col_upload)
-    volA = _daily_sum(dfA, weight_col_upload)
-    volT = _daily_sum(dfT, weight_col_upload)
-
+    # Daily roll-ups (vol* already computed above)
     ahtF = _daily_weighted_aht(dfF, weight_col_upload)
     ahtA = _daily_weighted_aht(dfA, weight_col_upload)
     ahtT = _daily_weighted_aht(dfT, weight_col_upload)   # include tactical AHT
@@ -698,10 +741,11 @@ def _fill_tables_fixed_daily(ptype, pid, _fw_cols_unused, _tick, whatif=None):
         "Overtime Hours (#)":    [0.0 for _ in day_ids],
     }
 
-    # Include Backlog only if plan options selected
+    # Include Backlog/Queue only if plan options selected
     if "backlog" in lower_opts:
-        backlog_vals = [max(0.0, float(volA.get(c, 0.0)) - float(volF.get(c, 0.0))) for c in day_ids]
-        fw_data["Backlog (Items)"] = backlog_vals
+        fw_data["Backlog (Items)"] = [backlog_map.get(c, 0.0) for c in day_ids]
+    if "queue" in lower_opts:
+        fw_data["Queue (Items)"] = [queue_map.get(c, 0.0) for c in day_ids]
 
     fw_df = pd.DataFrame.from_dict(fw_data, orient="index", columns=day_ids) \
                         .reset_index().rename(columns={"index":"metric"}).fillna(0.0)
