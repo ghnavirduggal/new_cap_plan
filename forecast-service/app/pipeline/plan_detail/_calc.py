@@ -2449,6 +2449,16 @@ def _fill_tables_fixed(ptype, pid, fw_cols, _tick, whatif=None, grain: str = 'we
     elif ch_key in ('outbound', 'out bound', 'ob'):
         planned_shrink_fraction = _planned_shr(settings.get('ob_shrinkage_pct'), planned_shrink_fraction)
 
+    def _overall_pct_from_parts(ooo_pct, ino_pct) -> float:
+        try:
+            o = float(ooo_pct)
+            i = float(ino_pct)
+        except Exception:
+            return 0.0
+        availability = (1.0 - (o / 100.0)) * (1.0 - (i / 100.0))
+        overall = (1.0 - availability) * 100.0
+        return max(0.0, min(100.0, overall))
+
     ooo_hours_w, io_hours_w, base_hours_w = {}, {}, {}
     sc_hours_w, tt_worked_hours_w, nodow_base_hours_w = {}, {}, {}
     overtime_hours_w = {}
@@ -2668,7 +2678,8 @@ def _fill_tables_fixed(ptype, pid, fw_cols, _tick, whatif=None, grain: str = 'we
                 ttw = float(tt_worked_hours_w.get(k, 0.0))
                 ooo_f = (float(d_hrs) / scv) if scv > 0 else 0.0
                 ino_f = (float(v_hrs) / ttw) if ttw > 0 else 0.0
-                bo_shrink_frac_daily[k] = max(0.0, min(0.99, ooo_f + ino_f))
+                overall_f = 1.0 - ((1.0 - ooo_f) * (1.0 - ino_f))
+                bo_shrink_frac_daily[k] = max(0.0, min(0.99, overall_f))
 
             # Weekly overtime
             try:
@@ -2697,12 +2708,12 @@ def _fill_tables_fixed(ptype, pid, fw_cols, _tick, whatif=None, grain: str = 'we
                 if use_bo_denoms:
                     ooo_pct = (100.0 * ooo / sc_base) if sc_base > 0 else 0.0
                     ino_pct = (100.0 * ino / ttwh)    if ttwh    > 0 else 0.0
-                    ov_pct  = (ooo_pct + ino_pct)
+                    ov_pct  = _overall_pct_from_parts(ooo_pct, ino_pct)
                 else:
                     # Voice and other non-BO: fall back to base (SC_INCLUDED_TIME) as denominator
                     ooo_pct = (100.0 * ooo / base) if base > 0 else 0.0
                     ino_pct = (100.0 * ino / base) if base > 0 else 0.0
-                    ov_pct  = (ooo_pct + ino_pct)
+                    ov_pct  = _overall_pct_from_parts(ooo_pct, ino_pct)
 
                 # What-If: add shrink_delta to overall % display (clamped 0..100)
                 if _wf_active(w) and shrink_delta:
@@ -2748,11 +2759,11 @@ def _fill_tables_fixed(ptype, pid, fw_cols, _tick, whatif=None, grain: str = 'we
             if use_bo_denoms:
                 ooo_pct = (100.0 * ooo / sc_base) if sc_base > 0 else 0.0
                 ino_pct = (100.0 * ino / ttwh)    if ttwh    > 0 else 0.0
-                ov_pct  = (ooo_pct + ino_pct)
+                ov_pct  = _overall_pct_from_parts(ooo_pct, ino_pct)
             else:
                 ooo_pct = (100.0 * ooo / base) if base > 0 else 0.0
                 ino_pct = (100.0 * ino / base) if base > 0 else 0.0
-                ov_pct  = (ooo_pct + ino_pct)
+                ov_pct  = _overall_pct_from_parts(ooo_pct, ino_pct)
             if _wf_active(w) and shrink_delta:
                 ov_pct = min(100.0, max(0.0, ov_pct + shrink_delta))
             planned_pct = float(saved_plan_pct_w.get(w, 100.0 * planned_shrink_fraction))
