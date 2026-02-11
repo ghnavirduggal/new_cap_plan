@@ -3016,8 +3016,8 @@ def _fill_tables_fixed_monthly(ptype, pid, fw_cols, _tick, whatif=None):
     # ---- Upper summary table (same rows) ----
     upper_df = _blank_grid(spec["upper"], month_ids)
     # For Back Office in monthly view, align FTE to linear monthly formula:
-    # FTE = ((Monthly Items * SUT_sec) / 3600) / MonthlyHoursPerFTE / (1 - Shrink)
-    # Use planned shrink for consistency with examples; can be toggled later if needed.
+    # FTE = (Monthly Items * SUT_sec) /
+    #       (bo_hours_per_day * bo_workdays_per_week * 3600 * (52/12) * (1 - Shrink) * util_bo)
     is_bo_monthly = str(ch_first or '').strip().lower() in ("back office", "bo")
     bo_model = str(settings.get("bo_capacity_model", "tat")).lower()
     bo_hpd = float(settings.get("bo_hours_per_day", settings.get("hours_per_fte", 8.0)) or 8.0)
@@ -3072,7 +3072,7 @@ def _fill_tables_fixed_monthly(ptype, pid, fw_cols, _tick, whatif=None):
                     sut = max(1.0, sut * (1.0 + aht_delta / 100.0))
             except Exception:
                 pass
-            # By default use planned shrink to match provided examples; switch to 'shr_actual_pct_m' if desired
+            # For actual months, use Overall Shrinkage%; otherwise use planned shrink.
             try:
                 mm_date = pd.to_datetime(mm, errors="coerce").date()
             except Exception:
@@ -3249,7 +3249,9 @@ def _fill_tables_fixed_monthly(ptype, pid, fw_cols, _tick, whatif=None):
                         out[mm] = np.nan
                 return out
 
-            weekly_hours = float(settings.get("weekly_hours", settings.get("weekly_hours_per_fte", 40.0)) or 40.0)
+            bo_hpd_bva = float(settings.get("bo_hours_per_day", settings.get("hours_per_fte", 8.0)) or 8.0)
+            bo_wpd_bva = float(settings.get("bo_workdays_per_week", 5.0) or 5.0)
+            weekly_hours = bo_hpd_bva * bo_wpd_bva
             monthly_hours = weekly_hours * (52.0/12.0)
             shr_plan_pct = _metric_row_map(shr, "Planned Shrinkage %")
             shr_act_pct  = _metric_row_map(shr, "Overall Shrinkage %")
