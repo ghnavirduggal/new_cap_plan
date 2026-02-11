@@ -649,9 +649,10 @@ export default function SettingsClient({
       const rows = await parseFile(file);
       setHeadcountRows(rows);
       setHeadcountMessage(rows.length ? `Loaded ${rows.length} rows from ${file.name}.` : "No rows detected.");
-    } catch {
+    } catch (error: any) {
       setHeadcountRows([]);
-      setHeadcountMessage("Could not parse file.");
+      const detail = error?.message ? ` (${error.message})` : "";
+      setHeadcountMessage(`Could not parse file${detail}.`);
     } finally {
       setLoading(false);
     }
