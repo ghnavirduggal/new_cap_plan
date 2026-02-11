@@ -392,8 +392,12 @@ def bo_rollups(bo_df: pd.DataFrame, settings: dict, week_start: str = "Monday") 
 
     bo_hpd = float(settings.get("bo_hours_per_day", settings.get("hours_per_fte", 8.0)) or 8.0)
     bo_wpd = float(settings.get("bo_workdays_per_week", 5.0) or 5.0)
-    shrink = float(settings.get("shrinkage_pct", 0.30) or 0.30)
+    shrink = _to_frac(settings.get("bo_shrinkage_pct", settings.get("shrinkage_pct", 0.30)) or 0.30)
     util = float(settings.get("util_bo", 0.85) or 0.85)
+    # BO linear FTE formula with utilization in denominator:
+    # Daily  : items*sut / (bo_hpd*3600*(1-shrink)*util)
+    # Weekly : items*sut / (bo_hpd*bo_wpd*3600*(1-shrink)*util)
+    # Monthly: items*sut / (bo_hpd*bo_wpd*3600*(52/12)*(1-shrink)*util)
     denom_day = bo_hpd * 3600.0 * (1.0 - shrink) * util
     weekly_hours = bo_hpd * bo_wpd
     monthly_hours = weekly_hours * (52.0 / 12.0)
@@ -633,9 +637,10 @@ def required_fte_daily(voice_df: pd.DataFrame, bo_df: pd.DataFrame, ob_df: pd.Da
         d[items_col] = pd.to_numeric(d[items_col], errors="coerce").fillna(0.0)
         d["date"] = pd.to_datetime(d[date_col] if date_col else d.get("date"), errors="coerce").dt.date
 
-        bo_hpd = float(settings.get("bo_hours_per_day", settings.get("hours_per_fte", 8.0)))
-        bo_shr = float(settings.get("bo_shrinkage_pct", settings.get("shrinkage_pct", 0.0)))
-        util_bo = float(settings.get("util_bo", 0.85))
+        bo_hpd = float(settings.get("bo_hours_per_day", settings.get("hours_per_fte", 8.0)) or 8.0)
+        bo_shr = _to_frac(settings.get("bo_shrinkage_pct", settings.get("shrinkage_pct", 0.0)))
+        util_bo = float(settings.get("util_bo", 0.85) or 0.85)
+        # BO daily FTE formula includes utilization in denominator.
         denom_day = max(bo_hpd * 3600.0 * (1.0 - bo_shr) * util_bo, 1e-6)
 
         d["bo_fte"] = (d[items_col] * d[sut_col]) / denom_day
