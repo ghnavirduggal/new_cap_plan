@@ -1,7 +1,26 @@
 export async function parseExcelFile(file: File): Promise<Record<string, any>[]> {
-  const { default: tabularjs } = await import("tabularjs");
-  const result = await tabularjs(file);
-  const worksheet = result?.worksheets?.[0];
+  const mod = await import("tabularjs");
+  const parserMaybe = (mod as any)?.default ?? (mod as any);
+  const parser =
+    typeof parserMaybe === "function"
+      ? parserMaybe
+      : typeof parserMaybe?.default === "function"
+        ? parserMaybe.default
+        : null;
+  if (!parser) {
+    throw new Error("Excel parser module is invalid.");
+  }
+
+  let result: any;
+  try {
+    result = await parser(file);
+  } catch {
+    // Some environments/files parse reliably only from raw bytes.
+    const buf = await file.arrayBuffer();
+    result = await parser(new Uint8Array(buf));
+  }
+
+  const worksheet = result?.worksheets?.[0] ?? result?.worksheet ?? result?.sheet ?? null;
   const data: any[][] = Array.isArray(worksheet?.data) ? worksheet.data : [];
   if (!data.length) return [];
 
