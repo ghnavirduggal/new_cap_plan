@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import io
 import re
+import numpy as np
 import pandas as pd
 import logging
 from typing import Any, Optional
@@ -462,6 +463,55 @@ def _parse_date_series(series: pd.Series) -> pd.Series:
     return pd.to_datetime(s, errors="coerce").dt.date
 
 
+def _to_seconds_value(value):
+    """Convert common duration formats to seconds for AHT/SUT fields."""
+    try:
+        if value is None:
+            return np.nan
+        if value is pd.NA:
+            return np.nan
+        try:
+            if pd.isna(value):
+                return np.nan
+        except Exception:
+            pass
+        if isinstance(value, pd.Timedelta):
+            return float(value.total_seconds())
+        if isinstance(value, (np.integer, int)):
+            return float(value)
+        if isinstance(value, (np.floating, float)):
+            v = float(value)
+            if not np.isfinite(v):
+                return np.nan
+            # Excel often stores time-of-day / durations as day fractions.
+            if 0.0 < abs(v) < 1.0:
+                return float(v * 86400.0)
+            return v
+        if hasattr(value, "hour") and hasattr(value, "minute") and hasattr(value, "second"):
+            return float(int(value.hour) * 3600 + int(value.minute) * 60 + int(value.second))
+        s = str(value).strip()
+        if not s:
+            return np.nan
+        if ":" in s:
+            parts = [p.strip() for p in s.split(":")]
+            if len(parts) == 3:
+                h = float(parts[0]); m = float(parts[1]); sec = float(parts[2])
+                return (h * 3600.0) + (m * 60.0) + sec
+            if len(parts) == 2:
+                m = float(parts[0]); sec = float(parts[1])
+                return (m * 60.0) + sec
+        v = float(s.replace(",", ""))
+        if 0.0 < abs(v) < 1.0:
+            return float(v * 86400.0)
+        return v
+    except Exception:
+        return np.nan
+
+
+def _to_seconds_series(series: pd.Series) -> pd.Series:
+    return pd.to_numeric(pd.Series(series).map(_to_seconds_value), errors="coerce")
+
+
 def _normalize_timeseries(kind: str, df: pd.DataFrame) -> tuple[pd.DataFrame, dict[str, pd.DataFrame]]:
     if not isinstance(df, pd.DataFrame) or df.empty:
         return df, {}
@@ -483,7 +533,7 @@ def _normalize_timeseries(kind: str, df: pd.DataFrame) -> tuple[pd.DataFrame, di
         if volume_label:
             out[item_col] = pd.to_numeric(df[volume_label], errors="coerce")
         if aht_label:
-            out["aht_sec"] = pd.to_numeric(df[aht_label], errors="coerce")
+            out["aht_sec"] = _to_seconds_series(df[aht_label])
         if "date" in out.columns:
             out = out.dropna(subset=["date"])
         return out
@@ -537,7 +587,7 @@ def _normalize_timeseries(kind: str, df: pd.DataFrame) -> tuple[pd.DataFrame, di
                 "aht (sec)",
                 "aht_seconds",
                 "talk_sec",
-
+                
             ],
         )
         base = _build_base(volume_col, aht_col, "volume")
@@ -678,7 +728,7 @@ def _normalize_timeseries(kind: str, df: pd.DataFrame) -> tuple[pd.DataFrame, di
         if rpc_rate_col:
             base["rpc_rate"] = pd.to_numeric(df[rpc_rate_col], errors="coerce")
         if aht_col:
-            base["aht_sec"] = pd.to_numeric(df[aht_col], errors="coerce")
+            base["aht_sec"] = _to_seconds_series(df[aht_col])
         if "date" in base.columns:
             base = base.dropna(subset=["date"])
         if "opc" in base.columns:
@@ -1099,8 +1149,8 @@ def upload_headcount(payload: dict):
     rows = payload.get("rows") or []
     df = df_from_payload(rows)
     result = save_headcount(df)
-    preview = df.head(50).to_dict("records") if not df.empty else []
-    return {"status": result.get("status"), "rows": preview, "saved": result}
+    preview = df_to_records(df.head(50)) if not df.empty else []
+    return sanitize_for_json({"status": result.get("status"), "rows": preview, "saved": result})
 
 
 @app.get("/api/forecast/headcount/options")
