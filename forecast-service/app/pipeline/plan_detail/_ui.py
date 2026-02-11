@@ -1,6 +1,7 @@
-﻿# file: plan_detail/_ui.py
+# file: plan_detail/_ui.py
 from __future__ import annotations
 from dash import html, dcc, dash_table
+from dash.development.base_component import Component
 import dash_bootstrap_components as dbc
 from ._common import *  # noqa
 from datetime import date, timedelta
@@ -221,7 +222,7 @@ def _upper_summary_body_card() -> html.Div:
         className="mb-3"
     )
 
-def _lower_tabs() -> dbc.Card:
+def _lower_tabs() -> Component:
     return dbc.Card(
         dbc.CardBody([
             dbc.Tabs(id="plan-tabs", active_tab="tab-fw", children=[
@@ -463,7 +464,7 @@ def _new_hire_ui() -> list:
         ]
 
 
-def _add_employee_modal() -> dbc.Modal:
+def _add_employee_modal() -> Component:
     return dbc.Modal(
         [
             dbc.ModalHeader(dbc.ModalTitle("Add New Employee"), style={"background": "#2f3747", "color": "white"}),
