@@ -2683,13 +2683,13 @@ def _fill_tables_fixed(ptype, pid, fw_cols, _tick, whatif=None, grain: str = 'we
                 k = str(r["week"])
                 sc_hours_w[k] = sc_hours_w.get(k, 0.0) + float(r["sc"])
 
-            # Daily shrink fractions
-            for t, d_hrs, v_hrs in zip(idx, ooo_hours, ino_hours):
+            # Daily shrink fractions (use daily denominators, not weekly maps)
+            for t, ooo_h, ino_h, sc_h, ttw_h in zip(idx, ooo_hours, ino_hours, sc_hours, ttw_hours):
                 k = str(pd.to_datetime(t).date())
-                scv = float(sc_hours_w.get(k, 0.0))
-                ttw = float(tt_worked_hours_w.get(k, 0.0))
-                ooo_f = (float(d_hrs) / scv) if scv > 0 else 0.0
-                ino_f = (float(v_hrs) / ttw) if ttw > 0 else 0.0
+                scv = float(sc_h) if pd.notna(sc_h) else 0.0
+                ttw = float(ttw_h) if pd.notna(ttw_h) else 0.0
+                ooo_f = (float(ooo_h) / scv) if scv > 0 else 0.0
+                ino_f = (float(ino_h) / ttw) if ttw > 0 else 0.0
                 overall_f = 1.0 - ((1.0 - ooo_f) * (1.0 - ino_f))
                 bo_shrink_frac_daily[k] = max(0.0, min(0.99, overall_f))
 
@@ -2900,48 +2900,51 @@ def _fill_tables_fixed(ptype, pid, fw_cols, _tick, whatif=None, grain: str = 'we
                 except Exception:
                     pass
 
-    # Compute Actual-shrinkage-adjusted weekly requirement just before upper table
+    # Compute Actual-shrinkage-adjusted weekly requirement just before upper table.
+    # Back Office is already adjusted at daily granularity above; avoid double-adjusting.
     req_w_actual_adj = dict(req_w_actual)
     try:
-        def _to_frac(val):
-            try:
-                v = float(val)
-                return v/100.0 if v > 1.0 else v
-            except Exception:
+        ch_key_local = str(ch_first or "").strip().lower()
+        if ch_key_local not in ("back office", "bo", "backoffice"):
+            def _to_frac(val):
                 try:
-                    s = str(val).strip().rstrip('%')
-                    v = float(s)
+                    v = float(val)
                     return v/100.0 if v > 1.0 else v
                 except Exception:
-                    return None
-        act_row = None
-        plan_row = None
-        if isinstance(shr, pd.DataFrame) and not shr.empty and "metric" in shr.columns:
-            m = shr["metric"].astype(str).str.strip().str.lower()
-            if (m == "overall shrinkage %").any():
-                act_row = shr.loc[m == "overall shrinkage %"].iloc[0].to_dict()
-            if (m == "planned shrinkage %").any():
-                plan_row = shr.loc[m == "planned shrinkage %"].iloc[0].to_dict()
-        today = dt.date.today()
-        cur_week = (today - dt.timedelta(days=today.weekday()))
-        for w in week_ids:
-            if w not in req_w_actual_adj:
-                continue
-            try:
-                w_date = pd.to_datetime(w, errors="coerce").date()
-            except Exception:
-                w_date = None
-            if w_date is not None and w_date > cur_week:
-                continue
-            s_act = _to_frac(act_row.get(w)) if isinstance(act_row, dict) and (w in act_row) else None
-            if s_act is None:
-                continue
-            s_plan = _to_frac(plan_row.get(w)) if isinstance(plan_row, dict) and (w in plan_row) else None
-            if s_plan is None:
-                s_plan = planned_shrink_fraction
-            denom_old = max(0.01, 1.0 - float(s_plan or 0.0))
-            denom_new = max(0.01, 1.0 - float(s_act or 0.0))
-            req_w_actual_adj[w] = float(req_w_actual.get(w, 0.0)) * (denom_old / denom_new)
+                    try:
+                        s = str(val).strip().rstrip('%')
+                        v = float(s)
+                        return v/100.0 if v > 1.0 else v
+                    except Exception:
+                        return None
+            act_row = None
+            plan_row = None
+            if isinstance(shr, pd.DataFrame) and not shr.empty and "metric" in shr.columns:
+                m = shr["metric"].astype(str).str.strip().str.lower()
+                if (m == "overall shrinkage %").any():
+                    act_row = shr.loc[m == "overall shrinkage %"].iloc[0].to_dict()
+                if (m == "planned shrinkage %").any():
+                    plan_row = shr.loc[m == "planned shrinkage %"].iloc[0].to_dict()
+            today = dt.date.today()
+            cur_week = (today - dt.timedelta(days=today.weekday()))
+            for w in week_ids:
+                if w not in req_w_actual_adj:
+                    continue
+                try:
+                    w_date = pd.to_datetime(w, errors="coerce").date()
+                except Exception:
+                    w_date = None
+                if w_date is not None and w_date > cur_week:
+                    continue
+                s_act = _to_frac(act_row.get(w)) if isinstance(act_row, dict) and (w in act_row) else None
+                if s_act is None:
+                    continue
+                s_plan = _to_frac(plan_row.get(w)) if isinstance(plan_row, dict) and (w in plan_row) else None
+                if s_plan is None:
+                    s_plan = planned_shrink_fraction
+                denom_old = max(0.01, 1.0 - float(s_plan or 0.0))
+                denom_new = max(0.01, 1.0 - float(s_act or 0.0))
+                req_w_actual_adj[w] = float(req_w_actual.get(w, 0.0)) * (denom_old / denom_new)
     except Exception:
         pass
 
