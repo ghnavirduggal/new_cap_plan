@@ -4,14 +4,18 @@ import datetime as dt
 import getpass
 import json
 import os
+import re
+import tempfile
+from pathlib import Path
 from typing import Optional, Any
 import math
 
 import pandas as pd
-from psycopg.types.json import Json
+from psycopg2.extras import Json
 
 from app.pipeline.planning_calc_engine import mark_plan_dirty
 from app.pipeline.postgres import db_conn, ensure_planning_schema, has_dsn
+from app.pipeline.utils import sanitize_for_json
 
 
 def _norm_channel_csv(value: object) -> str:
@@ -56,6 +60,84 @@ def _parse_date(value: Optional[object]) -> Optional[dt.date]:
 
 def _user() -> str:
     return os.environ.get("HOSTNAME") or os.environ.get("USERNAME") or getpass.getuser() or "system"
+
+
+def _repo_root() -> Path:
+    return Path(__file__).resolve().parent.parent.parent
+
+
+def _safe_component(value: Optional[str]) -> str:
+    cleaned = re.sub(r"[^A-Za-z0-9_-]+", "_", str(value or "")).strip("_")
+    return cleaned or "all"
+
+
+def _plan_table_candidates() -> list[Path]:
+    candidates: list[Path] = []
+    env_dir = str(os.getenv("CAP_EXPORTS_DIR") or "").strip()
+    if env_dir:
+        candidates.append(Path(env_dir))
+    candidates.append(_repo_root() / "exports")
+    candidates.append(Path(tempfile.gettempdir()) / "cap_exports")
+    unique: list[Path] = []
+    seen: set[str] = set()
+    for path in candidates:
+        key = str(path)
+        if key in seen:
+            continue
+        seen.add(key)
+        unique.append(path)
+    return unique
+
+
+def _plan_table_dir() -> Path:
+    for base in _plan_table_candidates():
+        outdir = base / "plan_tables"
+        try:
+            outdir.mkdir(exist_ok=True, parents=True)
+            probe = outdir / ".perm_probe"
+            probe.write_text("ok")
+            probe.unlink(missing_ok=True)
+            return outdir
+        except Exception:
+            continue
+    outdir = _plan_table_candidates()[-1] / "plan_tables"
+    outdir.mkdir(exist_ok=True, parents=True)
+    return outdir
+
+
+def _plan_table_path(plan_id: int, table_name: str) -> Path:
+    return _plan_table_dir() / f"plan_{int(plan_id)}_{_safe_component(table_name)}.json"
+
+
+def _load_plan_table_local(plan_id: int, table_name: str) -> list[dict]:
+    path = _plan_table_path(plan_id, table_name)
+    if not path.exists():
+        # Case-insensitive fallback for local files.
+        try:
+            target = path.name.lower()
+            for cand in _plan_table_dir().glob(f"plan_{int(plan_id)}_*.json"):
+                if cand.name.lower() == target:
+                    path = cand
+                    break
+        except Exception:
+            pass
+    if not path.exists():
+        return []
+    try:
+        payload = json.loads(path.read_text())
+    except Exception:
+        return []
+    return payload if isinstance(payload, list) else []
+
+
+def _save_plan_table_local(plan_id: int, table_name: str, rows: list[dict]) -> dict:
+    path = _plan_table_path(plan_id, table_name)
+    payload = _sanitize_json(rows or [])
+    try:
+        path.write_text(json.dumps(payload))
+    except Exception:
+        return {"status": "invalid"}
+    return {"status": "saved", "rows": len(rows or []), "path": str(path), "storage": "local"}
 
 
 def _to_json(value: object) -> Optional[Json]:
@@ -491,8 +573,10 @@ def delete_plan(plan_id: int, hard_if_missing: bool = True) -> dict:
 
 
 def save_plan_table(plan_id: int, table_name: str, rows: list[dict]) -> dict:
-    if not has_dsn() or not plan_id or not table_name:
+    if not plan_id or not table_name:
         return {"status": "invalid"}
+    if not has_dsn():
+        return _save_plan_table_local(int(plan_id), str(table_name), rows)
     ensure_planning_schema()
     if _is_plan_locked(int(plan_id)):
         return {"status": "locked", "rows": 0}
@@ -669,18 +753,14 @@ def list_activity(limit: int = 20, plan_id: Optional[int] = None) -> list[dict]:
 
 
 def _sanitize_json(value: Any) -> Any:
-    if isinstance(value, dict):
-        return {str(k): _sanitize_json(v) for k, v in value.items()}
-    if isinstance(value, list):
-        return [_sanitize_json(v) for v in value]
-    if isinstance(value, float):
-        return value if math.isfinite(value) else None
-    return value
+    return sanitize_for_json(value)
 
 
 def load_plan_table(plan_id: int, table_name: str) -> list[dict]:
-    if not has_dsn() or not plan_id or not table_name:
+    if not plan_id or not table_name:
         return []
+    if not has_dsn():
+        return _load_plan_table_local(int(plan_id), str(table_name))
     ensure_planning_schema()
     with db_conn() as conn:
         cur = conn.cursor()
