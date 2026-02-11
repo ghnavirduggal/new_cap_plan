@@ -658,7 +658,7 @@ def _weekly_voice(df):
 
     # Safe numerics
     x["w"] = pd.to_numeric(x.get("volume"),  errors="coerce").fillna(0.0)
-    x["a"] = pd.to_numeric(x.get("aht_sec"), errors="coerce").fillna(0.0)
+    x["a"] = _to_seconds_series(x.get("aht_sec")).fillna(0.0)
 
     daily = _daily_from_intervals(x, "w", "a")
     if daily.empty:
@@ -699,13 +699,25 @@ def _weekly_bo(df):
         return pd.DataFrame(out_rows)
 
     x["i"] = pd.to_numeric(x.get("items"), errors="coerce").fillna(0.0)
-    x["s"] = pd.to_numeric(x.get("aht_sec"), errors="coerce").fillna(0.0)
+    x["s"] = _to_seconds_series(x.get("aht_sec")).fillna(0.0)
     daily = _daily_from_intervals(x, "i", "s")
     if daily.empty:
         return pd.DataFrame(columns=["week", "items", "sut"])
     daily["week"] = _monday(daily["date"])
     g = daily.groupby("week", as_index=False).agg(items=("items", "sum"), num=("num", "sum"))
     g["sut"] = np.where(g["items"] > 0, g["num"] / g["items"], np.nan)
+    # If weekly items are zero but SUT exists in source rows, keep a simple mean SUT
+    # to avoid falling back to default settings (e.g., 600) unnecessarily.
+    if g["sut"].isna().any() and "s" in x.columns:
+        s_mean = (
+            x.assign(week=x["week"].astype(str))
+             .groupby("week", as_index=False)["s"]
+             .mean()
+             .rename(columns={"s": "_sut_mean"})
+        )
+        g = g.merge(s_mean, on="week", how="left")
+        g["sut"] = g["sut"].combine_first(g["_sut_mean"])
+        g = g.drop(columns=["_sut_mean"])
     g = g.drop(columns=["num"])
     g["week"] = g["week"].astype(str)
 
@@ -976,6 +988,7 @@ def _assemble_voice(scope_key, which):
     if "aht_sec" not in df.columns or df["aht_sec"].isna().all():
         s = _settings_for_scope_key(scope_key)  # split first 3 parts internally
         df["aht_sec"] = float(s.get("target_aht", s.get("budgeted_aht", 300)) or 300)
+    df["aht_sec"] = _to_seconds_series(df.get("aht_sec")).fillna(0.0)
 
     df["program"] = "WFM"
     # 'interval' ensured earlier
@@ -1112,6 +1125,7 @@ def _assemble_bo(scope_key, which):
     if "aht_sec" not in df.columns or df["aht_sec"].isna().all():
         s = _settings_for_scope_key(scope_key)
         df["aht_sec"] = float(s.get("target_sut", s.get("budgeted_sut", 600)) or 600)
+    df["aht_sec"] = _to_seconds_series(df.get("aht_sec")).fillna(0.0)
 
     df["program"] = "WFM"
     if "items" not in df.columns:
@@ -1218,6 +1232,7 @@ def _assemble_chat(scope_key, which):
     if "aht_sec" not in df.columns or df["aht_sec"].isna().all():
         s = _settings_for_scope_key(scope_key)
         df["aht_sec"] = float(s.get("chat_aht_sec", s.get("target_aht", 240)) or 240)
+    df["aht_sec"] = _to_seconds_series(df.get("aht_sec")).fillna(0.0)
 
     df["program"] = "Chat"
     if "items" not in df.columns:
@@ -1408,6 +1423,7 @@ def _assemble_ob(scope_key, which):
     if "aht_sec" not in d.columns or d["aht_sec"].isna().all():
         s = _settings_for_scope_key(scope_key)
         d["aht_sec"] = float(s.get("target_aht", s.get("budgeted_aht", 300)) or 300)
+    d["aht_sec"] = _to_seconds_series(d.get("aht_sec")).fillna(0.0)
 
     d["program"] = "Outbound"
     # Ensure columns present
@@ -1531,6 +1547,41 @@ def _parse_date_any(x) -> pd.Timestamp | None:
         return None if pd.isna(t) else pd.Timestamp(t)
     except Exception:
         return None
+
+
+def _to_seconds_value(x) -> float:
+    """Coerce common AHT/SUT text formats to seconds (e.g., '2:30' -> 150)."""
+    try:
+        if x is None or (isinstance(x, float) and np.isnan(x)):
+            return np.nan
+        if isinstance(x, (int, float, np.integer, np.floating)):
+            return float(x)
+        s = str(x).strip()
+        if not s:
+            return np.nan
+        if ":" in s:
+            parts = [p.strip() for p in s.split(":")]
+            if len(parts) == 3:
+                h = float(parts[0]); m = float(parts[1]); sec = float(parts[2])
+                return (h * 3600.0) + (m * 60.0) + sec
+            if len(parts) == 2:
+                # Interpret two-part strings as MM:SS for AHT/SUT inputs.
+                m = float(parts[0]); sec = float(parts[1])
+                return (m * 60.0) + sec
+        return float(s)
+    except Exception:
+        return np.nan
+
+
+def _to_seconds_series(series) -> pd.Series:
+    if series is None:
+        return pd.Series(dtype="float64")
+    try:
+        s = pd.Series(series)
+    except Exception:
+        return pd.Series(dtype="float64")
+    out = s.map(_to_seconds_value)
+    return pd.to_numeric(out, errors="coerce")
 
 
 # def _save_table(pid: int, tab_key: str, df: pd.DataFrame):
