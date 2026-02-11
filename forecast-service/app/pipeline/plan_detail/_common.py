@@ -1060,34 +1060,66 @@ def _assemble_bo(scope_key, which):
 
     # Canonicalize volume/items
     df = vol.copy()
-    # Robust date parse
-    col = "date" if "date" in df.columns else ("week" if "week" in df.columns else None)
-    if col:
+    # Robust date parse (case-insensitive)
+    L = {str(c).strip().lower(): c for c in df.columns}
+    c_date = L.get("date") or L.get("week") or L.get("day")
+    if c_date:
         def _norm(v):
             t = _parse_date_any(v)
             return pd.NaT if t is None else pd.Timestamp(t).normalize()
-        df["date"] = df[col].map(_norm)
+        df["date"] = df[c_date].map(_norm)
+    else:
+        df["date"] = pd.NaT
     if "items" not in df.columns:
-        for alt in ("volume","txns","transactions"):
-            if alt in df.columns:
-                df = df.rename(columns={alt: "items"})
+        for alt in (
+            "items",
+            "volume",
+            "txns",
+            "transactions",
+            f"{which} volume",
+            f"{which}_volume",
+            "actual volume",
+            "forecast volume",
+            "tactical volume",
+        ):
+            c = L.get(str(alt).lower())
+            if c and c in df.columns:
+                df = df.rename(columns={c: "items"})
                 break
 
     # Merge SUT (rename to aht_sec for common field)
     if isinstance(sut, pd.DataFrame) and not sut.empty:
         su = sut.copy()
-        if "date" not in su.columns and "week" in su.columns:
-            col = "week"
-        else:
-            col = "date"
+        LS = {str(c).strip().lower(): c for c in su.columns}
+        c_date2 = LS.get("date") or LS.get("week") or LS.get("day")
         def _norm2(v):
             t = _parse_date_any(v)
             return pd.NaT if t is None else pd.Timestamp(t).normalize()
-        su["date"] = su[col].map(_norm2)
+        if c_date2:
+            su["date"] = su[c_date2].map(_norm2)
+        else:
+            su["date"] = pd.NaT
         if "aht_sec" not in su.columns:
-            for alt in ("sut_sec","sut","aht","avg_sut","sut_seconds"):
-                if alt in su.columns:
-                    su = su.rename(columns={alt: "aht_sec"})
+            for alt in (
+                "sut_sec",
+                "sut",
+                "aht",
+                "avg_sut",
+                "sut_seconds",
+                f"{which} sut",
+                f"{which}_sut",
+                f"{which} sut (sec)",
+                f"{which}_sut_sec",
+                "actual sut",
+                "forecast sut",
+                "tactical sut",
+                "actual_sut",
+                "forecast_sut",
+                "tactical_sut",
+            ):
+                c = LS.get(str(alt).lower())
+                if c and c in su.columns:
+                    su = su.rename(columns={c: "aht_sec"})
                     break
         df = df.merge(su[["date","aht_sec"]], on="date", how="left", suffixes=("", "_sut"))
         # Prefer combined (volume) SUT when it exists; only fill gaps from SUT series.
@@ -1115,7 +1147,25 @@ def _assemble_bo(scope_key, which):
     # If still missing SUT, try to detect in the same upload before fallback to settings
     if "aht_sec" not in df.columns or df["aht_sec"].isna().all():
         L2 = {str(c).strip().lower(): c for c in df.columns}
-        for nm in ("aht_sec","sut_sec","sut","avg_sut","aht","aht_seconds","sut_seconds"):
+        for nm in (
+            "aht_sec",
+            "sut_sec",
+            "sut",
+            "avg_sut",
+            "aht",
+            "aht_seconds",
+            "sut_seconds",
+            f"{which} sut",
+            f"{which}_sut",
+            f"{which} sut (sec)",
+            f"{which}_sut_sec",
+            "actual sut",
+            "forecast sut",
+            "tactical sut",
+            "actual_sut",
+            "forecast_sut",
+            "tactical_sut",
+        ):
             c = L2.get(str(nm).lower())
             if c and c in df.columns:
                 if c != "aht_sec":
@@ -1147,7 +1197,7 @@ def _assemble_bo(scope_key, which):
 def _assemble_chat(scope_key, which):
     which = (which or "forecast").strip().lower()
     vol = _load_ts_with_fallback(f"chat_{which}_volume", scope_key)
-    aht = _load_ts_with_fallback(f"chat_{which}_aht",    scope_key)
+    aht = _load_ts_with_fallback(f"chat_{which}_aht", scope_key)
     # Fallback: some uploads persist combined datasets (chat_{which}) with AHT + items included.
     combo = pd.DataFrame()
     used_combo_for_vol = False
@@ -1166,38 +1216,115 @@ def _assemble_chat(scope_key, which):
         aht = combo
 
     if vol is None or vol.empty:
-        return pd.DataFrame(columns=["date","items","aht_sec","program"])
+        return pd.DataFrame(columns=["date", "items", "aht_sec", "program"])
 
     df = vol.copy()
-    # normalize date (robust)
-    col = "date" if "date" in df.columns else ("week" if "week" in df.columns else None)
-    if col:
+    L = {str(c).strip().lower(): c for c in df.columns}
+    c_date = L.get("date") or L.get("week") or L.get("day")
+    if c_date:
         def _norm(v):
             t = _parse_date_any(v)
             return pd.NaT if t is None else pd.Timestamp(t).normalize()
-        df["date"] = df[col].map(_norm)
-    # normalize items column
-    if "items" not in df.columns:
-        for alt in ("chats","volume","txns","transactions","count"):
-            if alt in df.columns:
-                df = df.rename(columns={alt: "items"}); break
+        df["date"] = df[c_date].map(_norm)
+    else:
+        df["date"] = pd.NaT
 
-    # merge aht if provided
+    c_ivl = (
+        L.get("interval")
+        or L.get("time")
+        or L.get("interval_start")
+        or L.get("start_time")
+        or L.get("interval start")
+        or L.get("start time")
+        or L.get("slot")
+    )
+    if c_ivl and c_ivl in df.columns and c_ivl != "interval":
+        df = df.rename(columns={c_ivl: "interval"})
+    if "interval" not in df.columns:
+        df["interval"] = pd.NaT
+
+    if "items" not in df.columns:
+        for alt in (
+            "items",
+            "chats",
+            "volume",
+            "count",
+            "txns",
+            "transactions",
+            f"{which} volume",
+            f"{which}_volume",
+            "actual volume",
+            "forecast volume",
+            "tactical volume",
+            f"{which} chats",
+            f"{which}_chats",
+            "actual chats",
+            "forecast chats",
+            "tactical chats",
+        ):
+            c = L.get(str(alt).lower())
+            if c and c in df.columns:
+                df = df.rename(columns={c: "items"})
+                break
+
+    # Merge AHT if provided
     if isinstance(aht, pd.DataFrame) and not aht.empty:
         ah = aht.copy()
-        if "date" not in ah.columns and "week" in ah.columns:
-            col = "week"
+        LA = {str(c).strip().lower(): c for c in ah.columns}
+        c_date2 = LA.get("date") or LA.get("week") or LA.get("day")
+        if c_date2:
+            def _norm2(v):
+                t = _parse_date_any(v)
+                return pd.NaT if t is None else pd.Timestamp(t).normalize()
+            ah["date"] = ah[c_date2].map(_norm2)
         else:
-            col = "date"
-        def _norm2(v):
-            t = _parse_date_any(v)
-            return pd.NaT if t is None else pd.Timestamp(t).normalize()
-        ah["date"] = ah[col].map(_norm2)
+            ah["date"] = pd.NaT
+
+        c_ivl2 = (
+            LA.get("interval")
+            or LA.get("time")
+            or LA.get("interval_start")
+            or LA.get("start_time")
+            or LA.get("interval start")
+            or LA.get("start time")
+            or LA.get("slot")
+        )
+        if c_ivl2 and c_ivl2 in ah.columns and c_ivl2 != "interval":
+            ah = ah.rename(columns={c_ivl2: "interval"})
+
         if "aht_sec" not in ah.columns:
-            for alt in ("aht","avg_aht","sut","sut_sec","aht_seconds"):
-                if alt in ah.columns:
-                    ah = ah.rename(columns={alt: "aht_sec"}); break
-        df = df.merge(ah[["date","aht_sec"]], on="date", how="left", suffixes=("", "_aht"))
+            for alt in (
+                "aht_sec",
+                "aht",
+                "avg_aht",
+                "aht_seconds",
+                "aht (sec)",
+                "sut",
+                "sut_sec",
+                "avg_sut",
+                f"{which} aht",
+                f"{which}_aht",
+                "actual aht",
+                "forecast aht",
+                "tactical aht",
+                "actual_aht",
+                "forecast_aht",
+                "tactical_aht",
+            ):
+                c = LA.get(str(alt).lower())
+                if c and c in ah.columns:
+                    ah = ah.rename(columns={c: "aht_sec"})
+                    break
+
+        join_keys = [k for k in ["date", "interval"] if k in df.columns and k in ah.columns]
+        if not join_keys:
+            join_keys = ["date"]
+        df = df.merge(
+            ah[[*join_keys, *(["aht_sec"] if "aht_sec" in ah.columns else [])]],
+            on=join_keys,
+            how="left",
+            suffixes=("", "_aht"),
+        )
         # Prefer combined (volume) AHT when it exists; only fill gaps from AHT series.
         if "aht_sec_aht" in df.columns:
             if "aht_sec" in df.columns:
@@ -1220,10 +1347,27 @@ def _assemble_chat(scope_key, which):
                 df["aht_sec"] = ax
             df = df.drop(columns=[c for c in ("aht_sec_x", "aht_sec_y") if c in df.columns])
 
+    # If still missing AHT, try to detect in the same upload before fallback to settings
     if "aht_sec" not in df.columns or df["aht_sec"].isna().all():
-        # Try to detect in the same upload before fallback to settings
         L2 = {str(c).strip().lower(): c for c in df.columns}
-        for alt in ("aht_sec","aht","avg_aht","sut","sut_sec","aht_seconds"):
+        for alt in (
+            "aht_sec",
+            "aht",
+            "avg_aht",
+            "aht_seconds",
+            "aht (sec)",
+            "sut",
+            "sut_sec",
+            "avg_sut",
+            f"{which} aht",
+            f"{which}_aht",
+            "actual aht",
+            "forecast aht",
+            "tactical aht",
+            "actual_aht",
+            "forecast_aht",
+            "tactical_aht",
+        ):
             c = L2.get(str(alt).lower())
             if c and c in df.columns:
                 if c != "aht_sec":
@@ -1237,39 +1381,30 @@ def _assemble_chat(scope_key, which):
     df["program"] = "Chat"
     if "items" not in df.columns:
         df["items"] = 0.0
-    # Preserve interval column if present
-    ivl_col = None
-    low = {str(c).strip().lower(): c for c in df.columns}
-    for k in ("interval","time","interval_start","start_time","slot"):
-        c = low.get(k)
-        if c in df.columns:
-            ivl_col = c; break
-    if ivl_col and ivl_col != "interval":
-        df = df.rename(columns={ivl_col: "interval"})
-    if "interval" not in df.columns:
-        df["interval"] = pd.NaT
     df = _dedupe_timeseries(df)
-    return df[["date","interval","items","aht_sec","program"]]
+    return df[["date", "interval", "items", "aht_sec", "program"]]
 
 def _assemble_ob(scope_key, which):
     which = (which or "forecast").strip().lower()
     # Try tolerant keys for OPC/dials and rates
-    opc   = _load_ts_with_fallback(f"ob_{which}_opc",   scope_key)
+    opc = _load_ts_with_fallback(f"ob_{which}_opc", scope_key)
     if opc is None or opc.empty:
         for k in [f"outbound_{which}_opc", f"ob_{which}_dials", f"outbound_{which}_dials", f"ob_{which}_calls"]:
             tmp = _load_ts_with_fallback(k, scope_key)
             if isinstance(tmp, pd.DataFrame) and not tmp.empty:
-                opc = tmp; break
-    conn  = _load_ts_with_fallback(f"ob_{which}_connect_rate", scope_key)
+                opc = tmp
+                break
+    conn = _load_ts_with_fallback(f"ob_{which}_connect_rate", scope_key)
     if conn is None or conn.empty:
         for k in [f"outbound_{which}_connect_rate", f"ob_{which}_connect%"]:
             tmp = _load_ts_with_fallback(k, scope_key)
             if isinstance(tmp, pd.DataFrame) and not tmp.empty:
-                conn = tmp; break
-    rpc   = _load_ts_with_fallback(f"ob_{which}_rpc", scope_key)
+                conn = tmp
+                break
+    rpc = _load_ts_with_fallback(f"ob_{which}_rpc", scope_key)
     rpc_r = _load_ts_with_fallback(f"ob_{which}_rpc_rate", scope_key)
-    aht   = _load_ts_with_fallback(f"ob_{which}_aht", scope_key)
-    # Fallback: combined datasets may include OPC + AHT in ob_{which} uploads
+    aht = _load_ts_with_fallback(f"ob_{which}_aht", scope_key)
+    # Fallback: combined datasets may include OPC + AHT in ob_{which} uploads.
     combo = pd.DataFrame()
     used_combo_for_opc = False
     if (opc is None or opc.empty) or (aht is None or aht.empty):
@@ -1294,76 +1429,127 @@ def _assemble_ob(scope_key, which):
         aht = combo
 
     if opc is None or opc.empty:
-        return pd.DataFrame(columns=["date","opc","connect_rate","rpc","rpc_rate","aht_sec","program"])
+        return pd.DataFrame(columns=["date", "opc", "connect_rate", "rpc", "rpc_rate", "aht_sec", "program"])
 
-    # Canonicalize dates
     d = opc.copy()
-    # Robust date parse for OPC/dials
-    base_col = "date" if "date" in d.columns else ("week" if "week" in d.columns else None)
-    if base_col:
+    L = {str(c).strip().lower(): c for c in d.columns}
+    c_date = L.get("date") or L.get("week") or L.get("day")
+    if c_date:
         def _norm(v):
             t = _parse_date_any(v)
             return pd.NaT if t is None else pd.Timestamp(t).normalize()
-        d["date"] = d[base_col].map(_norm)
-    # Preserve interval if present (interval-level forecasting for OB)
-    low = {str(c).strip().lower(): c for c in d.columns}
-    ivl_col = None
-    for k in ("interval", "time", "interval_start", "start_time", "start time", "slot"):
-        c = low.get(k)
-        if c in d.columns:
-            ivl_col = c
-            break
-    if ivl_col and ivl_col != "interval":
-        d = d.rename(columns={ivl_col: "interval"})
+        d["date"] = d[c_date].map(_norm)
+    else:
+        d["date"] = pd.NaT
+
+    c_ivl = (
+        L.get("interval")
+        or L.get("time")
+        or L.get("interval_start")
+        or L.get("start_time")
+        or L.get("interval start")
+        or L.get("start time")
+        or L.get("slot")
+    )
+    if c_ivl and c_ivl in d.columns and c_ivl != "interval":
+        d = d.rename(columns={c_ivl: "interval"})
     if "interval" not in d.columns:
         d["interval"] = pd.NaT
-    # Canonicalize OPC column
-    if "opc" not in d.columns:
-        for alt in ("dials","calls","attempts","volume"):
-            if alt in d.columns:
-                d = d.rename(columns={alt: "opc"}); break
 
-    def pick_rate(df, name):
-        if not isinstance(df, pd.DataFrame) or df.empty:
+    if "opc" not in d.columns:
+        for alt in (
+            "opc",
+            "dials",
+            "calls",
+            "attempts",
+            "volume",
+            f"{which} opc",
+            f"{which}_opc",
+            f"{which} dials",
+            f"{which}_dials",
+            "actual opc",
+            "forecast opc",
+            "tactical opc",
+            "actual dials",
+            "forecast dials",
+            "tactical dials",
+            "actual volume",
+            "forecast volume",
+            "tactical volume",
+        ):
+            c = L.get(str(alt).lower())
+            if c and c in d.columns:
+                d = d.rename(columns={c: "opc"})
+                break
+
+    def _pick_rate(frame: pd.DataFrame, metric: str, aliases: tuple[str, ...]) -> pd.DataFrame | None:
+        if not isinstance(frame, pd.DataFrame) or frame.empty:
             return None
-        x = df.copy()
-        base_col = "date" if "date" in x.columns else ("week" if "week" in x.columns else None)
-        if base_col is not None:
-            def _norm(v):
+        x = frame.copy()
+        LX = {str(c).strip().lower(): c for c in x.columns}
+        c_date_x = LX.get("date") or LX.get("week") or LX.get("day")
+        if c_date_x:
+            def _normx(v):
                 t = _parse_date_any(v)
                 return pd.NaT if t is None else pd.Timestamp(t).normalize()
-            x["date"] = x[base_col].map(_norm)
-        # normalize column name
-        cols = {c.lower(): c for c in x.columns}
-        for c in (name, name.replace("_"," "), f"{name}%"):
-            lc = c.lower()
-            if lc in cols:
-                col = cols[lc]
-                x = x.rename(columns={col: name})
-                return x[["date", name]]
-        # If numeric unnamed column, try first non-date
-        for c in x.columns:
-            if c.lower() not in ("date","week"):
-                return x.rename(columns={c: name})[["date", name]]
+            x["date"] = x[c_date_x].map(_normx)
+        else:
+            x["date"] = pd.NaT
+        for alt in aliases:
+            c = LX.get(str(alt).lower())
+            if c and c in x.columns:
+                if c != metric:
+                    x = x.rename(columns={c: metric})
+                return x[["date", metric]]
         return None
 
-    cr = pick_rate(conn, "connect_rate")
-    rpcr = pick_rate(rpc_r, "rpc_rate")
+    cr = _pick_rate(
+        conn,
+        "connect_rate",
+        (
+            "connect_rate",
+            "connect rate",
+            "connect%",
+            "connect %",
+            f"{which} connect rate",
+            f"{which}_connect_rate",
+            "actual connect rate",
+            "forecast connect rate",
+            "tactical connect rate",
+        ),
+    )
+    rpcr = _pick_rate(
+        rpc_r,
+        "rpc_rate",
+        (
+            "rpc_rate",
+            "rpc rate",
+            "rpc%",
+            "rpc %",
+            f"{which} rpc rate",
+            f"{which}_rpc_rate",
+            "actual rpc rate",
+            "forecast rpc rate",
+            "tactical rpc rate",
+        ),
+    )
+    rpc_df = _pick_rate(
+        rpc,
+        "rpc",
+        (
+            "rpc",
+            "right party connects",
+            "right_party_connects",
+            f"{which} rpc",
+            f"{which}_rpc",
+            "actual rpc",
+            "forecast rpc",
+            "tactical rpc",
+        ),
+    )
 
-    if isinstance(rpc, pd.DataFrame) and not rpc.empty:
-        rr = rpc.copy()
-        base_col = "date" if "date" in rr.columns else ("week" if "week" in rr.columns else None)
-        if base_col is not None:
-            def _norm(v):
-                t = _parse_date_any(v)
-                return pd.NaT if t is None else pd.Timestamp(t).normalize()
-            rr["date"] = rr[base_col].map(_norm)
-        cols = {c.lower(): c for c in rr.columns}
-        c_rpc = cols.get("rpc") or cols.get("right party connects") or cols.get("right_party_connects")
-        if c_rpc and c_rpc != "rpc":
-            rr = rr.rename(columns={c_rpc: "rpc"})
-        d = d.merge(rr[["date","rpc"]], on="date", how="left")
-
+    if isinstance(rpc_df, pd.DataFrame):
+        d = d.merge(rpc_df, on="date", how="left")
     if isinstance(cr, pd.DataFrame):
         d = d.merge(cr, on="date", how="left")
     if isinstance(rpcr, pd.DataFrame):
@@ -1371,17 +1557,50 @@ def _assemble_ob(scope_key, which):
 
     if isinstance(aht, pd.DataFrame) and not aht.empty:
         ah = aht.copy()
-        base_col = "date" if "date" in ah.columns else ("week" if "week" in ah.columns else None)
-        if base_col is not None:
-            def _norm(v):
+        LA = {str(c).strip().lower(): c for c in ah.columns}
+        c_date2 = LA.get("date") or LA.get("week") or LA.get("day")
+        if c_date2:
+            def _norm2(v):
                 t = _parse_date_any(v)
                 return pd.NaT if t is None else pd.Timestamp(t).normalize()
-            ah["date"] = ah[base_col].map(_norm)
-        cols = {c.lower(): c for c in ah.columns}
-        c_aht = cols.get("aht_sec") or cols.get("talk_sec") or cols.get("avg_talk_sec") or cols.get("aht")
-        if c_aht and c_aht != "aht_sec":
-            ah = ah.rename(columns={c_aht: "aht_sec"})
-        join_keys = [k for k in ["date","interval"] if k in d.columns and k in ah.columns]
+            ah["date"] = ah[c_date2].map(_norm2)
+        else:
+            ah["date"] = pd.NaT
+
+        c_ivl2 = (
+            LA.get("interval")
+            or LA.get("time")
+            or LA.get("interval_start")
+            or LA.get("start_time")
+            or LA.get("interval start")
+            or LA.get("start time")
+            or LA.get("slot")
+        )
+        if c_ivl2 and c_ivl2 in ah.columns and c_ivl2 != "interval":
+            ah = ah.rename(columns={c_ivl2: "interval"})
+
+        if "aht_sec" not in ah.columns:
+            for alt in (
+                "aht_sec",
+                "aht",
+                "avg_talk_sec",
+                "talk_sec",
+                "aht_seconds",
+                f"{which} aht",
+                f"{which}_aht",
+                "actual aht",
+                "forecast aht",
+                "tactical aht",
+                "actual_aht",
+                "forecast_aht",
+                "tactical_aht",
+            ):
+                c = LA.get(str(alt).lower())
+                if c and c in ah.columns:
+                    ah = ah.rename(columns={c: "aht_sec"})
+                    break
+
+        join_keys = [k for k in ["date", "interval"] if k in d.columns and k in ah.columns]
         if not join_keys:
             join_keys = ["date"]
         d = d.merge(
@@ -1390,7 +1609,7 @@ def _assemble_ob(scope_key, which):
             how="left",
             suffixes=("", "_aht"),
         )
-        # Coalesce when OPC data already carried aht_sec (combined uploads)
+        # Coalesce when OPC data already carried aht_sec (combined uploads).
         if "aht_sec_aht" in d.columns:
             if "aht_sec" in d.columns:
                 if used_combo_for_opc:
@@ -1400,7 +1619,7 @@ def _assemble_ob(scope_key, which):
             else:
                 d["aht_sec"] = d["aht_sec_aht"]
             d = d.drop(columns=["aht_sec_aht"])
-        # Backward safety for older merge suffixes
+        # Backward safety for older merge suffixes.
         if "aht_sec" not in d.columns and ("aht_sec_x" in d.columns or "aht_sec_y" in d.columns):
             ax = d["aht_sec_x"] if "aht_sec_x" in d.columns else None
             ay = d["aht_sec_y"] if "aht_sec_y" in d.columns else None
@@ -1411,10 +1630,25 @@ def _assemble_ob(scope_key, which):
             elif ax is not None:
                 d["aht_sec"] = ax
             d = d.drop(columns=[c for c in ("aht_sec_x", "aht_sec_y") if c in d.columns])
-    # If still missing AHT, try to detect from the same upload before fallback to settings
+
+    # If still missing AHT, try to detect from the same upload before fallback to settings.
     if "aht_sec" not in d.columns or d["aht_sec"].isna().all():
         L2 = {str(c).strip().lower(): c for c in d.columns}
-        for alt in ("aht_sec","aht","avg_talk_sec","talk_sec"):
+        for alt in (
+            "aht_sec",
+            "aht",
+            "avg_talk_sec",
+            "talk_sec",
+            "aht_seconds",
+            f"{which} aht",
+            f"{which}_aht",
+            "actual aht",
+            "forecast aht",
+            "tactical aht",
+            "actual_aht",
+            "forecast_aht",
+            "tactical_aht",
+        ):
             c = L2.get(str(alt).lower())
             if c and c in d.columns:
                 if c != "aht_sec":
@@ -1426,16 +1660,15 @@ def _assemble_ob(scope_key, which):
     d["aht_sec"] = _to_seconds_series(d.get("aht_sec")).fillna(0.0)
 
     d["program"] = "Outbound"
-    # Ensure columns present
-    for c in ["connect_rate","rpc","rpc_rate","aht_sec"]:
+    for c in ["connect_rate", "rpc", "rpc_rate", "aht_sec"]:
         if c not in d.columns:
             d[c] = None
-    # Provide generic 'items' alias for downstream daily calculators
+    # Provide generic 'items' alias for downstream daily calculators.
     if "items" not in d.columns and "opc" in d.columns:
         d["items"] = d["opc"]
 
     d = _dedupe_timeseries(d)
-    return d[["date","interval","opc","connect_rate","rpc","rpc_rate","aht_sec","items","program"]]
+    return d[["date", "interval", "opc", "connect_rate", "rpc", "rpc_rate", "aht_sec", "items", "program"]]
 
 def _snap_to_monday(value: str | dt.date | None) -> str:
     if not value:
