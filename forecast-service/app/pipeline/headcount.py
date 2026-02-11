@@ -4,15 +4,17 @@ from pathlib import Path
 import re
 import json
 import hashlib
+import os
 from typing import Any, Optional
 
 import numpy as np
 import pandas as pd
-from psycopg.types.json import Json
+from psycopg2.extras import Json
 
 from app.pipeline.postgres import db_conn, has_dsn, ensure_headcount_schema
 
 CHANNEL_LIST = ["Voice", "Back Office", "Outbound", "Blended", "Chat", "MessageUs"]
+_EXPORTS_DIR_CACHE: Optional[Path] = None
 
 
 def _repo_root() -> Path:
@@ -20,9 +22,32 @@ def _repo_root() -> Path:
 
 
 def _exports_dir() -> Path:
-    outdir = _repo_root() / "exports"
-    outdir.mkdir(exist_ok=True)
-    return outdir
+    global _EXPORTS_DIR_CACHE
+    if _EXPORTS_DIR_CACHE is not None:
+        return _EXPORTS_DIR_CACHE
+
+    candidates: list[Path] = []
+    env_dir = str(os.getenv("CAP_EXPORTS_DIR") or "").strip()
+    if env_dir:
+        candidates.append(Path(env_dir))
+    candidates.append(_repo_root() / "exports")
+    candidates.append(Path("/tmp/cap_exports"))
+
+    for outdir in candidates:
+        try:
+            outdir.mkdir(parents=True, exist_ok=True)
+            probe = outdir / ".write_probe"
+            with open(probe, "a", encoding="utf-8"):
+                pass
+            probe.unlink(missing_ok=True)
+            _EXPORTS_DIR_CACHE = outdir
+            return outdir
+        except Exception:
+            continue
+
+    # Last-resort fallback. /tmp should be writable in containerized runs.
+    _EXPORTS_DIR_CACHE = Path("/tmp")
+    return _EXPORTS_DIR_CACHE
 
 
 def _headcount_path() -> Path:
@@ -121,29 +146,33 @@ def save_headcount(df: pd.DataFrame) -> dict:
                 )
     # Keep CSV in sync for legacy reads
     path = _headcount_path()
-    if path.exists():
-        try:
-            existing = pd.read_csv(path)
-        except Exception:
-            existing = pd.DataFrame()
-        if not existing.empty:
-            existing_brid_col = _brid_col(existing)
-            if brid_col and existing_brid_col:
-                new_brids = _normalize_brid_series(df[brid_col])
-                new_brids = set(new_brids[new_brids != ""])
-                if new_brids:
-                    existing_brids = _normalize_brid_series(existing[existing_brid_col])
-                    keep_mask = ~existing_brids.isin(new_brids)
-                    existing = existing.loc[keep_mask].copy()
-                combined = pd.concat([existing, df], ignore_index=True)
+    try:
+        if path.exists():
+            try:
+                existing = pd.read_csv(path)
+            except Exception:
+                existing = pd.DataFrame()
+            if not existing.empty:
+                existing_brid_col = _brid_col(existing)
+                if brid_col and existing_brid_col:
+                    new_brids = _normalize_brid_series(df[brid_col])
+                    new_brids = set(new_brids[new_brids != ""])
+                    if new_brids:
+                        existing_brids = _normalize_brid_series(existing[existing_brid_col])
+                        keep_mask = ~existing_brids.isin(new_brids)
+                        existing = existing.loc[keep_mask].copy()
+                    combined = pd.concat([existing, df], ignore_index=True)
+                else:
+                    combined = pd.concat([existing, df], ignore_index=True)
+                    combined = combined.drop_duplicates()
+                combined.to_csv(path, index=False)
             else:
-                combined = pd.concat([existing, df], ignore_index=True)
-                combined = combined.drop_duplicates()
-            combined.to_csv(path, index=False)
+                df.to_csv(path, index=False)
         else:
             df.to_csv(path, index=False)
-    else:
-        df.to_csv(path, index=False)
+    except PermissionError:
+        # Postgres write already succeeded; skip legacy CSV sync if filesystem is read-only.
+        pass
     return {"status": "saved", "rows": len(df.index), "path": str(path), "dataset_hash": dataset_hash}
 
 
