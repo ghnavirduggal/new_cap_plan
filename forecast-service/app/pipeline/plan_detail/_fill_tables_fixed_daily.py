@@ -340,6 +340,109 @@ def _fill_tables_fixed_daily(ptype, pid, _fw_cols_unused, _tick, whatif=None):
         if isinstance(src_calc, pd.DataFrame) and not src_calc.empty else {}
     )
 
+    # Daily shrinkage maps from daily uploads (no interval shrinkage feed).
+    # BO uses BO activity model; Voice/Chat/OB use voice-style superstate model.
+    bo_shr_g = pd.DataFrame()
+    bo_ooo_pct_map: dict[str, float] = {}
+    bo_ino_pct_map: dict[str, float] = {}
+    bo_ov_pct_map: dict[str, float] = {}
+    daily_actual_shrink_pct_map: dict[str, float] = {}
+    if is_bo:
+        try:
+            raw = load_df("shrinkage_raw_backoffice")
+        except Exception:
+            raw = None
+        try:
+            if isinstance(raw, pd.DataFrame) and not raw.empty:
+                from app.pipeline.shrinkage_store import summarize_shrinkage_bo
+                dsum = summarize_shrinkage_bo(raw)
+                ba  = str(plan.get("vertical") or "").strip().lower()
+                sba = str(plan.get("sub_ba") or "").strip().lower()
+                site = str(plan.get("site") or plan.get("location") or plan.get("country") or "").strip().lower()
+                if "Business Area" in dsum.columns:
+                    dsum = dsum[dsum["Business Area"].astype(str).str.strip().str.lower().eq(ba) | (ba == "")]
+                if "Sub Business Area" in dsum.columns:
+                    dsum = dsum[dsum["Sub Business Area"].astype(str).str.strip().str.lower().eq(sba) | (sba == "")]
+                if "Channel" in dsum.columns:
+                    dsum = dsum[dsum["Channel"].astype(str).str.strip().str.lower().isin(["back office", "bo", "backoffice"])]
+                if site and ("Site" in dsum.columns):
+                    dsum = dsum[dsum["Site"].astype(str).str.strip().str.lower().eq(site)]
+                dsum["date"] = pd.to_datetime(dsum["date"], errors="coerce").dt.date
+                keep = [c for c in ["OOO Hours", "In Office Hours", "Base Hours", "TTW Hours"] if c in dsum.columns]
+                bo_shr_g = dsum.groupby("date", as_index=False)[keep].sum() if keep else pd.DataFrame()
+                for _, r in (bo_shr_g.iterrows() if isinstance(bo_shr_g, pd.DataFrame) and not bo_shr_g.empty else []):
+                    try:
+                        d = str(pd.to_datetime(r["date"]).date())
+                    except Exception:
+                        continue
+                    base = float(r.get("Base Hours", 0.0) or 0.0)
+                    ttw  = float(r.get("TTW Hours",  0.0) or 0.0)
+                    ooo  = float(r.get("OOO Hours",  0.0) or 0.0)
+                    ino  = float(r.get("In Office Hours", 0.0) or 0.0)
+                    ooo_pct = (100.0 * ooo / base) if base > 0 else 0.0
+                    ino_pct = (100.0 * ino / ttw)  if ttw  > 0 else 0.0
+                    availability = (1.0 - (ooo_pct / 100.0)) * (1.0 - (ino_pct / 100.0))
+                    ov_pct = max(0.0, min(100.0, (1.0 - availability) * 100.0))
+                    bo_ooo_pct_map[d] = ooo_pct
+                    bo_ino_pct_map[d] = ino_pct
+                    bo_ov_pct_map[d]  = ov_pct
+                daily_actual_shrink_pct_map.update(bo_ov_pct_map)
+        except Exception:
+            bo_shr_g = pd.DataFrame()
+            bo_ooo_pct_map = {}
+            bo_ino_pct_map = {}
+            bo_ov_pct_map = {}
+    else:
+        try:
+            raw_voice = load_df("shrinkage_raw_voice")
+        except Exception:
+            raw_voice = None
+        try:
+            if isinstance(raw_voice, pd.DataFrame) and not raw_voice.empty:
+                from app.pipeline.shrinkage_store import summarize_shrinkage_voice
+                dsum = summarize_shrinkage_voice(raw_voice)
+                if isinstance(dsum, pd.DataFrame) and not dsum.empty:
+                    ba = str(plan.get("vertical") or "").strip().lower()
+                    sba = str(plan.get("sub_ba") or "").strip().lower()
+                    loc = str(plan.get("site") or plan.get("location") or plan.get("country") or "").strip().lower()
+                    if "Business Area" in dsum.columns:
+                        dsum = dsum[dsum["Business Area"].astype(str).str.strip().str.lower().eq(ba) | (ba == "")]
+                    if "Sub Business Area" in dsum.columns:
+                        dsum = dsum[dsum["Sub Business Area"].astype(str).str.strip().str.lower().eq(sba) | (sba == "")]
+                    if "Channel" in dsum.columns:
+                        channel_targets = {"voice"}
+                        ch_norm = str(ch_name or "").strip().lower()
+                        if ch_norm in {"chat", "messageus", "message us"}:
+                            channel_targets = {"chat", "messageus", "message us"}
+                        elif ch_norm in {"outbound", "ob", "out bound"}:
+                            channel_targets = {"outbound", "ob", "out bound"}
+                        ch_series = dsum["Channel"].astype(str).str.strip().str.lower()
+                        if ch_series.isin(channel_targets).any():
+                            dsum = dsum[ch_series.isin(channel_targets)]
+                    if loc and ("Country" in dsum.columns):
+                        loc_series = dsum["Country"].astype(str).str.strip().str.lower()
+                        if loc_series.eq(loc).any():
+                            dsum = dsum[loc_series.eq(loc)]
+                    if not dsum.empty:
+                        dsum = dsum.copy()
+                        dsum["date"] = pd.to_datetime(dsum.get("date"), errors="coerce").dt.date
+                        dsum = dsum.dropna(subset=["date"])
+                        dsum["OOO Hours"] = pd.to_numeric(dsum.get("OOO Hours"), errors="coerce").fillna(0.0)
+                        dsum["In Office Hours"] = pd.to_numeric(dsum.get("In Office Hours"), errors="coerce").fillna(0.0)
+                        dsum["Base Hours"] = pd.to_numeric(dsum.get("Base Hours"), errors="coerce").fillna(0.0)
+                        g = dsum.groupby("date", as_index=False)[["OOO Hours", "In Office Hours", "Base Hours"]].sum()
+                        for _, r in g.iterrows():
+                            d = str(pd.to_datetime(r["date"]).date())
+                            base = float(r.get("Base Hours", 0.0) or 0.0)
+                            ooo = float(r.get("OOO Hours", 0.0) or 0.0)
+                            ino = float(r.get("In Office Hours", 0.0) or 0.0)
+                            ooo_pct = (100.0 * ooo / base) if base > 0 else 0.0
+                            ino_pct = (100.0 * ino / base) if base > 0 else 0.0
+                            availability = (1.0 - (ooo_pct / 100.0)) * (1.0 - (ino_pct / 100.0))
+                            daily_actual_shrink_pct_map[d] = max(0.0, min(100.0, (1.0 - availability) * 100.0))
+        except Exception:
+            daily_actual_shrink_pct_map = {}
+
     # Apply actual shrinkage for current/past days on Actual FTE
     try:
         shr = load_df(f"plan_{pid}_shr")
@@ -360,13 +463,17 @@ def _fill_tables_fixed_daily(ptype, pid, _fw_cols_unused, _tick, whatif=None):
                 continue
             if dd > today:
                 continue
-            wk = (dd - pd.to_timedelta(dd.weekday(), unit="D")).date().isoformat()
-            s_act = _to_frac(act_row.get(wk)) if isinstance(act_row, dict) and (wk in act_row) else None
-            if s_act is None:
-                continue
-            s_plan = _to_frac(plan_row.get(wk)) if isinstance(plan_row, dict) and (wk in plan_row) else None
-            if s_plan is None:
+            if d in daily_actual_shrink_pct_map:
+                s_act = _to_frac(daily_actual_shrink_pct_map.get(d, 0.0))
                 s_plan = planned_base
+            else:
+                wk = (dd - pd.to_timedelta(dd.weekday(), unit="D")).date().isoformat()
+                s_act = _to_frac(act_row.get(wk)) if isinstance(act_row, dict) and (wk in act_row) else None
+                if s_act is None:
+                    continue
+                s_plan = _to_frac(plan_row.get(wk)) if isinstance(plan_row, dict) and (wk in plan_row) else None
+                if s_plan is None:
+                    s_plan = planned_base
             denom_old = max(0.01, 1.0 - float(s_plan))
             denom_new = max(0.01, 1.0 - float(s_act))
             m_fte_a[d] = float(m_fte_a.get(d, 0.0)) * (denom_old / denom_new)
@@ -598,7 +705,10 @@ def _fill_tables_fixed_daily(ptype, pid, _fw_cols_unused, _tick, whatif=None):
                 continue
             wk = (dd - pd.to_timedelta(dd.weekday(), unit="D")).date().isoformat()
             s_plan = _to_frac(plan_row.get(wk)) if isinstance(plan_row, dict) and (wk in plan_row) else _planned_shrink(_settings, ch)
-            s_act = _to_frac(act_row.get(wk)) if isinstance(act_row, dict) and (wk in act_row) else None
+            if d in daily_actual_shrink_pct_map:
+                s_act = _to_frac(daily_actual_shrink_pct_map.get(d, 0.0))
+            else:
+                s_act = _to_frac(act_row.get(wk)) if isinstance(act_row, dict) and (wk in act_row) else None
             s_act_use = s_act if (dd <= today and s_act is not None) else s_plan
             # Forecast row tooltip
             try:
@@ -773,67 +883,20 @@ def _fill_tables_fixed_daily(ptype, pid, _fw_cols_unused, _tick, whatif=None):
     shrink_rows = []
     if is_bo:
         try:
-            raw = load_df("shrinkage_raw_backoffice")
-        except Exception:
-            raw = None
-        try:
-            if isinstance(raw, pd.DataFrame) and not raw.empty:
-                from app.pipeline.shrinkage_store import summarize_shrinkage_bo
-                dsum = summarize_shrinkage_bo(raw)
-                # Filter to scope: BA, SBA, Channel=Back Office, optional Site
-                ba  = str(plan.get("vertical") or "").strip().lower()
-                sba = str(plan.get("sub_ba") or "").strip().lower()
-                site= str(plan.get("site") or plan.get("location") or plan.get("country") or "").strip().lower()
-                if "Business Area" in dsum.columns:
-                    dsum = dsum[dsum["Business Area"].astype(str).str.strip().str.lower().eq(ba) | (ba=="")]
-                if "Sub Business Area" in dsum.columns:
-                    dsum = dsum[dsum["Sub Business Area"].astype(str).str.strip().str.lower().eq(sba) | (sba=="")]
-                if "Channel" in dsum.columns:
-                    dsum = dsum[dsum["Channel"].astype(str).str.strip().str.lower().isin(["back office","bo","backoffice"])]
-                if site and ("Site" in dsum.columns):
-                    # lenient match
-                    dsum = dsum[dsum["Site"].astype(str).str.strip().str.lower().eq(site)]
-                # Aggregate per date
-                dsum["date"] = pd.to_datetime(dsum["date"], errors="coerce").dt.date
-                keep = [c for c in ["OOO Hours","In Office Hours","Base Hours","TTW Hours"] if c in dsum.columns]
-                g = dsum.groupby("date", as_index=False)[keep].sum() if keep else pd.DataFrame()
-                ooo_map = {}
-                ino_map = {}
-                ov_map  = {}
-                def _overall_pct_from_parts(ooo_pct: float, ino_pct: float) -> float:
-                    availability = (1.0 - (ooo_pct / 100.0)) * (1.0 - (ino_pct / 100.0))
-                    overall = (1.0 - availability) * 100.0
-                    return max(0.0, min(100.0, overall))
-                for _, r in (g.iterrows() if isinstance(g, pd.DataFrame) and not g.empty else []):
-                    try:
-                        d = str(pd.to_datetime(r["date"]).date())
-                    except Exception:
-                        continue
-                    base = float(r.get("Base Hours", 0.0) or 0.0)
-                    ttw  = float(r.get("TTW Hours",  0.0) or 0.0)
-                    ooo  = float(r.get("OOO Hours",  0.0) or 0.0)
-                    ino  = float(r.get("In Office Hours", 0.0) or 0.0)
-                    ooo_pct = (100.0 * ooo / base) if base > 0 else 0.0
-                    ino_pct = (100.0 * ino / ttw)  if ttw  > 0 else 0.0
-                    ooo_map[d] = ooo_pct
-                    ino_map[d] = ino_pct
-                    ov_map[d]  = _overall_pct_from_parts(ooo_pct, ino_pct)
-                # Build shrinkage rows for lower grid (hours and %)
+            if isinstance(bo_shr_g, pd.DataFrame) and not bo_shr_g.empty:
                 def row_map(label, m):
                     return {"metric": label, **{d: float(m.get(d, 0.0)) for d in day_ids}}
-                # Hours
-                hr_ooo = {str(k): float(v) for k, v in zip(g.get("date", []), g.get("OOO Hours", []))} if "OOO Hours" in g.columns else {}
-                hr_ino = {str(k): float(v) for k, v in zip(g.get("date", []), g.get("In Office Hours", []))} if "In Office Hours" in g.columns else {}
-                hr_base= {str(k): float(v) for k, v in zip(g.get("date", []), g.get("Base Hours", []))} if "Base Hours" in g.columns else {}
-                hr_ttw = {str(k): float(v) for k, v in zip(g.get("date", []), g.get("TTW Hours", []))} if "TTW Hours" in g.columns else {}
+                hr_ooo = {str(k): float(v) for k, v in zip(bo_shr_g.get("date", []), bo_shr_g.get("OOO Hours", []))} if "OOO Hours" in bo_shr_g.columns else {}
+                hr_ino = {str(k): float(v) for k, v in zip(bo_shr_g.get("date", []), bo_shr_g.get("In Office Hours", []))} if "In Office Hours" in bo_shr_g.columns else {}
+                hr_base = {str(k): float(v) for k, v in zip(bo_shr_g.get("date", []), bo_shr_g.get("Base Hours", []))} if "Base Hours" in bo_shr_g.columns else {}
+                hr_ttw = {str(k): float(v) for k, v in zip(bo_shr_g.get("date", []), bo_shr_g.get("TTW Hours", []))} if "TTW Hours" in bo_shr_g.columns else {}
                 if hr_ooo:  shrink_rows.append(row_map("OOO Shrink Hours (#)", hr_ooo))
                 if hr_ino:  shrink_rows.append(row_map("In-Office Shrink Hours (#)", hr_ino))
                 if hr_base: shrink_rows.append(row_map("Base Hours (#)", hr_base))
                 if hr_ttw:  shrink_rows.append(row_map("TTW Hours (#)", hr_ttw))
-                # Pct (numeric values, UI can format)
-                if ooo_map: shrink_rows.append(row_map("OOO Shrinkage %", ooo_map))
-                if ino_map: shrink_rows.append(row_map("In-Office Shrinkage %", ino_map))
-                if ov_map:  shrink_rows.append(row_map("Overall Shrinkage %", ov_map))
+                if bo_ooo_pct_map: shrink_rows.append(row_map("OOO Shrinkage %", bo_ooo_pct_map))
+                if bo_ino_pct_map: shrink_rows.append(row_map("In-Office Shrinkage %", bo_ino_pct_map))
+                if bo_ov_pct_map:  shrink_rows.append(row_map("Overall Shrinkage %", bo_ov_pct_map))
         except Exception:
             pass
 
