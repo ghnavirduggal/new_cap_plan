@@ -290,12 +290,12 @@ def _fill_tables_fixed_daily(ptype, pid, _fw_cols_unused, _tick, whatif=None):
         if isinstance(ivl_calc_f, pd.DataFrame) and not ivl_calc_f.empty:
             day_calc_f = _daily_from_intervals(ivl_calc_f, _settings, weight_col_ivl)
         elif isinstance(dfF, pd.DataFrame) and not dfF.empty and not ch.startswith("voice"):
-            day_calc_f = _bo_daily_calc(dfF, _settings)
+            day_calc_f = _bo_daily_calc(dfF, _settings, channel=ch)
     if day_calc_a.empty:
         if isinstance(ivl_calc_a, pd.DataFrame) and not ivl_calc_a.empty:
             day_calc_a = _daily_from_intervals(ivl_calc_a, _settings, weight_col_ivl)
         elif isinstance(dfA, pd.DataFrame) and not dfA.empty and not ch.startswith("voice"):
-            day_calc_a = _bo_daily_calc(dfA, _settings)
+            day_calc_a = _bo_daily_calc(dfA, _settings, channel=ch)
     if day_calc_t.empty:
         if isinstance(ivl_calc_t, pd.DataFrame) and not ivl_calc_t.empty:
             day_calc_t = _daily_from_intervals(ivl_calc_t, _settings, weight_col_ivl)
