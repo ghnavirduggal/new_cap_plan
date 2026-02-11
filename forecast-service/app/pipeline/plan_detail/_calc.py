@@ -2475,6 +2475,7 @@ def _fill_tables_fixed(ptype, pid, fw_cols, _tick, whatif=None, grain: str = 'we
     sc_hours_w, tt_worked_hours_w, nodow_base_hours_w = {}, {}, {}
     overtime_hours_w = {}
     bo_shrink_frac_daily = {}
+    voice_shrink_frac_daily = {}
 
     # Load saved planned shrink % (weekly) if present and prefer it for display planned pct
     saved_plan_pct_w = {}
@@ -2521,237 +2522,247 @@ def _fill_tables_fixed(ptype, pid, fw_cols, _tick, whatif=None, grain: str = 'we
             io_hours_w[k]   = io_hours_w.get(k, 0.0)   + float(r["ino"])
             base_hours_w[k] = base_hours_w.get(k, 0.0) + float(r["base"])
 
-    if True:
-        try:
-            vraw = load_df("shrinkage_raw_voice")
-        except Exception:
-            vraw = None
-        if isinstance(vraw, pd.DataFrame) and not vraw.empty:
-            v = vraw.copy()
-            L = {str(c).strip().lower(): c for c in v.columns}
-            c_date = L.get("date"); c_hours = L.get("hours") or L.get("duration_hours") or L.get("duration")
-            c_state= L.get("superstate") or L.get("state")
-            c_ba   = L.get("business area") or L.get("ba") or L.get("vertical")
-            c_sba  = L.get("sub business area") or L.get("sub_ba") or L.get("subba")
-            c_ch   = L.get("channel") or L.get("lob")
-            # Prefer matching the plan's specificity: site > location > country > city
-            c_site = L.get("site")
+    def _hours_series(values: pd.Series) -> pd.Series:
+        nums = pd.to_numeric(values, errors="coerce")
+        # Keep numeric uploads as-is (already normalized in most flows).
+        if nums.notna().any():
+            return nums.fillna(0.0).astype(float)
 
-            mask = pd.Series(True, index=v.index)
-            if c_ba and p.get("vertical"): mask &= v[c_ba].astype(str).str.strip().str.lower().eq(p["vertical"].strip().lower())
-            if c_sba and p.get("sub_ba"): mask &= v[c_sba].astype(str).str.strip().str.lower().eq(p["sub_ba"].strip().lower())
-            if c_ch: mask &= v[c_ch].astype(str).str.strip().str.lower().eq("voice")
-            if loc_first:
-                target = loc_first.strip().lower()
-                matched = False
-                for col in c_site:
-                    if col and col in v.columns:
-                        loc_l = v[col].astype(str).str.strip().str.lower()
-                        if loc_l.eq(target).any():
-                            mask &= loc_l.eq(target)
-                            matched = True
-                            break
+        def _parse_hhmm(v):
+            try:
+                s = str(v or "").strip()
+                if not s:
+                    return 0.0
+                if ":" in s:
+                    parts = [p.strip() for p in s.split(":")]
+                    if len(parts) == 2:
+                        hh = float(parts[0]); mm = float(parts[1])
+                        return max(0.0, hh + (mm / 60.0))
+                    if len(parts) >= 3:
+                        hh = float(parts[0]); mm = float(parts[1]); ss = float(parts[2])
+                        return max(0.0, hh + (mm / 60.0) + (ss / 3600.0))
+                return float(s)
+            except Exception:
+                return 0.0
 
-            v = v.loc[mask]
-            if c_date and c_state and c_hours and not v.empty:
-                pv = v.pivot_table(index=c_date, columns=c_state, values=c_hours, aggfunc="sum", fill_value=0.0)
-                # Robust Voice mapping: group superstates by patterns (return per-date Series)
-                import re as _vre
-                def _sum_cols_series(patterns):
-                    cols = []
-                    for _c in pv.columns:
-                        cl = str(_c).strip().lower()
-                        if any(_vre.search(pat, cl) for pat in patterns):
-                            cols.append(_c)
-                    if not cols:
-                        return pd.Series(0.0, index=pv.index)
-                    sub = pv[cols]
-                    try:
-                        sub = sub.apply(pd.to_numeric, errors="coerce").fillna(0.0)
-                    except Exception:
-                        pass
-                    if isinstance(sub, pd.Series):
-                        return pd.to_numeric(sub, errors="coerce").fillna(0.0)
-                    return sub.sum(axis=1)
-                base = _sum_cols_series([r"\bsc[_\s-]*included[_\s-]*time\b", r"\bsc[_\s-]*total[_\s-]*included[_\s-]*time\b", r"\bsc[_\s-]*available[_\s-]*time\b"]) 
-                ooo  = _sum_cols_series([r"\bsc[_\s-]*absence", r"\bsc[_\s-]*holiday", r"\bsc[_\s-]*a[_\s-]*sick", r"\bsc[_\s-]*sick"]) 
-                ino  = _sum_cols_series([r"\bsc[_\s-]*training", r"\bsc[_\s-]*break", r"\bsc[_\s-]*system[_\s-]*exception"]) 
-                idx_dates = pd.to_datetime(pv.index, errors="coerce")
-                _agg_weekly(idx_dates, ooo, ino, base)
+        return values.map(_parse_hhmm).astype(float)
 
-    if True:
-        try:
-            braw = load_df("shrinkage_raw_backoffice")
-        except Exception:
-            braw = None
+    def _channel_targets_for_source(raw_key: str, fallback_channel: str) -> set[str]:
+        rk = str(raw_key or "").strip().lower()
+        if rk.endswith("_chat"):
+            return {"chat", "messageus", "message us", ""}
+        if rk.endswith("_outbound"):
+            return {"outbound", "ob", "out bound", ""}
+        if rk.endswith("_backoffice"):
+            return {"back office", "backoffice", "bo", ""}
+        ch_low = str(fallback_channel or "").strip().lower()
+        if ch_low in ("chat", "messageus", "message us"):
+            return {"chat", "messageus", "message us", ""}
+        if ch_low in ("outbound", "ob", "out bound"):
+            return {"outbound", "ob", "out bound", ""}
+        if ch_low in ("back office", "bo", "backoffice"):
+            return {"back office", "backoffice", "bo", ""}
+        return {"voice", "inbound", "telephony", "volume", "calls", ""}
 
-        b = braw.copy() if isinstance(braw, pd.DataFrame) and not braw.empty else pd.DataFrame()
+    def _apply_scope_filters(df_raw: pd.DataFrame, raw_key: str) -> pd.DataFrame:
+        if not isinstance(df_raw, pd.DataFrame) or df_raw.empty:
+            return pd.DataFrame()
+        df = df_raw.copy()
+        L = {str(c).strip().lower(): c for c in df.columns}
+        c_ba = L.get("journey") or L.get("business area") or L.get("ba") or L.get("vertical")
+        c_sba = L.get("sub_business_area") or L.get("sub business area") or L.get("sub_ba") or L.get("subba")
+        c_ch = L.get("channel") or L.get("lob")
+        c_site = L.get("site"); c_location = L.get("location"); c_country = L.get("country"); c_city = L.get("city")
 
-        # Normalize column names
-        L = {str(c).strip().lower(): c for c in b.columns}
-        c_date = L.get("date")
-        c_act  = L.get("activity")
-        c_sec  = L.get("duration_seconds") or L.get("seconds") or L.get("duration")
-        c_ba   = L.get("journey") or L.get("business area") or L.get("ba") or L.get("vertical")
-        c_sba  = L.get("sub_business_area") or L.get("sub business area") or L.get("sub_ba") or L.get("subba")
-        c_ch   = L.get("channel")
-        c_site, c_location, c_country, c_city = L.get("site"), L.get("location"), L.get("country"), L.get("city")
-
-        # Apply filters
-        mask = pd.Series(True, index=b.index)
+        mask = pd.Series(True, index=df.index)
         if c_ba and p.get("vertical"):
-            mask &= b[c_ba].astype(str).str.strip().str.lower().eq(p["vertical"].strip().lower())
+            mask &= df[c_ba].astype(str).str.strip().str.lower().eq(str(p["vertical"]).strip().lower())
         if c_sba and p.get("sub_ba"):
-            mask &= b[c_sba].astype(str).str.strip().str.lower().eq(p["sub_ba"].strip().lower())
+            mask &= df[c_sba].astype(str).str.strip().str.lower().eq(str(p["sub_ba"]).strip().lower())
         if c_ch:
-            mask &= b[c_ch].astype(str).str.strip().str.lower().isin(["back office","bo","backoffice"])
+            ch_series = df[c_ch].astype(str).str.strip().str.lower()
+            targets = _channel_targets_for_source(raw_key, ch_first)
+            # Keep filter optional to handle uploads where channel tagging is missing/misaligned.
+            if ch_series.isin(targets).any():
+                mask &= ch_series.isin(targets)
         if loc_first:
             target = loc_first.strip().lower()
             for col in [c_site, c_location, c_country, c_city]:
-                if col and col in b.columns:
-                    loc_l = b[col].astype(str).str.strip().str.lower()
+                if col and col in df.columns:
+                    loc_l = df[col].astype(str).str.strip().str.lower()
                     if loc_l.eq(target).any():
                         mask &= loc_l.eq(target)
                         break
+        return df.loc[mask]
 
-        b = b.loc[mask]
+    raw_sources = (
+        "shrinkage_raw_voice",
+        "shrinkage_raw_backoffice",
+        "shrinkage_raw_chat",
+        "shrinkage_raw_outbound",
+    )
+    for raw_key in raw_sources:
+        try:
+            raw = load_df(raw_key)
+        except Exception:
+            raw = None
+        scoped = _apply_scope_filters(raw, raw_key)
+        if scoped.empty:
+            continue
+        L = {str(c).strip().lower(): c for c in scoped.columns}
+        c_date = L.get("date")
+        if not c_date:
+            continue
 
-        # Voice-like feed
+        # Superstate/Hours model (Voice-like uploads)
         c_state = L.get("superstate") or L.get("state")
-        c_hours = L.get("hours") or L.get("duration_hours")
-        if c_date and c_state and c_hours and not b.empty and (not c_act or b[c_act].isna().all()):
-            d2 = b[[c_date, c_state, c_hours]].copy()
-            d2[c_hours] = pd.to_numeric(d2[c_hours], errors="coerce").fillna(0.0)
-            d2[c_date]  = pd.to_datetime(d2[c_date], errors="coerce").dt.date
-            pv = d2.pivot_table(index=c_date, columns=c_state, values=c_hours, aggfunc="sum", fill_value=0.0)
-            def col(name): return pv[name] if name in pv.columns else 0.0
-            base = col("SC_INCLUDED_TIME")
-            ooo  = col("SC_ABSENCE_TOTAL") + col("SC_HOLIDAY") + col("SC_A_Sick_Long_Term")
-            ino  = col("SC_TRAINING_TOTAL") + col("SC_BREAKS") + col("SC_SYSTEM_EXCEPTION")
-            idx  = pd.to_datetime(pv.index, errors="coerce")
-            _agg_weekly(idx, ooo, ino, base)
+        c_hours = L.get("hours") or L.get("duration_hours") or L.get("duration")
+        if c_state and c_hours:
+            try:
+                d2 = scoped[[c_date, c_state, c_hours]].copy()
+                d2[c_date] = pd.to_datetime(d2[c_date], errors="coerce")
+                d2 = d2.dropna(subset=[c_date])
+                if not d2.empty:
+                    d2[c_hours] = _hours_series(d2[c_hours])
+                    pv = d2.pivot_table(index=c_date, columns=c_state, values=c_hours, aggfunc="sum", fill_value=0.0)
+                    import re as _vre
 
-        # Activity-based feed
-        elif c_date and c_act and c_sec and not b.empty:
-            d = b[[c_date, c_act, c_sec]].copy()
-            d[c_act]  = d[c_act].astype(str).str.strip().str.lower()
-            d[c_sec]  = pd.to_numeric(d[c_sec], errors="coerce").fillna(0.0)
+                    def _sum_cols_series(patterns):
+                        cols = []
+                        for _c in pv.columns:
+                            cl = str(_c).strip().lower()
+                            if any(_vre.search(pat, cl) for pat in patterns):
+                                cols.append(_c)
+                        if not cols:
+                            return pd.Series(0.0, index=pv.index)
+                        sub = pv[cols]
+                        try:
+                            sub = sub.apply(pd.to_numeric, errors="coerce").fillna(0.0)
+                        except Exception:
+                            pass
+                        if isinstance(sub, pd.Series):
+                            return pd.to_numeric(sub, errors="coerce").fillna(0.0)
+                        return sub.sum(axis=1)
+
+                    base = _sum_cols_series([r"\bsc[_\s-]*included[_\s-]*time\b", r"\bsc[_\s-]*total[_\s-]*included[_\s-]*time\b", r"\bsc[_\s-]*available[_\s-]*time\b"])
+                    ooo = _sum_cols_series([r"\bsc[_\s-]*absence", r"\bsc[_\s-]*holiday", r"\bsc[_\s-]*a[_\s-]*sick", r"\bsc[_\s-]*sick"])
+                    ino = _sum_cols_series([r"\bsc[_\s-]*training", r"\bsc[_\s-]*break", r"\bsc[_\s-]*system[_\s-]*exception"])
+                    idx_dates = pd.to_datetime(pv.index, errors="coerce")
+                    _agg_weekly(idx_dates, ooo, ino, base)
+
+                    d_daily = pd.DataFrame(
+                        {
+                            "date": pd.to_datetime(idx_dates, errors="coerce").date,
+                            "ooo": pd.to_numeric(ooo, errors="coerce"),
+                            "ino": pd.to_numeric(ino, errors="coerce"),
+                            "base": pd.to_numeric(base, errors="coerce"),
+                        }
+                    ).dropna(subset=["date"])
+                    for _, rr in d_daily.iterrows():
+                        k = str(rr["date"])
+                        b0 = float(rr.get("base", 0.0) or 0.0)
+                        if b0 <= 0:
+                            continue
+                        ooo_f = max(0.0, float(rr.get("ooo", 0.0) or 0.0) / b0)
+                        ino_f = max(0.0, float(rr.get("ino", 0.0) or 0.0) / b0)
+                        overall_f = max(0.0, min(0.99, 1.0 - ((1.0 - ooo_f) * (1.0 - ino_f))))
+                        voice_shrink_frac_daily[k] = overall_f
+                        bo_shrink_frac_daily.setdefault(k, overall_f)
+            except Exception:
+                pass
+
+        # Activity/Duration model (Back-office-like uploads)
+        c_act = L.get("activity")
+        c_sec = L.get("duration_seconds") or L.get("seconds")
+        c_hr = L.get("hours") or L.get("duration_hours")
+        val_col = c_sec or c_hr
+        if not c_act or not val_col:
+            continue
+        try:
+            # Avoid double-processing superstate-only payloads that carry an empty activity column.
+            if not scoped[c_act].astype(str).str.strip().replace("nan", "").replace("None", "").ne("").any():
+                continue
+            d = scoped[[c_date, c_act, val_col]].copy()
+            d[c_act] = d[c_act].astype(str).str.strip().str.lower()
             d[c_date] = pd.to_datetime(d[c_date], errors="coerce").dt.date
+            d = d.dropna(subset=[c_date])
+            if d.empty:
+                continue
+            if c_sec and val_col == c_sec:
+                d["_hours"] = pd.to_numeric(d[val_col], errors="coerce").fillna(0.0) / 3600.0
+            else:
+                d["_hours"] = _hours_series(d[val_col])
             act = d[c_act]
 
-            # Masks
-            m_div  = act.str.contains(r"\bdivert(?:ed)?\b", regex=True, na=False) | act.eq("diverted")
-            m_dow  = act.str.contains(r"\bdowntime\b|\bdown\b", regex=True, na=False) | act.eq("downtime")
-            m_sc   = act.str.contains(r"\bstaff\s*complement\b|\bstaffed\s*hours\b|\bsc[_\s-]*included[_\s-]*time\b|\bincluded\s*time\b", regex=True, na=False) | act.eq("staff complement")
-            m_fx   = act.str.contains(r"\bflexi?time\b|\bflex\b", regex=True, na=False) | act.eq("flexitime")
-            m_ot   = act.str.contains(r"\bover\s*time\b|\bovertime\b|\bot\b|\bot\s*hours\b|\bot\s*hrs\b", regex=True, na=False) | act.eq("overtime")
+            m_div = act.str.contains(r"\bdivert(?:ed)?\b", regex=True, na=False) | act.eq("diverted")
+            m_dow = act.str.contains(r"\bdowntime\b|\bdown\b", regex=True, na=False) | act.eq("downtime")
+            m_sc = act.str.contains(r"\bstaff\s*complement\b|\bstaffed\s*hours\b|\bsc[_\s-]*included[_\s-]*time\b|\bincluded\s*time\b", regex=True, na=False) | act.eq("staff complement")
+            m_fx = act.str.contains(r"\bflexi?time\b|\bflex\b", regex=True, na=False) | act.eq("flexitime")
+            m_ot = act.str.contains(r"\bover\s*time\b|\bovertime\b|\bot\b|\bot\s*hours\b|\bot\s*hrs\b", regex=True, na=False) | act.eq("overtime")
             m_lend = act.str.contains(r"\blend\s*staff\b", regex=True, na=False) | act.eq("lend staff")
             m_borr = act.str.contains(r"\bborrow(?:ed)?\b|\bborrow\s*staff\b", regex=True, na=False) | act.eq("borrowed staff")
 
-            # Aggregate seconds
-            sec_div, sec_dow, sec_sc = d.loc[m_div, c_sec].groupby(d[c_date]).sum(), d.loc[m_dow, c_sec].groupby(d[c_date]).sum(), d.loc[m_sc, c_sec].groupby(d[c_date]).sum()
-            sec_fx, sec_ot = d.loc[m_fx, c_sec].groupby(d[c_date]).sum(), d.loc[m_ot, c_sec].groupby(d[c_date]).sum()
-            sec_lend, sec_borr = d.loc[m_lend, c_sec].groupby(d[c_date]).sum(), d.loc[m_borr, c_sec].groupby(d[c_date]).sum()
+            def _by_day(mask):
+                return d.loc[mask].groupby(c_date, as_index=True)["_hours"].sum()
 
-            idx = pd.to_datetime(pd.Index(set(sec_div.index) | set(sec_dow.index) | set(sec_sc.index) |
-                                        set(sec_fx.index)  | set(sec_ot.index)  | set(sec_lend.index) | set(sec_borr.index)),
-                                    errors="coerce").sort_values()
-            def get(s): return s.reindex(idx, fill_value=0.0).astype(float)
+            h_div = _by_day(m_div)
+            h_dow = _by_day(m_dow)
+            h_sc = _by_day(m_sc)
+            h_fx = _by_day(m_fx)
+            h_ot = _by_day(m_ot)
+            h_len = _by_day(m_lend)
+            h_bor = _by_day(m_borr)
 
-            # Hours
-            h_div, h_dow, h_sc = get(sec_div)/3600.0, get(sec_dow)/3600.0, get(sec_sc)/3600.0
-            h_fx, h_ot, h_len, h_bor = get(sec_fx)/3600.0, get(sec_ot)/3600.0, get(sec_lend)/3600.0, get(sec_borr)/3600.0
+            idx = pd.to_datetime(
+                pd.Index(set(h_div.index) | set(h_dow.index) | set(h_sc.index) | set(h_fx.index) | set(h_ot.index) | set(h_len.index) | set(h_bor.index)),
+                errors="coerce",
+            ).sort_values()
+            if len(idx) == 0:
+                continue
 
-            # Denominators
-            ooo_hours = h_dow
-            ino_hours = h_div
-            sc_hours  = h_sc  # ✅ SC denominator is direct sum of Staff Complement
-            ttw_hours = (h_sc - h_dow + h_fx + h_ot + h_bor - h_len).clip(lower=0)
+            def _get(s):
+                return s.reindex(idx.date, fill_value=0.0).astype(float).set_axis(idx)
 
-            # Weekly aggregation
+            h_div_i, h_dow_i, h_sc_i = _get(h_div), _get(h_dow), _get(h_sc)
+            h_fx_i, h_ot_i, h_len_i, h_bor_i = _get(h_fx), _get(h_ot), _get(h_len), _get(h_bor)
+
+            ooo_hours = h_dow_i
+            ino_hours = h_div_i
+            sc_hours = h_sc_i
+            ttw_hours = (h_sc_i - h_dow_i + h_fx_i + h_ot_i + h_bor_i - h_len_i).clip(lower=0)
+
             _agg_weekly(idx, ooo_hours, ino_hours, sc_hours)
 
-            wk = _week_key(ttw_hours.index)
-            g_ttw = pd.DataFrame({"week": wk, "ttw": ttw_hours.values}).groupby("week", as_index=False).sum()
+            wk_ttw = _week_key(ttw_hours.index)
+            g_ttw = pd.DataFrame({"week": wk_ttw, "ttw": ttw_hours.values}).groupby("week", as_index=False).sum()
             for _, r in g_ttw.iterrows():
                 k = str(r["week"])
                 tt_worked_hours_w[k] = tt_worked_hours_w.get(k, 0.0) + float(r["ttw"])
 
-            wk = _week_key(sc_hours.index)
-            g_sc = pd.DataFrame({"week": wk, "sc": sc_hours}).groupby("week", as_index=False).sum()
+            wk_sc = _week_key(sc_hours.index)
+            g_sc = pd.DataFrame({"week": wk_sc, "sc": sc_hours.values}).groupby("week", as_index=False).sum()
             for _, r in g_sc.iterrows():
                 k = str(r["week"])
                 sc_hours_w[k] = sc_hours_w.get(k, 0.0) + float(r["sc"])
 
-            # Daily shrink fractions (use daily denominators, not weekly maps)
-            for t, ooo_h, ino_h, sc_h, ttw_h in zip(idx, ooo_hours, ino_hours, sc_hours, ttw_hours):
+            for t, ooo_h, ino_h, sc_h, ttw_h in zip(idx, ooo_hours.values, ino_hours.values, sc_hours.values, ttw_hours.values):
                 k = str(pd.to_datetime(t).date())
                 scv = float(sc_h) if pd.notna(sc_h) else 0.0
                 ttw = float(ttw_h) if pd.notna(ttw_h) else 0.0
                 ooo_f = (float(ooo_h) / scv) if scv > 0 else 0.0
                 ino_f = (float(ino_h) / ttw) if ttw > 0 else 0.0
-                overall_f = 1.0 - ((1.0 - ooo_f) * (1.0 - ino_f))
-                bo_shrink_frac_daily[k] = max(0.0, min(0.99, overall_f))
+                overall_f = max(0.0, min(0.99, 1.0 - ((1.0 - ooo_f) * (1.0 - ino_f))))
+                bo_shrink_frac_daily[k] = overall_f
+                voice_shrink_frac_daily.setdefault(k, overall_f)
 
-            # Weekly overtime
-            try:
-                wk = _week_key(sec_ot.index)
-                g_ot = pd.DataFrame({"week": wk, "ot": (sec_ot.astype(float) / 3600.0)}).groupby("week", as_index=False).sum()
-                for _, r2 in g_ot.iterrows():
-                    k2 = str(r2["week"])
-                    overtime_hours_w[k2] = overtime_hours_w.get(k2, 0.0) + float(r2["ot"])
-            except Exception:
-                pass
-            # Build shrink table (+ What-If ? onto Overall % display)
-            _debug_shr = bool(os.environ.get("CAP_DEBUG_SHRINK"))
-            for w in week_ids:
-                if w not in shr.columns:
-                    shr[w] = np.nan
-                shr[w] = pd.to_numeric(shr[w], errors="coerce").astype("float64")
-                base = float(base_hours_w.get(w, 0.0))
-                ooo  = float(ooo_hours_w.get(w, 0.0))
-                ino  = float(io_hours_w.get(w, 0.0))
-                ch_key_local = str(ch_first or '').strip().lower()
-                sc_base = float(sc_hours_w.get(w, 0.0))
-                ttwh    = float(tt_worked_hours_w.get(w, 0.0))
-                nb_base = float(nodow_base_hours_w.get(w, 0.0)) if 'nodow_base_hours_w' in locals() else base
-                # Prefer BO denominators automatically when present; also allow fuzzy channel
-                use_bo_denoms = (sc_base > 0.0 or ttwh > 0.0) or (ch_key_local in ("back office", "bo") or ("back office" in ch_key_local))
-                if use_bo_denoms:
-                    ooo_pct = (100.0 * ooo / sc_base) if sc_base > 0 else 0.0
-                    ino_pct = (100.0 * ino / ttwh)    if ttwh    > 0 else 0.0
-                    ov_pct  = _overall_pct_from_parts(ooo_pct, ino_pct)
-                else:
-                    # Voice and other non-BO: fall back to base (SC_INCLUDED_TIME) as denominator
-                    ooo_pct = (100.0 * ooo / base) if base > 0 else 0.0
-                    ino_pct = (100.0 * ino / base) if base > 0 else 0.0
-                    ov_pct  = _overall_pct_from_parts(ooo_pct, ino_pct)
-
-                # What-If: add shrink_delta to overall % display (clamped 0..100)
-                if _wf_active(w) and shrink_delta:
-                    ov_pct = min(100.0, max(0.0, ov_pct + shrink_delta))
-
-                planned_pct = float(saved_plan_pct_w.get(w, 100.0 * planned_shrink_fraction))
-                # What-If: also reflect shrink delta onto Planned Shrinkage % for display
-                try:
-                    if _wf_active(w) and shrink_delta:
-                        planned_pct = min(100.0, max(0.0, planned_pct + shrink_delta))
-                except Exception:
-                    pass
-                variance_pp = ov_pct - planned_pct
-
-                shr.loc[shr["metric"] == "OOO Shrink Hours (#)",       w] = ooo
-                shr.loc[shr["metric"] == "In-Office Shrink Hours (#)", w] = ino
-                shr.loc[shr["metric"] == "OOO Shrinkage %",            w] = ooo_pct
-                shr.loc[shr["metric"] == "In-Office Shrinkage %",       w] = ino_pct
-                shr.loc[shr["metric"] == "Overall Shrinkage %",       w] = ov_pct
-                shr.loc[shr["metric"] == "Planned Shrinkage %",       w] = planned_pct
-                shr.loc[shr["metric"] == "Variance vs Planned",  w] = variance_pp
-                if _debug_shr:
-                    try:
-                        print(f"[SHR][week={w}] ch={ch_key_local} OOO={ooo:.2f} SC={sc_base:.2f} TTW={ttwh:.2f} base={base:.2f} branch={'bo' if use_bo_denoms else 'non-bo'} OOO%={ooo_pct:.2f} INO%={ino_pct:.2f} OV%={ov_pct:.2f}")
-                    except Exception:
-                        pass
+            # Weekly overtime from activity feed
+            wk_ot = _week_key(idx)
+            g_ot = pd.DataFrame({"week": wk_ot, "ot": h_ot_i.values}).groupby("week", as_index=False).sum()
+            for _, r2 in g_ot.iterrows():
+                k2 = str(r2["week"])
+                overtime_hours_w[k2] = overtime_hours_w.get(k2, 0.0) + float(r2["ot"])
+        except Exception:
+            pass
 
     # Ensure shrinkage table is populated even when only Voice raw exists (no BO activity feed)
     try:
@@ -2800,14 +2811,29 @@ def _fill_tables_fixed(ptype, pid, fw_cols, _tick, whatif=None, grain: str = 'we
     except Exception:
         pass
 
-    # --- Adjust BO daily FTE using actual shrink when available; else planned ---
-    def _adjust_bo_fte_daily(df: pd.DataFrame, use_actual: bool) -> pd.DataFrame:
+    # --- Adjust daily FTE with daily actual shrinkage (all channels use daily uploads) ---
+    def _shrink_plan_for_channel(ch_low: str) -> float:
+        if ch_low in ("back office", "bo", "backoffice"):
+            return _to_frac(settings.get("bo_shrinkage_pct", settings.get("shrinkage_pct", 0.30)) or 0.30)
+        if ch_low in ("chat", "messageus", "message us"):
+            return _to_frac(settings.get("chat_shrinkage_pct", settings.get("shrinkage_pct", 0.30)) or 0.30)
+        if ch_low in ("outbound", "ob", "out bound"):
+            return _to_frac(settings.get("ob_shrinkage_pct", settings.get("shrinkage_pct", 0.30)) or 0.30)
+        return _to_frac(settings.get("voice_shrinkage_pct", settings.get("shrinkage_pct", 0.30)) or 0.30)
+
+    def _adjust_channel_fte_daily(
+        df: pd.DataFrame,
+        *,
+        fte_col: str,
+        s_plan: float,
+        daily_actual_map: dict[str, float],
+        use_actual: bool,
+    ) -> pd.DataFrame:
         if not isinstance(df, pd.DataFrame) or df.empty:
             return df
         d = df.copy()
-        if "bo_fte" not in d.columns or "date" not in d.columns:
+        if fte_col not in d.columns or "date" not in d.columns:
             return d
-        s_plan = planned_shrink_fraction if 'planned_shrink_fraction' in locals() else 0.0
         try:
             s_plan = float(s_plan)
             if s_plan > 1.0:
@@ -2815,30 +2841,47 @@ def _fill_tables_fixed(ptype, pid, fw_cols, _tick, whatif=None, grain: str = 'we
         except Exception:
             s_plan = 0.0
         d["date"] = pd.to_datetime(d["date"], errors="coerce").dt.date.astype(str)
-        old_bo = pd.to_numeric(d["bo_fte"], errors="coerce").fillna(0.0)
-        s_target = d["date"].map(lambda x: bo_shrink_frac_daily.get(x, s_plan) if use_actual else s_plan)
-        try:
-            s_target = pd.to_numeric(s_target, errors="coerce").fillna(s_plan)
-        except Exception:
-            s_target = pd.Series([s_plan]*len(d))
+        old_fte = pd.to_numeric(d[fte_col], errors="coerce").fillna(0.0)
+        if use_actual and isinstance(daily_actual_map, dict) and daily_actual_map:
+            s_target = d["date"].map(lambda x: daily_actual_map.get(x, s_plan))
+        else:
+            s_target = pd.Series([s_plan] * len(d), index=d.index)
+        s_target = pd.to_numeric(s_target, errors="coerce").fillna(s_plan)
         denom_old = np.maximum(0.01, 1.0 - float(s_plan))
         denom_new = np.maximum(0.01, 1.0 - s_target.astype(float))
         factor = denom_old / denom_new
-        new_bo = old_bo * factor
-        d["bo_fte"] = new_bo
-        # If total present, adjust by delta
+        new_fte = old_fte * factor
+        d[fte_col] = new_fte
         if "total_req_fte" in d.columns:
             tot = pd.to_numeric(d["total_req_fte"], errors="coerce").fillna(0.0)
-            d["total_req_fte"] = tot + (new_bo - old_bo)
+            d["total_req_fte"] = tot + (new_fte - old_fte)
         return d
 
+    daily_actual_adjusted = False
     try:
-        req_daily_actual   = _adjust_bo_fte_daily(req_daily_actual,   use_actual=True)
-        req_daily_forecast = _adjust_bo_fte_daily(req_daily_forecast, use_actual=False)
-        if isinstance(req_daily_tactical, pd.DataFrame) and not req_daily_tactical.empty:
-            req_daily_tactical = _adjust_bo_fte_daily(req_daily_tactical, use_actual=False)
-        if isinstance(req_daily_budgeted, pd.DataFrame) and not req_daily_budgeted.empty:
-            req_daily_budgeted = _adjust_bo_fte_daily(req_daily_budgeted, use_actual=False)
+        ch_low = str(ch_first or "").strip().lower()
+        if ch_low in ("back office", "bo", "backoffice"):
+            fte_col = "bo_fte"
+            day_map = bo_shrink_frac_daily
+        elif ch_low in ("chat", "messageus", "message us"):
+            fte_col = "chat_fte"
+            day_map = voice_shrink_frac_daily
+        elif ch_low in ("outbound", "ob", "out bound"):
+            fte_col = "ob_fte"
+            day_map = voice_shrink_frac_daily
+        else:
+            fte_col = "voice_fte"
+            day_map = voice_shrink_frac_daily
+
+        s_plan = _shrink_plan_for_channel(ch_low)
+        req_daily_actual = _adjust_channel_fte_daily(
+            req_daily_actual,
+            fte_col=fte_col,
+            s_plan=s_plan,
+            daily_actual_map=day_map,
+            use_actual=True,
+        )
+        daily_actual_adjusted = bool(isinstance(day_map, dict) and len(day_map) > 0)
     except Exception:
         pass
 
@@ -2901,11 +2944,11 @@ def _fill_tables_fixed(ptype, pid, fw_cols, _tick, whatif=None, grain: str = 'we
                     pass
 
     # Compute Actual-shrinkage-adjusted weekly requirement just before upper table.
-    # Back Office is already adjusted at daily granularity above; avoid double-adjusting.
+    # If daily actual shrink adjustment already ran from daily uploads, do not re-apply at week level.
     req_w_actual_adj = dict(req_w_actual)
     try:
         ch_key_local = str(ch_first or "").strip().lower()
-        if ch_key_local not in ("back office", "bo", "backoffice"):
+        if (not daily_actual_adjusted) and ch_key_local not in ("back office", "bo", "backoffice"):
             def _to_frac(val):
                 try:
                     v = float(val)
