@@ -604,7 +604,7 @@ def _ob_interval_calc(ivl_df: pd.DataFrame, settings: dict, ivl_min: int) -> pd.
     return out.sort_values(["date","interval","program"]).reset_index(drop=True)
 
 # Back Office — DAILY calculator (TAT or Erlang per settings)
-def _bo_daily_calc(bo_df: pd.DataFrame, settings: dict) -> pd.DataFrame:
+def _bo_daily_calc(bo_df: pd.DataFrame, settings: dict, channel: str | None = None) -> pd.DataFrame:
     """
     Expect DAILY columns: date, program, items (or volume), aht_sec OR sut_sec
     Returns per-day: items, aht/sut, fte_req, phc (if roster present), sl% (coverage proxy or erlang if chosen).
@@ -613,10 +613,19 @@ def _bo_daily_calc(bo_df: pd.DataFrame, settings: dict) -> pd.DataFrame:
         return pd.DataFrame(columns=["date","program","items","aht_sec","fte_req","phc","service_level"])
     df = bo_df.copy()
     df["date"] = pd.to_datetime(df["date"]).dt.date
-    hrs = _safe_float(settings.get("hours_per_fte", 8.0), 8.0)
+    ch = str(channel or "").strip().lower()
+    is_bo = ch in ("back office", "bo", "backoffice")
+    hrs = _safe_float(
+        settings.get("bo_hours_per_day", settings.get("hours_per_fte", 8.0)) if is_bo else settings.get("hours_per_fte", 8.0),
+        8.0,
+    )
     shrink = _to_frac(settings.get("bo_shrinkage_pct", settings.get("shrinkage_pct", 0.30)))
     util   = _safe_float(settings.get("util_bo", 0.85), 0.85)
-    denom_tat = max(1e-6, hrs*3600.0 * (1.0 - shrink) * util)
+    # BO linear FTE formula includes utilization in denominator.
+    if is_bo:
+        denom_tat = max(1e-6, hrs * 3600.0 * (1.0 - shrink) * util)
+    else:
+        denom_tat = max(1e-6, hrs * 3600.0 * (1.0 - shrink) * util)
 
     model = str(settings.get("bo_capacity_model", "tat")).lower()
     target = _safe_float(settings.get("target_sl", 0.80), 0.80)
@@ -634,7 +643,10 @@ def _bo_daily_calc(bo_df: pd.DataFrame, settings: dict) -> pd.DataFrame:
             slp = None  # proxy handled in views if needed
         else:
             N, sl, occ, _asa = min_agents(items, aht, cov_min, target, T_sec, occ_cap)
-            denom_erlang = max(1e-6, hrs*3600.0 * (1.0 - _to_frac(settings.get("shrinkage_pct", 0.30))))
+            erlang_shrink = _to_frac(
+                settings.get("bo_shrinkage_pct", settings.get("shrinkage_pct", 0.30)) if is_bo else settings.get("shrinkage_pct", 0.30)
+            )
+            denom_erlang = max(1e-6, hrs * 3600.0 * (1.0 - erlang_shrink))
             fte = (N * cov_min * 60.0) / denom_erlang
             phc = (N * cov_min * 60.0) / max(1e-6, aht) if aht > 0 else 0.0
             slp = sl*100.0
@@ -825,11 +837,11 @@ def consolidated_calcs(
     if not chat_ivl_f.empty:
         res["chat_day_f"] = _daily_from_intervals(chat_ivl_f, settings, "items")
     else:
-        res["chat_day_f"] = _bo_daily_calc(cF, settings) if _chat_any(cF) else pd.DataFrame()
+        res["chat_day_f"] = _bo_daily_calc(cF, settings, channel="chat") if _chat_any(cF) else pd.DataFrame()
     if not chat_ivl_a.empty:
         res["chat_day_a"] = _daily_from_intervals(chat_ivl_a, settings, "items")
     else:
-        res["chat_day_a"] = _bo_daily_calc(cA, settings) if _chat_any(cA) else pd.DataFrame()
+        res["chat_day_a"] = _bo_daily_calc(cA, settings, channel="chat") if _chat_any(cA) else pd.DataFrame()
     # Combined/legacy
     res["chat_ivl"] = chat_ivl_f
     res["chat_day"] = res.get("chat_day_f", pd.DataFrame())
@@ -846,11 +858,11 @@ def consolidated_calcs(
     if not ob_ivl_f.empty:
         res["ob_day_f"] = _daily_from_intervals(ob_ivl_f, settings, "items")
     else:
-        res["ob_day_f"] = _bo_daily_calc(oF, settings) if isinstance(oF, pd.DataFrame) else pd.DataFrame()
+        res["ob_day_f"] = _bo_daily_calc(oF, settings, channel="outbound") if isinstance(oF, pd.DataFrame) else pd.DataFrame()
     if not ob_ivl_a.empty:
         res["ob_day_a"] = _daily_from_intervals(ob_ivl_a, settings, "items")
     else:
-        res["ob_day_a"] = _bo_daily_calc(oA, settings) if isinstance(oA, pd.DataFrame) else pd.DataFrame()
+        res["ob_day_a"] = _bo_daily_calc(oA, settings, channel="outbound") if isinstance(oA, pd.DataFrame) else pd.DataFrame()
     # Combined/legacy
     res["ob_ivl"] = ob_ivl_f
     res["ob_day"] = res.get("ob_day_f", pd.DataFrame())
@@ -858,9 +870,9 @@ def consolidated_calcs(
     res["ob_month"] = _monthly_from_daily(res["ob_day"]) if isinstance(res.get("ob_day"), pd.DataFrame) else pd.DataFrame()
 
     # Back Office: daily-only base (TAT/Erlang), per-which
-    res["bo_day_f"] = _bo_daily_calc(bF, settings) if isinstance(bF, pd.DataFrame) else pd.DataFrame()
-    res["bo_day_a"] = _bo_daily_calc(bA, settings) if isinstance(bA, pd.DataFrame) else pd.DataFrame()
-    res["bo_day_t"] = _bo_daily_calc(bT, settings) if isinstance(bT, pd.DataFrame) else pd.DataFrame()
+    res["bo_day_f"] = _bo_daily_calc(bF, settings, channel="back office") if isinstance(bF, pd.DataFrame) else pd.DataFrame()
+    res["bo_day_a"] = _bo_daily_calc(bA, settings, channel="back office") if isinstance(bA, pd.DataFrame) else pd.DataFrame()
+    res["bo_day_t"] = _bo_daily_calc(bT, settings, channel="back office") if isinstance(bT, pd.DataFrame) else pd.DataFrame()
     res["bo_day"] = res.get("bo_day_f", pd.DataFrame())
     res["bo_week"] = _weekly_from_daily(res["bo_day"]) if isinstance(res.get("bo_day"), pd.DataFrame) else pd.DataFrame()
     res["bo_month"] = _monthly_from_daily(res["bo_day"]) if isinstance(res.get("bo_day"), pd.DataFrame) else pd.DataFrame()
