@@ -926,21 +926,16 @@ def _assemble_voice(scope_key, which):
                 return pd.NaT if t is None else pd.Timestamp(t).normalize()
             ah["date"] = ah[c_date2].map(_norm2)
         # Canonicalize AHT column name(s)
-        if "aht_sec" not in ah.columns:
-            # Tolerant synonyms for uploaded column headers, including which-specific headers
-            cand_names = (
-                "aht_sec","aht","avg_aht","aht_seconds","aht (sec)",
-                "forecast aht","forecast_aht","forecast aht (sec)",
-                "tactical aht","tactical_aht","actual aht","actual_aht",
-                "avg_talk_sec","talk_sec"
-            )
-            picked = None
-            for nm in cand_names:
-                c = LA.get(str(nm).lower())
-                if c:
-                    picked = c; break
-            if picked and picked != "aht_sec":
-                ah = ah.rename(columns={picked: "aht_sec"})
+        ah = _coalesce_seconds_cols(
+            ah,
+            "aht_sec",
+            (
+                "aht_sec", "aht", "avg_aht", "aht_seconds", "aht (sec)",
+                "forecast aht", "forecast_aht", "forecast aht (sec)",
+                "tactical aht", "tactical_aht", "actual aht", "actual_aht",
+                "avg_talk_sec", "talk_sec",
+            ),
+        )
         # Pick best join keys available
         join_keys = [k for k in ["date","interval"] if k in df.columns and k in ah.columns]
         if not join_keys:  # fall back to date-only
@@ -975,6 +970,15 @@ def _assemble_voice(scope_key, which):
             df = df.drop(columns=[c for c in ("aht_sec_x", "aht_sec_y") if c in df.columns])
 
     # If still missing AHT, try to detect in the same upload, else fallback to settings defaults
+    df = _coalesce_seconds_cols(
+        df,
+        "aht_sec",
+        (
+            "aht_sec", "aht", "avg_aht", "aht (sec)", "aht_seconds",
+            f"{which} aht", f"{which}_aht", "actual aht", "forecast aht", "tactical aht",
+            "avg_talk_sec", "talk_sec",
+        ),
+    )
     if "aht_sec" not in df.columns or df["aht_sec"].isna().all():
         L2 = {str(c).strip().lower(): c for c in df.columns}
         for nm in ("aht_sec","aht","avg_aht","aht (sec)","aht_seconds",
@@ -1099,8 +1103,11 @@ def _assemble_bo(scope_key, which):
             su["date"] = su[c_date2].map(_norm2)
         else:
             su["date"] = pd.NaT
-        if "aht_sec" not in su.columns:
-            for alt in (
+        su = _coalesce_seconds_cols(
+            su,
+            "aht_sec",
+            (
+                "aht_sec",
                 "sut_sec",
                 "sut",
                 "aht",
@@ -1116,11 +1123,8 @@ def _assemble_bo(scope_key, which):
                 "actual_sut",
                 "forecast_sut",
                 "tactical_sut",
-            ):
-                c = LS.get(str(alt).lower())
-                if c and c in su.columns:
-                    su = su.rename(columns={c: "aht_sec"})
-                    break
+            ),
+        )
         df = df.merge(su[["date","aht_sec"]], on="date", how="left", suffixes=("", "_sut"))
         # Prefer combined (volume) SUT when it exists; only fill gaps from SUT series.
         if "aht_sec_sut" in df.columns:
@@ -1145,6 +1149,29 @@ def _assemble_bo(scope_key, which):
             df = df.drop(columns=[c for c in ("aht_sec_x", "aht_sec_y") if c in df.columns])
 
     # If still missing SUT, try to detect in the same upload before fallback to settings
+    df = _coalesce_seconds_cols(
+        df,
+        "aht_sec",
+        (
+            "aht_sec",
+            "sut_sec",
+            "sut",
+            "avg_sut",
+            "aht",
+            "aht_seconds",
+            "sut_seconds",
+            f"{which} sut",
+            f"{which}_sut",
+            f"{which} sut (sec)",
+            f"{which}_sut_sec",
+            "actual sut",
+            "forecast sut",
+            "tactical sut",
+            "actual_sut",
+            "forecast_sut",
+            "tactical_sut",
+        ),
+    )
     if "aht_sec" not in df.columns or df["aht_sec"].isna().all():
         L2 = {str(c).strip().lower(): c for c in df.columns}
         for nm in (
@@ -1292,8 +1319,10 @@ def _assemble_chat(scope_key, which):
         if c_ivl2 and c_ivl2 in ah.columns and c_ivl2 != "interval":
             ah = ah.rename(columns={c_ivl2: "interval"})
 
-        if "aht_sec" not in ah.columns:
-            for alt in (
+        ah = _coalesce_seconds_cols(
+            ah,
+            "aht_sec",
+            (
                 "aht_sec",
                 "aht",
                 "avg_aht",
@@ -1310,11 +1339,8 @@ def _assemble_chat(scope_key, which):
                 "actual_aht",
                 "forecast_aht",
                 "tactical_aht",
-            ):
-                c = LA.get(str(alt).lower())
-                if c and c in ah.columns:
-                    ah = ah.rename(columns={c: "aht_sec"})
-                    break
+            ),
+        )
 
         join_keys = [k for k in ["date", "interval"] if k in df.columns and k in ah.columns]
         if not join_keys:
@@ -1348,6 +1374,28 @@ def _assemble_chat(scope_key, which):
             df = df.drop(columns=[c for c in ("aht_sec_x", "aht_sec_y") if c in df.columns])
 
     # If still missing AHT, try to detect in the same upload before fallback to settings
+    df = _coalesce_seconds_cols(
+        df,
+        "aht_sec",
+        (
+            "aht_sec",
+            "aht",
+            "avg_aht",
+            "aht_seconds",
+            "aht (sec)",
+            "sut",
+            "sut_sec",
+            "avg_sut",
+            f"{which} aht",
+            f"{which}_aht",
+            "actual aht",
+            "forecast aht",
+            "tactical aht",
+            "actual_aht",
+            "forecast_aht",
+            "tactical_aht",
+        ),
+    )
     if "aht_sec" not in df.columns or df["aht_sec"].isna().all():
         L2 = {str(c).strip().lower(): c for c in df.columns}
         for alt in (
@@ -1579,8 +1627,10 @@ def _assemble_ob(scope_key, which):
         if c_ivl2 and c_ivl2 in ah.columns and c_ivl2 != "interval":
             ah = ah.rename(columns={c_ivl2: "interval"})
 
-        if "aht_sec" not in ah.columns:
-            for alt in (
+        ah = _coalesce_seconds_cols(
+            ah,
+            "aht_sec",
+            (
                 "aht_sec",
                 "aht",
                 "avg_talk_sec",
@@ -1594,11 +1644,8 @@ def _assemble_ob(scope_key, which):
                 "actual_aht",
                 "forecast_aht",
                 "tactical_aht",
-            ):
-                c = LA.get(str(alt).lower())
-                if c and c in ah.columns:
-                    ah = ah.rename(columns={c: "aht_sec"})
-                    break
+            ),
+        )
 
         join_keys = [k for k in ["date", "interval"] if k in d.columns and k in ah.columns]
         if not join_keys:
@@ -1632,6 +1679,25 @@ def _assemble_ob(scope_key, which):
             d = d.drop(columns=[c for c in ("aht_sec_x", "aht_sec_y") if c in d.columns])
 
     # If still missing AHT, try to detect from the same upload before fallback to settings.
+    d = _coalesce_seconds_cols(
+        d,
+        "aht_sec",
+        (
+            "aht_sec",
+            "aht",
+            "avg_talk_sec",
+            "talk_sec",
+            "aht_seconds",
+            f"{which} aht",
+            f"{which}_aht",
+            "actual aht",
+            "forecast aht",
+            "tactical aht",
+            "actual_aht",
+            "forecast_aht",
+            "tactical_aht",
+        ),
+    )
     if "aht_sec" not in d.columns or d["aht_sec"].isna().all():
         L2 = {str(c).strip().lower(): c for c in d.columns}
         for alt in (
@@ -1815,6 +1881,32 @@ def _to_seconds_series(series) -> pd.Series:
         return pd.Series(dtype="float64")
     out = s.map(_to_seconds_value)
     return pd.to_numeric(out, errors="coerce")
+
+
+def _coalesce_seconds_cols(df: pd.DataFrame, out_col: str, candidates: tuple[str, ...]) -> pd.DataFrame:
+    """
+    Build/patch `out_col` from first non-null value across candidate columns,
+    converting each candidate from common time formats to seconds.
+    """
+    if not isinstance(df, pd.DataFrame) or df.empty:
+        return df if isinstance(df, pd.DataFrame) else pd.DataFrame()
+    out = df.copy()
+    low = {str(c).strip().lower(): c for c in out.columns}
+    series = None
+    used = set()
+    for nm in candidates:
+        c = low.get(str(nm).strip().lower())
+        if not c or c in used or c not in out.columns:
+            continue
+        used.add(c)
+        cur = _to_seconds_series(out[c])
+        series = cur if series is None else series.combine_first(cur)
+    if series is not None:
+        if out_col in out.columns:
+            out[out_col] = _to_seconds_series(out[out_col]).combine_first(series)
+        else:
+            out[out_col] = series
+    return out
 
 
 # def _save_table(pid: int, tab_key: str, df: pd.DataFrame):
