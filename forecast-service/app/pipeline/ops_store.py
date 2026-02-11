@@ -8,6 +8,7 @@ import time
 from pathlib import Path
 from typing import Iterable, Optional, Sequence
 
+import numpy as np
 import pandas as pd
 
 from app.pipeline.postgres import db_conn, has_dsn, ensure_ops_schema
@@ -135,6 +136,53 @@ def _parse_date_series(series: pd.Series) -> pd.Series:
     return pd.to_datetime(s, errors="coerce").dt.date
 
 
+def _to_seconds_value(value):
+    try:
+        if value is None:
+            return np.nan
+        if value is pd.NA:
+            return np.nan
+        try:
+            if pd.isna(value):
+                return np.nan
+        except Exception:
+            pass
+        if isinstance(value, pd.Timedelta):
+            return float(value.total_seconds())
+        if isinstance(value, (np.integer, int)):
+            return float(value)
+        if isinstance(value, (np.floating, float)):
+            v = float(value)
+            if not np.isfinite(v):
+                return np.nan
+            if 0.0 < abs(v) < 1.0:
+                return float(v * 86400.0)
+            return v
+        if hasattr(value, "hour") and hasattr(value, "minute") and hasattr(value, "second"):
+            return float(int(value.hour) * 3600 + int(value.minute) * 60 + int(value.second))
+        s = str(value).strip()
+        if not s:
+            return np.nan
+        if ":" in s:
+            parts = [p.strip() for p in s.split(":")]
+            if len(parts) == 3:
+                h = float(parts[0]); m = float(parts[1]); sec = float(parts[2])
+                return (h * 3600.0) + (m * 60.0) + sec
+            if len(parts) == 2:
+                m = float(parts[0]); sec = float(parts[1])
+                return (m * 60.0) + sec
+        v = float(s.replace(",", ""))
+        if 0.0 < abs(v) < 1.0:
+            return float(v * 86400.0)
+        return v
+    except Exception:
+        return np.nan
+
+
+def _to_seconds_series(series: pd.Series) -> pd.Series:
+    return pd.to_numeric(pd.Series(series).map(_to_seconds_value), errors="coerce")
+
+
 def normalize_scope_key(scope_key: str) -> str:
     raw = str(scope_key or "").strip()
     if not raw:
@@ -242,7 +290,20 @@ def normalize_timeseries_rows(kind: str, rows: list[dict]) -> pd.DataFrame:
         "average handle time secs",
         "average handle time seconds",
     )
-    sut_col = _pick_col(cols, "sut_sec", "sut", "forecast sut", "actual sut")
+    sut_col = _pick_col(
+        cols,
+        "sut_sec",
+        "sut sec",
+        "sut seconds",
+        "sut (sec)",
+        "sut",
+        "forecast sut",
+        "forecast sut (sec)",
+        "actual sut",
+        "actual sut (sec)",
+        "tactical sut",
+        "tactical sut (sec)",
+    )
     items_col = _pick_col(cols, "items", "transactions", "txns")
 
     out = pd.DataFrame()
@@ -260,11 +321,11 @@ def normalize_timeseries_rows(kind: str, rows: list[dict]) -> pd.DataFrame:
     else:
         out["volume"] = None
     if aht_col:
-        out["aht_sec"] = pd.to_numeric(df[aht_col], errors="coerce")
+        out["aht_sec"] = _to_seconds_series(df[aht_col])
     else:
         out["aht_sec"] = None
     if sut_col:
-        out["sut_sec"] = pd.to_numeric(df[sut_col], errors="coerce")
+        out["sut_sec"] = _to_seconds_series(df[sut_col])
     else:
         out["sut_sec"] = None
 
