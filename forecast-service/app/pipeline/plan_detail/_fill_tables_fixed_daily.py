@@ -347,6 +347,153 @@ def _fill_tables_fixed_daily(ptype, pid, _fw_cols_unused, _tick, whatif=None):
     bo_ino_pct_map: dict[str, float] = {}
     bo_ov_pct_map: dict[str, float] = {}
     daily_actual_shrink_pct_map: dict[str, float] = {}
+    # Daily overtime (hours) map derived from shrinkage raw uploads.
+    overtime_daily_map: dict[str, float] = {}
+
+    def _parse_hours_value(val) -> float:
+        try:
+            v = float(val)
+            if np.isnan(v):
+                return 0.0
+            return float(v)
+        except Exception:
+            pass
+        try:
+            s = str(val or "").strip()
+            if not s:
+                return 0.0
+            if ":" in s:
+                parts = [p.strip() for p in s.split(":")]
+                if len(parts) >= 2:
+                    hh = float(parts[0] or 0.0)
+                    mm = float(parts[1] or 0.0)
+                    ss = float(parts[2] or 0.0) if len(parts) >= 3 else 0.0
+                    return max(0.0, hh + (mm / 60.0) + (ss / 3600.0))
+            return float(s)
+        except Exception:
+            return 0.0
+
+    def _apply_scope_filters_raw(df_raw: pd.DataFrame, raw_key: str) -> pd.DataFrame:
+        if not isinstance(df_raw, pd.DataFrame) or df_raw.empty:
+            return pd.DataFrame()
+        df = df_raw.copy()
+        L = {str(c).strip().lower(): c for c in df.columns}
+        c_ba = L.get("business area") or L.get("ba") or L.get("vertical") or L.get("journey")
+        c_sba = L.get("sub business area") or L.get("sub_ba") or L.get("sub business area") or L.get("subba")
+        c_ch = L.get("channel") or L.get("lob")
+        c_site = L.get("site"); c_location = L.get("location"); c_country = L.get("country"); c_city = L.get("city")
+        mask = pd.Series(True, index=df.index)
+        if c_ba and plan.get("vertical"):
+            mask &= df[c_ba].astype(str).str.strip().str.lower().eq(str(plan.get("vertical")).strip().lower())
+        if c_sba and plan.get("sub_ba"):
+            mask &= df[c_sba].astype(str).str.strip().str.lower().eq(str(plan.get("sub_ba")).strip().lower())
+        if c_ch:
+            ch_series = df[c_ch].astype(str).str.strip().str.lower()
+            rk = str(raw_key or "").strip().lower()
+            if rk.endswith("_backoffice"):
+                targets = {"back office", "backoffice", "bo", ""}
+            elif rk.endswith("_chat"):
+                targets = {"chat", "messageus", "message us", ""}
+            elif rk.endswith("_outbound"):
+                targets = {"outbound", "ob", "out bound", ""}
+            else:
+                ch_norm = str(ch_name or "").strip().lower()
+                if ch_norm in {"chat", "messageus", "message us"}:
+                    targets = {"chat", "messageus", "message us", ""}
+                elif ch_norm in {"outbound", "ob", "out bound"}:
+                    targets = {"outbound", "ob", "out bound", ""}
+                elif ch_norm in {"back office", "backoffice", "bo"}:
+                    targets = {"back office", "backoffice", "bo", ""}
+                else:
+                    targets = {"voice", "inbound", "telephony", "volume", ""}
+            if ch_series.isin(targets).any():
+                mask &= ch_series.isin(targets)
+        loc_first = (plan.get("site") or plan.get("location") or plan.get("country") or "").strip()
+        if loc_first:
+            target = loc_first.strip().lower()
+            for col in [c_site, c_location, c_country, c_city]:
+                if col and col in df.columns:
+                    loc_l = df[col].astype(str).str.strip().str.lower()
+                    if loc_l.eq(target).any():
+                        mask &= loc_l.eq(target)
+                        break
+        return df.loc[mask]
+
+    def _accumulate_overtime_daily(raw_key: str) -> None:
+        nonlocal overtime_daily_map
+        try:
+            raw = load_df(raw_key)
+        except Exception:
+            raw = None
+        scoped = _apply_scope_filters_raw(raw, raw_key)
+        if not isinstance(scoped, pd.DataFrame) or scoped.empty:
+            return
+        L = {str(c).strip().lower(): c for c in scoped.columns}
+        c_date = L.get("date")
+        if not c_date:
+            return
+
+        # Voice-like: superstate + hours
+        c_state = L.get("superstate") or L.get("state")
+        c_hours = L.get("hours") or L.get("duration_hours") or L.get("duration")
+        if c_state and c_hours:
+            d = scoped[[c_date, c_state, c_hours]].copy()
+            d[c_date] = pd.to_datetime(d[c_date], errors="coerce")
+            d = d.dropna(subset=[c_date])
+            if not d.empty:
+                st = d[c_state].astype(str).str.strip().str.upper()
+                d = d.loc[st.eq("SC_OVERTIME_DELIVERED")]
+                if not d.empty:
+                    hrs = d[c_hours].map(_parse_hours_value)
+                    tmp = pd.DataFrame({"date": d[c_date].dt.date, "hours": hrs})
+                    agg = tmp.groupby("date", as_index=False)["hours"].sum()
+                    for _, r in agg.iterrows():
+                        k = str(r["date"])
+                        overtime_daily_map[k] = overtime_daily_map.get(k, 0.0) + float(r["hours"])
+            return
+
+        # Activity-based: look for overtime keywords
+        c_act = L.get("activity")
+        c_sec = L.get("duration_seconds") or L.get("seconds")
+        c_hr = L.get("hours") or L.get("duration_hours")
+        if not c_act or not (c_sec or c_hr):
+            return
+        d = scoped[[c_date, c_act, c_sec or c_hr]].copy()
+        d[c_act] = d[c_act].astype(str).str.strip().str.lower()
+        d[c_date] = pd.to_datetime(d[c_date], errors="coerce").dt.date
+        d = d.dropna(subset=[c_date])
+        if d.empty:
+            return
+        m_ot = d[c_act].str.contains(r"\bover\s*time\b|\bovertime\b|\bot\b|\bot\s*hours\b|\bot\s*hrs\b", regex=True, na=False) | d[c_act].eq("overtime")
+        d = d.loc[m_ot]
+        if d.empty:
+            return
+        if c_sec and (c_sec in d.columns):
+            hrs = pd.to_numeric(d[c_sec], errors="coerce").fillna(0.0) / 3600.0
+        else:
+            hrs = d[c_hr].map(_parse_hours_value)
+        tmp = pd.DataFrame({"date": d[c_date], "hours": hrs})
+        agg = tmp.groupby("date", as_index=False)["hours"].sum()
+        for _, r in agg.iterrows():
+            k = str(r["date"])
+            overtime_daily_map[k] = overtime_daily_map.get(k, 0.0) + float(r["hours"])
+
+    # Choose sources by channel; fall back to voice raw if channel-specific is absent.
+    if ch.startswith("back office") or ch in ("bo", "backoffice"):
+        _accumulate_overtime_daily("shrinkage_raw_backoffice")
+    elif ch.startswith("chat"):
+        _accumulate_overtime_daily("shrinkage_raw_chat")
+        if not overtime_daily_map:
+            _accumulate_overtime_daily("shrinkage_raw_voice")
+    elif ch.startswith("outbound") or ch in ("ob", "out bound"):
+        _accumulate_overtime_daily("shrinkage_raw_outbound")
+        if not overtime_daily_map:
+            _accumulate_overtime_daily("shrinkage_raw_voice")
+    else:
+        _accumulate_overtime_daily("shrinkage_raw_voice")
+        if not overtime_daily_map:
+            _accumulate_overtime_daily("shrinkage_raw_backoffice")
+
     if is_bo:
         try:
             raw = load_df("shrinkage_raw_backoffice")
@@ -854,7 +1001,7 @@ def _fill_tables_fixed_daily(ptype, pid, _fw_cols_unused, _tick, whatif=None):
         f"Tactical {aht_label}": [ahtT.get(c, 0.0) for c in day_ids],
         f"Actual {aht_label}":   [ahtA.get(c, 0.0) for c in day_ids],
         "Occupancy":             [occF.get(c, 0.0) for c in day_ids],
-        "Overtime Hours (#)":    [0.0 for _ in day_ids],
+        "Overtime Hours (#)":    [overtime_daily_map.get(c, 0.0) for c in day_ids],
     }
 
     # Include Backlog/Queue only if plan options selected
