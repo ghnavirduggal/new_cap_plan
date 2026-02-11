@@ -2097,7 +2097,8 @@ def _fill_tables_fixed_monthly(ptype, pid, fw_cols, _tick, whatif=None):
                         k = str(pd.to_datetime(t).date())
                         ooo_f = (float(h_dow.loc[t]) / float(scv)) if (t in h_dow.index and scv > 0) else 0.0
                         ino_f = (float(dhrs) / float(ttwv)) if ttwv > 0 else 0.0
-                        bo_shrink_frac_daily_m[k] = max(0.0, min(0.99, ooo_f + ino_f))
+                        overall_f = 1.0 - ((1.0 - ooo_f) * (1.0 - ino_f))
+                        bo_shrink_frac_daily_m[k] = max(0.0, min(0.99, overall_f))
                 except Exception:
                     pass
                 # Track denominators for BO shrink formulas (month key)
