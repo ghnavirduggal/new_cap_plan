@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import os
 import re
+import tempfile
 from pathlib import Path
 from typing import Optional
 
@@ -11,9 +13,37 @@ def _repo_root() -> Path:
     return Path(__file__).resolve().parent.parent.parent
 
 
+def _exports_candidates() -> list[Path]:
+    candidates: list[Path] = []
+    env_dir = str(os.getenv("CAP_EXPORTS_DIR") or "").strip()
+    if env_dir:
+        candidates.append(Path(env_dir))
+    candidates.append(_repo_root() / "exports")
+    candidates.append(Path(tempfile.gettempdir()) / "cap_exports")
+    unique: list[Path] = []
+    seen: set[str] = set()
+    for path in candidates:
+        key = str(path)
+        if key in seen:
+            continue
+        seen.add(key)
+        unique.append(path)
+    return unique
+
+
 def _exports_dir() -> Path:
-    outdir = _repo_root() / "exports"
-    outdir.mkdir(exist_ok=True)
+    for outdir in _exports_candidates():
+        try:
+            outdir.mkdir(exist_ok=True, parents=True)
+            probe = outdir / ".perm_probe"
+            probe.write_text("ok")
+            probe.unlink(missing_ok=True)
+            return outdir
+        except Exception:
+            continue
+    # Final fallback keeps behavior deterministic even when probes fail.
+    outdir = _exports_candidates()[-1]
+    outdir.mkdir(exist_ok=True, parents=True)
     return outdir
 
 
@@ -48,23 +78,26 @@ def load_timeseries_csv(kind: str, scope_key: str) -> pd.DataFrame:
         return pd.DataFrame()
     safe_kind = _safe_component(kind)
     safe_scope = _canonical_scope_key(scope_key)
-    path = _exports_dir() / f"timeseries_{safe_kind}_{safe_scope}.csv"
-    if not path.exists():
-        # Case-insensitive fallback (Windows mounts can preserve case, Linux lookups are strict).
-        try:
-            target = path.name.lower()
-            for cand in _exports_dir().glob(f"timeseries_{safe_kind}_*.csv"):
-                if cand.name.lower() == target:
-                    path = cand
-                    break
-        except Exception:
-            return pd.DataFrame()
+    filename = f"timeseries_{safe_kind}_{safe_scope}.csv"
+    for outdir in _exports_candidates():
+        path = outdir / filename
         if not path.exists():
-            return pd.DataFrame()
-    try:
-        return pd.read_csv(path)
-    except Exception:
-        return pd.DataFrame()
+            # Case-insensitive fallback (Windows mounts can preserve case, Linux lookups are strict).
+            try:
+                target = path.name.lower()
+                for cand in outdir.glob(f"timeseries_{safe_kind}_*.csv"):
+                    if cand.name.lower() == target:
+                        path = cand
+                        break
+            except Exception:
+                continue
+        if not path.exists():
+            continue
+        try:
+            return pd.read_csv(path)
+        except Exception:
+            continue
+    return pd.DataFrame()
 
 
 def save_timeseries(kind: str, scope_key: str, df: pd.DataFrame, mode: str = "append") -> dict:
