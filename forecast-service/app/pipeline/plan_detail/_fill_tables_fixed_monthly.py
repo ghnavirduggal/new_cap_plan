@@ -567,6 +567,10 @@ def _fill_tables_fixed_monthly(ptype, pid, fw_cols, _tick, whatif=None):
         itm = d.groupby("_m", as_index=True)["items"].sum()
         num = d.groupby("_m", as_index=True)["_num"].sum()
         sut = (num / itm.replace({0: np.nan})).fillna(np.nan)
+        # If monthly items are zero but SUT exists in source rows, keep mean SUT
+        # instead of triggering default fallback (600).
+        if sut.isna().any() and "aht_sec" in d.columns:
+            sut = sut.combine_first(d.groupby("_m", as_index=True)["aht_sec"].mean())
         return itm.to_dict(), sut.to_dict()
     vF_vol, vF_aht = _voice_monthly(vF); vA_vol, vA_aht = _voice_monthly(vA); vT_vol, vT_aht = _voice_monthly(vT)
     bF_itm, bF_sut = _bo_monthly(bF);   bA_itm, bA_sut = _bo_monthly(bA);   bT_itm, bT_sut = _bo_monthly(bT)
