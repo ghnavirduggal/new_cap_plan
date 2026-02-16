@@ -2220,8 +2220,21 @@ def shrinkage_raw_endpoint(payload: dict):
 
 
 @app.get("/api/forecast/attrition")
-def get_attrition_weekly():
-    df = load_attrition_weekly()
+def get_attrition_weekly(
+    ba: Optional[str] = None,
+    sba: Optional[str] = None,
+    channel: Optional[str] = None,
+    site: Optional[str] = None,
+):
+    scope = None
+    if any(str(v or "").strip() for v in (ba, sba, channel, site)):
+        scope = {
+            "business_area": ba,
+            "sub_business_area": sba,
+            "channel": channel,
+            "site": site,
+        }
+    df = load_attrition_weekly(scope=scope)
     if isinstance(df, pd.DataFrame) and not df.empty:
         df = df.replace([np.inf, -np.inf], np.nan)
     return {"rows": sanitize_for_json(df_to_records(df))}
@@ -2232,22 +2245,47 @@ def save_attrition_weekly_endpoint(payload: dict):
     if not isinstance(payload, dict):
         raise HTTPException(status_code=400, detail="Attrition payload must be a JSON object.")
     rows = payload.get("rows") or []
+    mode = str(payload.get("mode") or "replace").strip().lower()
+    if mode not in {"replace", "append"}:
+        mode = "replace"
+    scope_payload = payload.get("scope") or {}
+    scope = None
+    if isinstance(scope_payload, dict) and any(
+        str(scope_payload.get(k) or "").strip()
+        for k in ("business_area", "ba", "sub_business_area", "sba", "channel", "site")
+    ):
+        scope = {
+            "business_area": scope_payload.get("business_area") or scope_payload.get("ba"),
+            "sub_business_area": scope_payload.get("sub_business_area") or scope_payload.get("sba"),
+            "channel": scope_payload.get("channel"),
+            "site": scope_payload.get("site"),
+        }
     df = pd.DataFrame(rows or [])
-    count = save_attrition_weekly(df)
+    count = save_attrition_weekly(df, mode=mode, scope=scope)
+    combined = load_attrition_weekly(scope=scope)
     try:
         record_activity(
             action="uploaded attrition",
             actor=current_user_fallback(),
             entity_type="attrition",
-            payload={"rows": int(count or 0)},
+            payload={"rows": int(count or 0), "mode": mode, "scope": scope or {"scope_type": "global"}},
         )
     except Exception:
         pass
     try:
-        _invalidate_plan_detail_for_scope({"scope_type": "global"}, "attrition")
+        _invalidate_plan_detail_for_scope(
+            {
+                "scope_type": "hier" if scope else "global",
+                "business_area": (scope or {}).get("business_area"),
+                "sub_business_area": (scope or {}).get("sub_business_area"),
+                "channel": (scope or {}).get("channel"),
+                "site": (scope or {}).get("site"),
+            },
+            "attrition",
+        )
     except Exception:
         pass
-    return {"status": "saved", "rows": df_to_records(df), "count": count}
+    return {"status": "saved", "rows": df_to_records(combined), "count": count, "mode": mode}
 
 
 @app.post("/api/forecast/attrition/raw")
@@ -2256,16 +2294,42 @@ def attrition_raw_endpoint(payload: dict):
         raise HTTPException(status_code=400, detail="Attrition payload must be a JSON object.")
     rows = payload.get("rows") or []
     save_flag = bool(payload.get("save"))
+    mode = str(payload.get("mode") or "replace").strip().lower()
+    if mode not in {"replace", "append"}:
+        mode = "replace"
+    scope_payload = payload.get("scope") or {}
+    scope = None
+    if isinstance(scope_payload, dict) and any(
+        str(scope_payload.get(k) or "").strip()
+        for k in ("business_area", "ba", "sub_business_area", "sba", "channel", "site")
+    ):
+        scope = {
+            "business_area": scope_payload.get("business_area") or scope_payload.get("ba"),
+            "sub_business_area": scope_payload.get("sub_business_area") or scope_payload.get("sba"),
+            "channel": scope_payload.get("channel"),
+            "site": scope_payload.get("site"),
+        }
     raw_df = df_from_payload(rows)
-    weekly = attrition_weekly_from_raw(raw_df)
+    weekly = attrition_weekly_from_raw(raw_df, scope=scope)
+    combined = weekly
     if save_flag:
-        save_attrition_raw(raw_df)
-        save_attrition_weekly(weekly)
+        save_attrition_raw(raw_df, scope=scope)
+        save_attrition_weekly(weekly, mode=mode, scope=scope)
+        combined = load_attrition_weekly(scope=scope)
         try:
-            _invalidate_plan_detail_for_scope({"scope_type": "global"}, "attrition")
+            _invalidate_plan_detail_for_scope(
+                {
+                    "scope_type": "hier" if scope else "global",
+                    "business_area": (scope or {}).get("business_area"),
+                    "sub_business_area": (scope or {}).get("sub_business_area"),
+                    "channel": (scope or {}).get("channel"),
+                    "site": (scope or {}).get("site"),
+                },
+                "attrition",
+            )
         except Exception:
             pass
-    return {"weekly": df_to_records(weekly)}
+    return {"weekly": df_to_records(weekly), "combined": df_to_records(combined), "mode": mode}
 
 
 @app.post("/api/forecast/volume-summary")
