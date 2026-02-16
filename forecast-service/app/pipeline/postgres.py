@@ -2,9 +2,26 @@ from __future__ import annotations
 
 import os
 from contextlib import contextmanager
-from typing import Iterator, Optional
+from typing import Iterator, Optional, Any
 
-import psycopg
+import psycopg2
+try:
+    from psycopg2.extensions import connection as PGConnection
+except Exception:
+    PGConnection = Any
+
+class _Psycopg2Compat:
+    """Minimal execute() wrapper for psycopg2 connections."""
+    def __init__(self, conn: PGConnection):
+        self._conn = conn
+
+    def execute(self, sql: str, params: Optional[tuple] = None):
+        cur = self._conn.cursor()
+        cur.execute(sql, params or ())
+        return cur
+
+    def __getattr__(self, name: str):
+        return getattr(self._conn, name)
 
 SCHEMA_LOCK_ID = 8141201
 
@@ -18,20 +35,20 @@ def has_dsn() -> bool:
 
 
 @contextmanager
-def db_conn() -> Iterator[psycopg.Connection]:
+def db_conn() -> Iterator[PGConnection]:
     dsn = _dsn()
     if not dsn:
         raise RuntimeError("POSTGRES_DSN/DATABASE_URL not configured.")
-    conn = psycopg.connect(dsn)
+    conn = psycopg2.connect(dsn)
     try:
         conn.autocommit = True
-        yield conn
+        yield _Psycopg2Compat(conn)
     finally:
         conn.close()
 
 
 @contextmanager
-def _schema_lock(conn: psycopg.Connection) -> Iterator[None]:
+def _schema_lock(conn: PGConnection) -> Iterator[None]:
     try:
         conn.execute("SELECT pg_advisory_lock(%s)", (SCHEMA_LOCK_ID,))
         yield
@@ -42,7 +59,7 @@ def _schema_lock(conn: psycopg.Connection) -> Iterator[None]:
             pass
 
 
-def _safe_index(conn: psycopg.Connection, sql: str) -> None:
+def _safe_index(conn: PGConnection, sql: str) -> None:
     try:
         conn.execute(sql)
     except Exception as exc:
