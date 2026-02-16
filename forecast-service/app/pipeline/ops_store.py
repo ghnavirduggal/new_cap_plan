@@ -18,6 +18,31 @@ from app.pipeline.timeseries_store import load_timeseries_csv
 logger = logging.getLogger(__name__)
 
 
+def _channel_scope_aliases(value: str) -> list[str]:
+    raw = str(value or "").strip()
+    if not raw:
+        return [""]
+    low = _loose_part(raw)
+    aliases: list[str] = [low]
+    if low in {"back office", "backoffice", "bo"}:
+        aliases.extend(["back office", "backoffice", "bo"])
+    elif low in {"outbound", "out bound", "ob"}:
+        aliases.extend(["outbound", "out bound", "ob"])
+    elif low in {"voice", "inbound", "call", "telephony"}:
+        aliases.extend(["voice", "inbound"])
+    elif low in {"chat", "message us", "messageus", "messaging"}:
+        aliases.extend(["chat", "message us", "messageus", "messaging"])
+    out: list[str] = []
+    seen: set[str] = set()
+    for alias in aliases:
+        key = _loose_part(alias)
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(alias)
+    return out
+
+
 def _repo_root() -> Path:
     return Path(__file__).resolve().parent.parent.parent
 
@@ -678,6 +703,24 @@ def load_timeseries_any(
                 trimmed = val.rstrip("|")
                 if trimmed and trimmed not in scope_norms:
                     scope_norms.append(trimmed)
+        try:
+            raw = str(scope or "").strip()
+            if raw and "|" in raw and not raw.lower().startswith("location|"):
+                parts = [p.strip() for p in raw.split("|")]
+                while len(parts) < 4:
+                    parts.append("")
+                ba, sba, channel, site = parts[:4]
+                for ch_alias in _channel_scope_aliases(channel):
+                    alt_raw = f"{ba}|{sba}|{ch_alias}|{site}" if site else f"{ba}|{sba}|{ch_alias}"
+                    for cand in (normalize_scope_key(alt_raw), normalize_scope_key_loose(alt_raw)):
+                        if cand and cand not in scope_norms:
+                            scope_norms.append(cand)
+                        if cand and cand.count("|") == 3 and cand.endswith("|"):
+                            trimmed = cand.rstrip("|")
+                            if trimmed and trimmed not in scope_norms:
+                                scope_norms.append(trimmed)
+        except Exception:
+            pass
         return scope_norms
 
     if not has_dsn():
