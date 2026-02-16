@@ -183,8 +183,74 @@ def _load_timeseries_csv_prefix(kind: str, scope_key: str) -> pd.DataFrame:
         if not df.empty:
             frames.append(df)
     if not frames:
+        # Compact scope filenames cannot be reverse-mapped from filename tokens.
+        # Probe candidate 4-part scope keys and aggregate matches.
+        probe_keys: list[str] = [f"{ba}|{sba}|{ch}", f"{ba}|{sba}|{ch}|all"]
+        try:
+            hc = load_headcount()
+            if isinstance(hc, pd.DataFrame) and not hc.empty:
+                cols = _headcount_cols(hc)
+                ba_col = cols.get("ba")
+                sba_col = cols.get("sba")
+                lob_col = cols.get("lob")
+                site_col = cols.get("site")
+
+                def _norm(val: object) -> str:
+                    return " ".join(str(val or "").strip().lower().split())
+
+                subset = hc.copy()
+                if ba_col and ba_col in subset.columns and ba:
+                    subset = subset[subset[ba_col].map(_norm) == _norm(ba)]
+                if sba_col and sba_col in subset.columns and sba:
+                    subset = subset[subset[sba_col].map(_norm) == _norm(sba)]
+                if lob_col and lob_col in subset.columns and ch:
+                    subset = subset[subset[lob_col].map(_norm) == _norm(ch)]
+                if site_col and site_col in subset.columns:
+                    for site in subset[site_col].dropna().astype(str).map(str.strip):
+                        if site:
+                            probe_keys.append(f"{ba}|{sba}|{ch}|{site}")
+        except Exception:
+            pass
+
+        seen: set[str] = set()
+        for key in probe_keys:
+            k = key.strip().lower()
+            if not key or k in seen:
+                continue
+            seen.add(k)
+            try:
+                df_probe = load_timeseries_csv(kind, key)
+            except Exception:
+                df_probe = pd.DataFrame()
+            if df_probe is None or df_probe.empty:
+                continue
+            try:
+                df_probe = normalize_timeseries_rows(kind, df_probe.to_dict("records"))
+            except Exception:
+                pass
+            if not df_probe.empty:
+                frames.append(df_probe)
+
+    if not frames:
         return pd.DataFrame()
-    return pd.concat(frames, ignore_index=True)
+    out = pd.concat(frames, ignore_index=True)
+    if "date" not in out.columns:
+        return out
+    out["_order"] = range(len(out))
+    if "interval" in out.columns:
+        interval_norm = (
+            out["interval"]
+            .astype(str)
+            .replace("nan", "")
+            .replace("NaT", "")
+            .str.strip()
+        )
+        out["__interval_norm"] = interval_norm
+        out = out.sort_values("_order").drop_duplicates(subset=["date", "__interval_norm"], keep="last")
+        out = out.drop(columns=["__interval_norm"])
+    else:
+        out = out.sort_values("_order").drop_duplicates(subset=["date"], keep="last")
+    return out.drop(columns=["_order"])
 
 
 def resolve_settings(
