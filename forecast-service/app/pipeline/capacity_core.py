@@ -762,50 +762,179 @@ def required_fte_daily(voice_df: pd.DataFrame, bo_df: pd.DataFrame, ob_df: pd.Da
     return out.fillna(0)
 
 
+def _norm_col_key(value: object) -> str:
+    return re.sub(r"[^a-z0-9]", "", str(value or "").strip().lower())
+
+
+def _row_pick(row: pd.Series, names: list[str]) -> object:
+    norm_map = {_norm_col_key(col): col for col in row.index}
+    for name in names:
+        key = _norm_col_key(name)
+        col = norm_map.get(key)
+        if col is not None:
+            return row.get(col)
+    return None
+
+
+def _to_float(value: object) -> Optional[float]:
+    try:
+        if value is None:
+            return None
+        if pd.isna(value):
+            return None
+        num = float(value)
+        if not np.isfinite(num):
+            return None
+        return num
+    except Exception:
+        return None
+
+
+def _row_fte(row: pd.Series, default: float = 0.0) -> float:
+    fte_val = _row_pick(
+        row,
+        [
+            "fte",
+            "supply_fte",
+            "projected_supply_fte",
+            "projected fte",
+        ],
+    )
+    fte = _to_float(fte_val)
+    if fte is not None and fte >= 0:
+        return float(fte)
+
+    hc_val = _row_pick(
+        row,
+        [
+            "projected_supply_hc",
+            "projected supply hc",
+            "projected_hc",
+            "projected hc",
+            "supply_hc",
+            "supply hc",
+            "hc",
+            "headcount",
+        ],
+    )
+    hc = _to_float(hc_val)
+    if hc is not None and hc >= 0:
+        # HC-to-FTE conversion is 1:1 unless an explicit FTE field is provided.
+        return float(hc)
+    return float(default)
+
+
+def _row_program(row: pd.Series) -> str:
+    val = _row_pick(row, ["program", "lob", "channel", "line of business", "queue", "work_type"])
+    text = str(val or "").strip()
+    return text or "WFM"
+
+
+def _row_is_active(row: pd.Series) -> bool:
+    status = str(_row_pick(row, ["status", "current_status"]) or "").strip().lower()
+    if status and status not in {"active", "a"}:
+        return False
+
+    leave_val = _row_pick(row, ["is_leave", "leave", "on_leave"])
+    leave_text = str(leave_val or "").strip().lower()
+    if leave_text in {"true", "1", "yes", "y"}:
+        return False
+    if isinstance(leave_val, bool) and leave_val:
+        return False
+
+    entry = str(_row_pick(row, ["entry", "shift", "schedule"]) or "").strip().lower()
+    if entry in {"leave", "l", "off", "pto"}:
+        return False
+    return True
+
+
 def supply_fte_daily(roster: pd.DataFrame, hiring: pd.DataFrame) -> pd.DataFrame:
-    if roster is None or roster.empty:
-        return pd.DataFrame(columns=["date", "program", "supply_fte"])
-    rows = []
+    rows: list[dict[str, object]] = []
     today = dt.date.today()
     horizon = today + dt.timedelta(days=28)
     date_list = [today + dt.timedelta(days=i) for i in range((horizon - today).days + 1)]
-    for _, row in roster.iterrows():
-        try:
-            start_date = pd.to_datetime(row.get("start_date"), errors="coerce").date()
-        except Exception:
-            start_date = today
-        end_val = row.get("end_date", "")
-        end_date = pd.to_datetime(end_val, errors="coerce").date() if str(end_val).strip() else horizon
-        fte = float(row.get("fte", 1.0) or 0.0)
-        program = row.get("program", "WFM")
-        status = str(row.get("status", "Active")).strip().lower()
-        if status and status != "active":
-            continue
-        for day in date_list:
-            if start_date <= day <= end_date:
-                rows.append({"date": day, "program": program, "fte": fte})
-    supply = pd.DataFrame(rows)
-    if supply.empty:
-        return pd.DataFrame(columns=["date", "program", "supply_fte"])
-    supply = supply.groupby(["date", "program"], as_index=False)["fte"].sum().rename(columns={"fte": "supply_fte"})
 
-    if isinstance(hiring, pd.DataFrame) and not hiring.empty and "start_week" in hiring.columns:
-        add_rows = []
+    if isinstance(roster, pd.DataFrame) and not roster.empty:
+        roster_df = roster.copy()
+        norm_cols = {_norm_col_key(c): c for c in roster_df.columns}
+        date_col = norm_cols.get("date")
+
+        if date_col:
+            roster_df[date_col] = pd.to_datetime(roster_df[date_col], errors="coerce").dt.date
+            for _, row in roster_df.iterrows():
+                day = row.get(date_col)
+                if not isinstance(day, dt.date):
+                    continue
+                if not _row_is_active(row):
+                    continue
+                fte = _row_fte(row, default=1.0)
+                if fte <= 0:
+                    continue
+                rows.append({"date": day, "program": _row_program(row), "supply_fte": fte})
+        else:
+            for _, row in roster_df.iterrows():
+                if not _row_is_active(row):
+                    continue
+                start_val = _row_pick(row, ["start_date", "start date", "date", "start_week"])
+                end_val = _row_pick(row, ["end_date", "end date"])
+                try:
+                    start_date = pd.to_datetime(start_val, errors="coerce").date()
+                except Exception:
+                    start_date = today
+                if not isinstance(start_date, dt.date):
+                    start_date = today
+                if str(end_val or "").strip():
+                    try:
+                        end_date = pd.to_datetime(end_val, errors="coerce").date()
+                    except Exception:
+                        end_date = horizon
+                else:
+                    end_date = horizon
+                if not isinstance(end_date, dt.date):
+                    end_date = horizon
+                fte = _row_fte(row, default=1.0)
+                if fte <= 0:
+                    continue
+                for day in date_list:
+                    if start_date <= day <= end_date:
+                        rows.append({"date": day, "program": _row_program(row), "supply_fte": fte})
+
+    if isinstance(hiring, pd.DataFrame) and not hiring.empty:
         for _, row in hiring.iterrows():
+            if not _row_is_active(row):
+                continue
+            raw = str(_row_pick(row, ["start_week", "week", "date", "start_date"]) or "").strip()
+            if not raw:
+                continue
             try:
-                raw = str(row.get("start_week", "")).strip()
                 if re.match(r"^\d{1,2}-\d{1,2}-\d{4}$", raw):
                     week_start = pd.to_datetime(raw, dayfirst=True).date()
                 else:
                     week_start = pd.to_datetime(raw, errors="coerce").date()
             except Exception:
                 continue
-            program = row.get("program", "WFM")
-            fte = float(row.get("fte", 0) or 0)
+            if not isinstance(week_start, dt.date):
+                continue
+            fte = _row_fte(row, default=0.0)
+            if fte <= 0:
+                continue
             for offset in range(7):
-                add_rows.append({"date": week_start + dt.timedelta(days=offset), "program": program, "supply_fte": fte})
-        add = pd.DataFrame(add_rows)
-        if not add.empty:
-            supply = pd.concat([supply, add]).groupby(["date", "program"], as_index=False)["supply_fte"].sum()
+                rows.append(
+                    {
+                        "date": week_start + dt.timedelta(days=offset),
+                        "program": _row_program(row),
+                        "supply_fte": fte,
+                    }
+                )
+
+    if not rows:
+        return pd.DataFrame(columns=["date", "program", "supply_fte"])
+
+    supply = pd.DataFrame(rows)
     supply["date"] = pd.to_datetime(supply["date"], errors="coerce").dt.date
+    supply = supply[pd.notna(supply["date"])]
+    if supply.empty:
+        return pd.DataFrame(columns=["date", "program", "supply_fte"])
+    supply["supply_fte"] = pd.to_numeric(supply["supply_fte"], errors="coerce").fillna(0.0)
+    supply = supply.groupby(["date", "program"], as_index=False)["supply_fte"].sum()
     return supply
