@@ -2273,7 +2273,16 @@ def _attrition_weekly_fallback(scope_key: str) -> pd.DataFrame:
         from app.pipeline.shrinkage_store import load_attrition_weekly
     except Exception:
         return pd.DataFrame()
-    df = load_attrition_weekly()
+    scope = None
+    parts = [p.strip() for p in str(scope_key or "").split("|")]
+    if len(parts) >= 3 and not str(scope_key or "").lower().startswith("location|"):
+        scope = {
+            "business_area": parts[0] if len(parts) > 0 else None,
+            "sub_business_area": parts[1] if len(parts) > 1 else None,
+            "channel": parts[2] if len(parts) > 2 else None,
+            "site": parts[3] if len(parts) > 3 else None,
+        }
+    df = load_attrition_weekly(scope=scope)
     if not isinstance(df, pd.DataFrame) or df.empty:
         return pd.DataFrame()
     ba = (scope_key.split("|", 1)[0] or "").strip().lower()
