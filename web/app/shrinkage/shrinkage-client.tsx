@@ -17,6 +17,20 @@ type RawState = {
   message: string;
 };
 
+type AttritionScopeState = {
+  businessArea: string;
+  subBusinessArea: string;
+  channel: string;
+  site: string;
+};
+
+type AttritionScopeOptions = {
+  businessAreas: string[];
+  subBusinessAreas: string[];
+  channels: string[];
+  sites: string[];
+};
+
 const SHRINK_TABS = [
   { key: "weekly", label: "Weekly Shrink %" },
   { key: "voice", label: "Voice Shrinkage (Raw)" },
@@ -26,38 +40,29 @@ const SHRINK_TABS = [
 ];
 
 const ATTRITION_SAMPLE_COLUMNS = [
-  "Reporting Full Date",
   "BRID",
-  "Employee Name",
-  "Operational Status",
-  "Corporate Grade Description",
-  "Employee Email Address",
-  "Employee Position",
-  "Position Description",
-  "Employee Line Manager Indicator",
-  "Length of Service Date",
-  "Cost Centre",
-  "Line Manager BRID",
-  "Line Manager Name",
-  "IMH L05",
-  "IMH L06",
-  "Employee Line Manager lvl 01",
-  "Employee Line Manager lvl 02",
-  "Employee Line Manager lvl 03",
-  "Employee Line Manager lvl 04",
-  "Employee Line Manager lvl 05",
-  "Employee Line Manager lvl 06",
-  "Employee Line Manager lvl 07",
-  "Employee Line Manager lvl 08",
-  "Employee Line Manager lvl 09",
-  "City",
-  "Building",
-  "Gender Description",
-  "Voluntary Involuntary Exit Description",
-  "Resignation Date",
-  "Employee Contract",
-  "HC",
-  "HC FTE"
+  "Name",
+  "Supervisor BRID",
+  "Supervisor Name",
+  "Termination Date",
+  "Business Area",
+  "Sub Business Area",
+  "Channel",
+  "Site",
+];
+
+const ATTRITION_SAMPLE_ROWS = [
+  {
+    BRID: "IN0001",
+    Name: "Asha Rao",
+    "Supervisor BRID": "IN9999",
+    "Supervisor Name": "Priyanka Menon",
+    "Termination Date": new Date().toISOString().slice(0, 10),
+    "Business Area": "Retail Banking",
+    "Sub Business Area": "Cards",
+    Channel: "Voice",
+    Site: "DLF IT Park",
+  },
 ];
 
 const SHRINK_LABELS: Record<string, string> = {
@@ -65,6 +70,20 @@ const SHRINK_LABELS: Record<string, string> = {
   bo: "Back Office",
   chat: "Chat",
   ob: "Outbound"
+};
+
+const DEFAULT_ATTRITION_SCOPE: AttritionScopeState = {
+  businessArea: "",
+  subBusinessArea: "",
+  channel: "",
+  site: "",
+};
+
+const DEFAULT_ATTRITION_SCOPE_OPTIONS: AttritionScopeOptions = {
+  businessAreas: [],
+  subBusinessAreas: [],
+  channels: ["Voice", "Back Office", "Outbound", "Blended", "Chat", "MessageUs"],
+  sites: [],
 };
 
 function parseCsv(text: string): Record<string, any>[] {
@@ -208,6 +227,30 @@ export default function ShrinkageClient() {
   const [attrRows, setAttrRows] = useState<Array<Record<string, any>>>([]);
   const [attrRawRows, setAttrRawRows] = useState<Array<Record<string, any>>>([]);
   const [attrMessage, setAttrMessage] = useState("");
+  const [saveAttritionModalOpen, setSaveAttritionModalOpen] = useState(false);
+  const [attrScope, setAttrScope] = useState<AttritionScopeState>(DEFAULT_ATTRITION_SCOPE);
+  const [attrScopeOptions, setAttrScopeOptions] = useState<AttritionScopeOptions>(DEFAULT_ATTRITION_SCOPE_OPTIONS);
+
+  const attrScopePayload = useMemo(
+    () => ({
+      business_area: attrScope.businessArea.trim() || null,
+      sub_business_area: attrScope.subBusinessArea.trim() || null,
+      channel: attrScope.channel.trim() || null,
+      site: attrScope.site.trim() || null,
+    }),
+    [attrScope],
+  );
+
+  const attrScopeReady = useMemo(
+    () =>
+      Boolean(
+        attrScope.businessArea.trim() &&
+          attrScope.subBusinessArea.trim() &&
+          attrScope.channel.trim() &&
+          (attrScope.site.trim() || !attrScopeOptions.sites.length),
+      ),
+    [attrScope, attrScopeOptions.sites.length],
+  );
 
   const loadShrinkage = async () => {
     setLoading(true);
@@ -221,10 +264,18 @@ export default function ShrinkageClient() {
     }
   };
 
-  const loadAttrition = async () => {
+  const loadAttrition = async (scope?: AttritionScopeState) => {
+    const activeScope = scope ?? attrScope;
     setLoading(true);
     try {
-      const res = await apiGet<{ rows?: Array<Record<string, any>> }>("/api/forecast/attrition");
+      const query = new URLSearchParams();
+      if (activeScope.businessArea.trim()) query.set("ba", activeScope.businessArea.trim());
+      if (activeScope.subBusinessArea.trim()) query.set("sba", activeScope.subBusinessArea.trim());
+      if (activeScope.channel.trim()) query.set("channel", activeScope.channel.trim());
+      if (activeScope.site.trim()) query.set("site", activeScope.site.trim());
+      const res = await apiGet<{ rows?: Array<Record<string, any>> }>(
+        `/api/forecast/attrition${query.toString() ? `?${query.toString()}` : ""}`,
+      );
       setAttrRows(res.rows ?? []);
     } catch (error: any) {
       notify("error", error?.message || "Could not load attrition data.");
@@ -233,14 +284,60 @@ export default function ShrinkageClient() {
     }
   };
 
+  const loadAttritionScopeOptions = async (params?: { ba?: string; sba?: string }) => {
+    const query = new URLSearchParams();
+    if (params?.ba) query.set("ba", params.ba);
+    if (params?.sba) query.set("sba", params.sba);
+    try {
+      const res = await apiGet<{
+        business_areas?: string[];
+        sub_business_areas?: string[];
+        channels?: string[];
+        sites?: string[];
+      }>(`/api/forecast/headcount/options${query.toString() ? `?${query.toString()}` : ""}`);
+      setAttrScopeOptions((prev) => ({
+        businessAreas: res.business_areas ?? prev.businessAreas,
+        subBusinessAreas: res.sub_business_areas ?? (params?.ba ? [] : prev.subBusinessAreas),
+        channels: res.channels ?? prev.channels,
+        sites: res.sites ?? (params?.ba ? [] : prev.sites),
+      }));
+    } catch {
+      return;
+    }
+  };
+
   useEffect(() => {
     void loadShrinkage();
-    void loadAttrition();
+    void loadAttritionScopeOptions();
+    void loadAttrition(DEFAULT_ATTRITION_SCOPE);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  useEffect(() => {
+    void loadAttritionScopeOptions({
+      ba: attrScope.businessArea,
+      sba: attrScope.subBusinessArea,
+    });
+  }, [attrScope.businessArea, attrScope.subBusinessArea]);
+
+  useEffect(() => {
+    void loadAttrition(attrScope);
+    setAttrRawRows([]);
+    setAttrMessage("");
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [attrScope.businessArea, attrScope.subBusinessArea, attrScope.channel, attrScope.site]);
+
   const weeklyChart = useMemo(() => lineFromRows(weeklyRows, "week", "overall_pct", "Overall Shrink %"), [weeklyRows]);
   const attrChart = useMemo(() => lineFromRows(attrRows, "week", "attrition_pct", "Attrition %"), [attrRows]);
+  const attrScopeLabel = useMemo(() => {
+    const parts = [
+      attrScope.businessArea.trim(),
+      attrScope.subBusinessArea.trim(),
+      attrScope.channel.trim(),
+      attrScope.site.trim(),
+    ].filter(Boolean);
+    return parts.length ? parts.join(" > ") : "Global";
+  }, [attrScope]);
 
   const handleRawUpload = async (kind: string, file: File | null) => {
     if (!file) return;
@@ -342,7 +439,11 @@ export default function ShrinkageClient() {
         setAttrMessage("Upload produced no rows.");
         return;
       }
-      const res = await apiPost<{ weekly?: any[] }>("/api/forecast/attrition/raw", { rows: sourceRows, save: false });
+      const res = await apiPost<{ weekly?: any[] }>("/api/forecast/attrition/raw", {
+        rows: sourceRows,
+        save: false,
+        scope: attrScopePayload,
+      });
       setAttrRows(res.weekly ?? []);
       setAttrRawRows(sourceRows);
       setAttrMessage(`Loaded ${sourceRows.length} rows.`);
@@ -353,16 +454,24 @@ export default function ShrinkageClient() {
     }
   };
 
-  const saveAttrition = async () => {
+  const saveAttrition = async (mode: "replace" | "append" = "replace") => {
+    if (!attrScopeReady) {
+      notify("warning", "Select Business Area, Sub Business Area, Channel and Site before saving attrition.");
+      return;
+    }
+    if (!attrRows.length && !attrRawRows.length) {
+      setAttrMessage("No attrition rows to save.");
+      return;
+    }
     setLoading(true);
     try {
       if (attrRawRows.length) {
-        await apiPost("/api/forecast/attrition/raw", { rows: attrRawRows, save: true });
+        await apiPost("/api/forecast/attrition/raw", { rows: attrRawRows, save: true, mode, scope: attrScopePayload });
       }
-      const res = await apiPost<{ rows?: any[] }>("/api/forecast/attrition", { rows: attrRows });
+      const res = await apiPost<{ rows?: any[] }>("/api/forecast/attrition", { rows: attrRows, mode, scope: attrScopePayload });
       setAttrRows(res.rows ?? attrRows);
       setAttrMessage("");
-      notify("success", "Saved attrition.");
+      notify("success", `Saved attrition (${mode}).`);
       notifySettingsUpdated();
     } catch (error: any) {
       notify("error", error?.message || "Could not save attrition rows.");
@@ -372,7 +481,7 @@ export default function ShrinkageClient() {
   };
 
   const downloadAttritionSample = () => {
-    downloadCsv("leavers_sample.csv", [], ATTRITION_SAMPLE_COLUMNS);
+    downloadCsv("attrition_template.csv", ATTRITION_SAMPLE_ROWS, ATTRITION_SAMPLE_COLUMNS);
   };
 
   const activeRaw = rawStates[activeShrinkTab] ?? rawStates.voice;
@@ -390,6 +499,23 @@ export default function ShrinkageClient() {
   const confirmSaveRaw = (mode: "replace" | "append") => {
     setSaveRawModalOpen(false);
     void saveRaw(saveRawKind, mode);
+  };
+
+  const openSaveAttritionModal = () => {
+    if (!attrScopeReady) {
+      notify("warning", "Select Business Area, Sub Business Area, Channel and Site before saving attrition.");
+      return;
+    }
+    if (!attrRows.length && !attrRawRows.length) {
+      setAttrMessage("No attrition rows to save.");
+      return;
+    }
+    setSaveAttritionModalOpen(true);
+  };
+
+  const confirmSaveAttrition = (mode: "replace" | "append") => {
+    setSaveAttritionModalOpen(false);
+    void saveAttrition(mode);
   };
 
   return (
@@ -472,13 +598,98 @@ export default function ShrinkageClient() {
 
       {activeTab === "attrition" ? (
         <div className="shrinkage-attrition">
+          <div
+            className="grid"
+            style={{ gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))", gap: 10, marginBottom: 12 }}
+          >
+            <div>
+              <div className="label">Business Area</div>
+              <select
+                className="select"
+                value={attrScope.businessArea}
+                onChange={(event) =>
+                  setAttrScope((prev) => ({
+                    ...prev,
+                    businessArea: event.target.value,
+                    subBusinessArea: "",
+                    site: "",
+                  }))
+                }
+              >
+                <option value="">Select Business Area</option>
+                {attrScopeOptions.businessAreas.map((ba) => (
+                  <option key={ba} value={ba}>
+                    {ba}
+                  </option>
+                ))}
+              </select>
+            </div>
+            <div>
+              <div className="label">Sub Business Area</div>
+              <select
+                className="select"
+                value={attrScope.subBusinessArea}
+                onChange={(event) =>
+                  setAttrScope((prev) => ({
+                    ...prev,
+                    subBusinessArea: event.target.value,
+                    site: "",
+                  }))
+                }
+              >
+                <option value="">Select Sub Business Area</option>
+                {attrScopeOptions.subBusinessAreas.map((sba) => (
+                  <option key={sba} value={sba}>
+                    {sba}
+                  </option>
+                ))}
+              </select>
+            </div>
+            <div>
+              <div className="label">Channel</div>
+              <select
+                className="select"
+                value={attrScope.channel}
+                onChange={(event) => setAttrScope((prev) => ({ ...prev, channel: event.target.value }))}
+              >
+                <option value="">Select Channel</option>
+                {attrScopeOptions.channels.map((channel) => (
+                  <option key={channel} value={channel}>
+                    {channel}
+                  </option>
+                ))}
+              </select>
+            </div>
+            <div>
+              <div className="label">Site</div>
+              <select
+                className="select"
+                value={attrScope.site}
+                onChange={(event) => setAttrScope((prev) => ({ ...prev, site: event.target.value }))}
+              >
+                <option value="">Select Site</option>
+                {attrScopeOptions.sites.map((site) => (
+                  <option key={site} value={site}>
+                    {site}
+                  </option>
+                ))}
+              </select>
+            </div>
+          </div>
+          <div className="forecast-muted" style={{ marginBottom: 8 }}>
+            Attrition rows are loaded and saved against the selected scope.
+          </div>
+          <div className="forecast-muted" style={{ marginBottom: 8 }}>
+            Required columns: BRID, Name, Supervisor BRID, Supervisor Name, Termination Date, Business Area,
+            Sub Business Area, Channel, Site.
+          </div>
           <div className="upload-box">
             <input type="file" accept=".csv,.xlsx,.xls" onChange={(event) => handleAttritionUpload(event.target.files?.[0] ?? null)} />
-            <button type="button" className="btn btn-primary" onClick={saveAttrition}>
+            <button type="button" className="btn btn-primary" onClick={openSaveAttritionModal}>
               Save Attrition
             </button>
             <button type="button" className="btn btn-outline" onClick={downloadAttritionSample}>
-              Download Sample
+              Download Template
             </button>
           </div>
           {attrMessage ? <div className="forecast-muted" style={{ marginTop: 8 }}>{attrMessage}</div> : null}
@@ -512,6 +723,39 @@ export default function ShrinkageClient() {
                 Append to Existing
               </button>
               <button type="button" className="btn btn-light" onClick={() => setSaveRawModalOpen(false)}>
+                Cancel
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
+
+      {saveAttritionModalOpen ? (
+        <div className="ws-modal-backdrop">
+          <div className="ws-modal ws-modal-sm">
+            <div className="ws-modal-header" style={{ background: "#2f3747", color: "white" }}>
+              <h3>Save Attrition Upload</h3>
+              <button type="button" className="btn btn-light closeOptions" onClick={() => setSaveAttritionModalOpen(false)}>
+                <svg width="16" height="16" viewBox="0 0 16 16">
+                  <line x1="2" y1="2" x2="14" y2="14" stroke="white" strokeWidth="2"/>
+                  <line x1="14" y1="2" x2="2" y2="14" stroke="white" strokeWidth="2"/>
+                </svg>
+              </button>
+            </div>
+            <div className="ws-modal-body">
+              <p style={{ margin: 0 }}>
+                Scope: <strong>{attrScopeLabel}</strong>. Do you want to replace existing attrition values for the
+                same weeks, or append this upload on top?
+              </p>
+            </div>
+            <div className="ws-modal-footer">
+              <button type="button" className="btn btn-primary" onClick={() => confirmSaveAttrition("replace")}>
+                Replace Existing
+              </button>
+              <button type="button" className="btn btn-light" onClick={() => confirmSaveAttrition("append")}>
+                Append to Existing
+              </button>
+              <button type="button" className="btn btn-light" onClick={() => setSaveAttritionModalOpen(false)}>
                 Cancel
               </button>
             </div>
