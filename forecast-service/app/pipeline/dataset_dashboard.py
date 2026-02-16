@@ -18,6 +18,25 @@ def _today_range(days: int = 56) -> tuple[date, date]:
     return start, end
 
 
+def _normalize_channel(value: str) -> str:
+    text = str(value or "").strip().lower()
+    if not text:
+        return ""
+    if "voice" in text:
+        return "Voice"
+    if "back office" in text or "backoffice" in text or text in {"bo", "backoffice"}:
+        return "Back Office"
+    if "outbound" in text or text in {"ob"}:
+        return "Outbound"
+    if "blended" in text:
+        return "Blended"
+    if "message" in text or "msg" in text:
+        return "MessageUs"
+    if "chat" in text:
+        return "Chat"
+    return str(value).strip()
+
+
 def _hc_dim_df() -> pd.DataFrame:
     df = _hcu_df()
     if df is None or df.empty:
@@ -31,6 +50,24 @@ def _hc_dim_df() -> pd.DataFrame:
     out["Site"] = df[cols["site"]].astype(str) if cols.get("site") in df.columns else ""
     for col in out.columns:
         out[col] = out[col].fillna("").astype(str).str.strip()
+    if "Channel" in out.columns:
+        out["Channel"] = out["Channel"].map(_normalize_channel).fillna(out["Channel"])
+    if "Site" in out.columns and out["Site"].replace("", pd.NA).dropna().empty:
+        # Fallback for headcount files where site is present under alternative column names.
+        best_col = None
+        best_count = 0
+        for col in df.columns:
+            key = "".join(ch for ch in str(col).strip().lower() if ch.isalnum())
+            if not key:
+                continue
+            if any(token in key for token in ("site", "building", "locationbuilding", "locationbuildingdescription")):
+                series = df[col].astype(str).str.strip()
+                count = int(series.replace("", pd.NA).dropna().shape[0])
+                if count > best_count:
+                    best_count = count
+                    best_col = col
+        if best_col:
+            out["Site"] = df[best_col].astype(str).fillna("").str.strip()
     return out
 
 
@@ -88,8 +125,15 @@ def _load_bo(scopes: list[str], pref: str = "auto") -> pd.DataFrame:
     out = df.copy()
     if "items" not in out.columns:
         out["items"] = out["volume"] if "volume" in out.columns else 0.0
+    out["items"] = pd.to_numeric(out["items"], errors="coerce").fillna(0.0)
     if "sut_sec" not in out.columns:
-        out["sut_sec"] = 600.0
+        out["sut_sec"] = pd.NA
+    out["sut_sec"] = pd.to_numeric(out["sut_sec"], errors="coerce")
+    if "aht_sec" in out.columns:
+        aht_sec = pd.to_numeric(out["aht_sec"], errors="coerce")
+        # BO uploads are often stored under aht_sec. Use it when sut_sec is blank/zero.
+        out["sut_sec"] = out["sut_sec"].where(out["sut_sec"].fillna(0.0) > 0.0, aht_sec)
+    out["sut_sec"] = out["sut_sec"].fillna(600.0)
     out["date"] = pd.to_datetime(out["date"], errors="coerce").dt.date
     return out
 
@@ -113,16 +157,26 @@ def dataset_snapshot(
     dims = _hc_dim_df()
     if "Channel" in dims.columns:
         dims["Channel"] = dims["Channel"].replace("", "Voice")
+        dims["Channel"] = dims["Channel"].map(_normalize_channel).fillna(dims["Channel"])
 
     def _filter(col: str, values: list[str]):
         nonlocal dims
         if values:
-            lowered = {str(v).strip().lower() for v in values if str(v).strip()}
+            if col == "Channel":
+                lowered = {_normalize_channel(v).strip().lower() for v in values if str(v).strip()}
+            else:
+                lowered = {str(v).strip().lower() for v in values if str(v).strip()}
             dims = dims[dims[col].astype(str).str.strip().str.lower().isin(lowered)]
 
     _filter("Business Area", ba)
     _filter("Sub Business Area", sba)
-    _filter("Channel", ch)
+    if not dims.empty and "Channel" in dims.columns:
+        if not dims["Channel"].replace("", pd.NA).dropna().empty and ch:
+            dims_before = dims
+            _filter("Channel", ch)
+            # Keep BA/SBA/site scopes when channel labels are incomplete or mismatched.
+            if dims.empty:
+                dims = dims_before
     _filter("Location", loc)
     _filter("Site", site)
 
@@ -130,7 +184,7 @@ def dataset_snapshot(
         return {"rows": [], "chart": []}
 
     has_site_filter = bool(site)
-    channel_list = [str(x).strip() for x in ch] if ch else list(CHANNEL_LIST)
+    channel_list = [_normalize_channel(x).strip() for x in ch if str(x).strip()] if ch else list(CHANNEL_LIST)
     if has_site_filter and "Site" in dims.columns:
         d = dims[["Business Area", "Sub Business Area", "Channel", "Site"]].copy()
         d["Channel"] = d["Channel"].replace("", "Voice")
