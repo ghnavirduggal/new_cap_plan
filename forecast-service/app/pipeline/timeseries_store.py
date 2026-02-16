@@ -101,6 +101,84 @@ def scope_file_keys(scope_key: str) -> list[str]:
     return keys
 
 
+def _dedupe_timeseries_rows(df: pd.DataFrame) -> pd.DataFrame:
+    if not isinstance(df, pd.DataFrame) or df.empty:
+        return pd.DataFrame() if df is None else df
+    if "date" not in df.columns:
+        return df
+    out = df.copy()
+    out["_order"] = range(len(out))
+    if "interval" in out.columns:
+        interval_norm = (
+            out["interval"]
+            .astype(str)
+            .replace("nan", "")
+            .replace("NaT", "")
+            .str.strip()
+        )
+        out["__interval_norm"] = interval_norm
+        out = out.sort_values("_order").drop_duplicates(
+            subset=["date", "__interval_norm"], keep="last"
+        )
+        out = out.drop(columns=["__interval_norm"])
+    else:
+        out = out.sort_values("_order").drop_duplicates(subset=["date"], keep="last")
+    out = out.drop(columns=["_order"])
+    return out
+
+
+def _merge_with_existing_scope_file(
+    outdir: Path,
+    safe_kind: str,
+    scope_key: str,
+    incoming: pd.DataFrame,
+    mode: str,
+) -> pd.DataFrame:
+    df = incoming.copy()
+    if str(mode or "").lower() == "replace":
+        return _dedupe_timeseries_rows(df)
+    keys = scope_file_keys(scope_key)
+    path = outdir / f"timeseries_{safe_kind}_{keys[0]}.csv"
+    existing = pd.DataFrame()
+    if path.exists():
+        try:
+            existing = pd.read_csv(path)
+        except Exception:
+            existing = pd.DataFrame()
+    if existing.empty:
+        for legacy_scope in keys[1:]:
+            legacy_path = outdir / f"timeseries_{safe_kind}_{legacy_scope}.csv"
+            if not legacy_path.exists():
+                continue
+            try:
+                existing = pd.read_csv(legacy_path)
+            except Exception:
+                existing = pd.DataFrame()
+            if not existing.empty:
+                break
+    if not existing.empty:
+        df = pd.concat([existing, df], ignore_index=True)
+    return _dedupe_timeseries_rows(df)
+
+
+def _site_agnostic_scope_key(scope_key: str) -> Optional[str]:
+    raw = str(scope_key or "").strip()
+    if not raw or raw.lower() == "global" or raw.lower().startswith("location|"):
+        return None
+    if "|" not in raw:
+        return None
+    parts = [str(part).strip() for part in raw.split("|")]
+    while len(parts) < 4:
+        parts.append("")
+    ba, sba, channel, site = parts[:4]
+    if not (ba or sba or channel):
+        return None
+    site_norm = site.strip().lower()
+    if site_norm in {"", "all", "*"}:
+        return None
+    return f"{ba}|{sba}|{channel}|all"
+
+
 def load_timeseries_csv(kind: str, scope_key: str) -> pd.DataFrame:
     if not kind:
         return pd.DataFrame()
@@ -143,45 +221,15 @@ def save_timeseries(kind: str, scope_key: str, df: pd.DataFrame, mode: str = "ap
         save_timeseries_rows(kind, scope_key, df.to_dict("records"), mode=mode)
     except Exception:
         pass
-    if mode != "replace":
-        existing = pd.DataFrame()
-        if path.exists():
-            try:
-                existing = pd.read_csv(path)
-            except Exception:
-                existing = pd.DataFrame()
-        # Backward compatibility: merge from legacy long filenames when first switching to compact names.
-        if existing.empty:
-            for legacy_scope in scope_file_keys(scope_key)[1:]:
-                legacy_path = outdir / f"timeseries_{safe_kind}_{legacy_scope}.csv"
-                if not legacy_path.exists():
-                    continue
-                try:
-                    existing = pd.read_csv(legacy_path)
-                except Exception:
-                    existing = pd.DataFrame()
-                if not existing.empty:
-                    break
-        if not existing.empty:
-            df = pd.concat([existing, df], ignore_index=True)
-    if "date" in df.columns:
-        df = df.copy()
-        df["_order"] = range(len(df))
-        if "interval" in df.columns:
-            interval_norm = (
-                df["interval"]
-                .astype(str)
-                .replace("nan", "")
-                .replace("NaT", "")
-                .str.strip()
-            )
-            df["__interval_norm"] = interval_norm
-            df = df.sort_values("_order").drop_duplicates(
-                subset=["date", "__interval_norm"], keep="last"
-            )
-            df = df.drop(columns=["__interval_norm"])
-        else:
-            df = df.sort_values("_order").drop_duplicates(subset=["date"], keep="last")
-        df = df.drop(columns=["_order"])
-    df.to_csv(path, index=False)
-    return {"status": "saved", "rows": len(df.index), "path": str(path)}
+    merged_df = _merge_with_existing_scope_file(outdir, safe_kind, scope_key, df, mode)
+    merged_df.to_csv(path, index=False)
+
+    # Keep a 3-part site-agnostic alias to support BA|SBA|Channel fallbacks.
+    alias_scope = _site_agnostic_scope_key(scope_key)
+    if alias_scope:
+        alias_scope_safe = scope_file_keys(alias_scope)[0]
+        alias_path = outdir / f"timeseries_{safe_kind}_{alias_scope_safe}.csv"
+        alias_df = _merge_with_existing_scope_file(outdir, safe_kind, alias_scope, df, mode)
+        alias_df.to_csv(alias_path, index=False)
+
+    return {"status": "saved", "rows": len(merged_df.index), "path": str(path)}
