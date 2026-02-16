@@ -33,12 +33,6 @@ type PendingUpload = {
   scopeKey: string;
 };
 
-type DuplicatePrompt = {
-  pending: PendingUpload;
-  rows: number;
-  duplicates: number;
-};
-
 type ScopeMode = "global" | "location" | "hier";
 
 type ScopeState = {
@@ -229,9 +223,9 @@ export default function SettingsClient({
     sites: [],
     channels: ["Voice", "Back Office", "Outbound", "Blended", "Chat", "MessageUs"]
   });
-  const [uploadMode] = useState<"append" | "replace">("replace");
   const [uploads, setUploads] = useState(EMPTY_UPLOADS);
-  const [duplicatePrompt, setDuplicatePrompt] = useState<DuplicatePrompt | null>(null);
+  const [saveUploadModalOpen, setSaveUploadModalOpen] = useState(false);
+  const [saveUploadPending, setSaveUploadPending] = useState<PendingUpload | null>(null);
   const [activeTab, setActiveTab] = useState<(typeof FORECAST_TABS)[number]["key"]>("voice");
   const [activeTacticalTab, setActiveTacticalTab] = useState<(typeof TACTICAL_TABS)[number]["key"]>("voice");
   const [settings, setSettings] = useState<SettingsState>(DEFAULT_SETTINGS);
@@ -395,45 +389,22 @@ export default function SettingsClient({
       return;
     }
     if (!validateScope()) return;
-    setLoading(true);
-    try {
-      let preview: any | null = null;
-      try {
-        preview = await apiPost("/api/uploads/timeseries/preview", {
-          kind,
-          scope_key: scopeKey,
-          rows
-        });
-      } catch {
-        preview = null;
-      }
-      const previewRows = Number(preview?.rows ?? rows.length);
-      const previewDuplicates = Number(preview?.duplicates ?? 0);
-      if (previewRows > 0 && previewDuplicates >= previewRows) {
-        setDuplicatePrompt({
-          pending: { key, kind, rows, scopeKey },
-          rows: previewRows,
-          duplicates: previewDuplicates
-        });
-        return;
-      }
-      await persistTimeseries(key, kind, rows, uploadMode, scopeKey, false);
-    } finally {
-      setLoading(false);
-    }
+    setSaveUploadPending({ key, kind, rows, scopeKey });
+    setSaveUploadModalOpen(true);
   };
 
-  const handleDuplicateChoice = async (mode: "append" | "replace") => {
-    const pending = duplicatePrompt?.pending;
+  const handleSaveUploadChoice = async (mode: "append" | "replace") => {
+    const pending = saveUploadPending;
     if (!pending) {
-      setDuplicatePrompt(null);
+      setSaveUploadModalOpen(false);
       return;
     }
-    setDuplicatePrompt(null);
+    setSaveUploadModalOpen(false);
+    setSaveUploadPending(null);
     await persistTimeseries(pending.key, pending.kind, pending.rows, mode, pending.scopeKey, true);
   };
 
-  const duplicateScopeLabel = duplicatePrompt?.pending.scopeKey?.trim() || "global";
+  const saveUploadScopeLabel = saveUploadPending?.scopeKey?.trim() || "global";
 
   const validateScope = () => {
     if (scopeMode === "location" && !scope.location.trim()) {
@@ -1560,12 +1531,19 @@ export default function SettingsClient({
         <DataTable data={headcountRows} maxRows={8} />
       </section>
 
-      {duplicatePrompt ? (
+      {saveUploadModalOpen ? (
         <div className="ws-modal-backdrop">
           <div className="ws-modal ws-modal-sm">
-            <div className="ws-modal-header">
-              <h3>Identical Upload Detected</h3>
-              <button type="button" className="btn btn-light closeOptions" onClick={() => setDuplicatePrompt(null)}>
+            <div className="ws-modal-header" style={{ background: "#2f3747", color: "white" }}>
+              <h3>Save Upload</h3>
+              <button
+                type="button"
+                className="btn btn-light closeOptions"
+                onClick={() => {
+                  setSaveUploadModalOpen(false);
+                  setSaveUploadPending(null);
+                }}
+              >
                 <svg width="16" height="16" viewBox="0 0 16 16">
                   <line x1="2" y1="2" x2="14" y2="14" stroke="white" strokeWidth="2"/>
                   <line x1="14" y1="2" x2="2" y2="14" stroke="white" strokeWidth="2"/>
@@ -1573,24 +1551,26 @@ export default function SettingsClient({
               </button>
             </div>
             <div className="ws-modal-body">
-              <div className="forecast-muted">
-                This file matches existing rows for scope <strong>{duplicateScopeLabel}</strong>.
-              </div>
-              <div className="forecast-muted" style={{ marginTop: 8 }}>
-                Rows: {duplicatePrompt.rows} (duplicates: {duplicatePrompt.duplicates}).
-              </div>
-              <div className="forecast-muted" style={{ marginTop: 8 }}>
-                Choose how to apply the upload:
-              </div>
+              <p style={{ margin: 0 }}>
+                Save upload for scope <strong>{saveUploadScopeLabel}</strong>: replace existing rows for matching
+                date/interval, or append this upload on top?
+              </p>
             </div>
             <div className="ws-modal-footer">
-              <button type="button" className="btn btn-primary" onClick={() => void handleDuplicateChoice("replace")}>
-                Replace
+              <button type="button" className="btn btn-primary" onClick={() => void handleSaveUploadChoice("replace")}>
+                Replace Existing
               </button>
-              <button type="button" className="btn btn-outline" onClick={() => void handleDuplicateChoice("append")}>
-                Append
+              <button type="button" className="btn btn-light" onClick={() => void handleSaveUploadChoice("append")}>
+                Append to Existing
               </button>
-              <button type="button" className="btn btn-light" onClick={() => setDuplicatePrompt(null)}>
+              <button
+                type="button"
+                className="btn btn-light"
+                onClick={() => {
+                  setSaveUploadModalOpen(false);
+                  setSaveUploadPending(null);
+                }}
+              >
                 Cancel
               </button>
             </div>
