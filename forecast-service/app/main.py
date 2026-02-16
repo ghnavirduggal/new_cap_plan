@@ -2222,7 +2222,9 @@ def shrinkage_raw_endpoint(payload: dict):
 @app.get("/api/forecast/attrition")
 def get_attrition_weekly():
     df = load_attrition_weekly()
-    return {"rows": df_to_records(df)}
+    if isinstance(df, pd.DataFrame) and not df.empty:
+        df = df.replace([np.inf, -np.inf], np.nan)
+    return {"rows": sanitize_for_json(df_to_records(df))}
 
 
 @app.post("/api/forecast/attrition")
