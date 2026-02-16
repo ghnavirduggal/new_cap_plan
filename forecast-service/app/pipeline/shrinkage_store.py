@@ -25,6 +25,27 @@ SHRINK_WEEKLY_FIELDS = [
     "overall_pct",
 ]
 
+ATTRITION_WEEKLY_FIELDS = [
+    "week",
+    "program",
+    "leavers_fte",
+    "avg_active_fte",
+    "attrition_pct",
+]
+
+ATTRITION_SCOPE_FIELDS = ["business_area", "sub_business_area", "channel", "site"]
+ATTRITION_UPLOAD_FIELDS = [
+    "BRID",
+    "Name",
+    "Supervisor BRID",
+    "Supervisor Name",
+    "Termination Date",
+    "Business Area",
+    "Sub Business Area",
+    "Channel",
+    "Site",
+]
+
 _SHRINK_COLUMN_ALIASES = {
     "week": "week",
     "startweek": "week",
@@ -61,6 +82,124 @@ def _json_safe_value(value):
 
 def _json_safe_row(row: dict) -> dict:
     return {key: _json_safe_value(val) for key, val in (row or {}).items()}
+
+
+def _norm_scope_value(value: object) -> Optional[str]:
+    text = str(value or "").strip()
+    return text.lower() if text else None
+
+
+def _normalize_attrition_scope(scope: Optional[dict] = None) -> Optional[dict[str, Optional[str]]]:
+    if not isinstance(scope, dict):
+        return None
+    normalized = {
+        "business_area": _norm_scope_value(scope.get("business_area") or scope.get("ba")),
+        "sub_business_area": _norm_scope_value(scope.get("sub_business_area") or scope.get("sba")),
+        "channel": _norm_scope_value(scope.get("channel")),
+        "site": _norm_scope_value(scope.get("site")),
+    }
+    if not any(normalized.values()):
+        return None
+    return normalized
+
+
+def _scope_filter_sql(
+    scope: Optional[dict[str, Optional[str]]] = None,
+    *,
+    table_alias: str = "",
+) -> tuple[str, tuple]:
+    prefix = f"{table_alias}." if table_alias else ""
+    cols = [f"{prefix}{field}" for field in ATTRITION_SCOPE_FIELDS]
+    if not scope:
+        # Legacy/global rows: no scope values set.
+        return " AND ".join(f"{col} IS NULL" for col in cols), tuple()
+    clauses: list[str] = []
+    params: list[str] = []
+    for field, col in zip(ATTRITION_SCOPE_FIELDS, cols):
+        val = scope.get(field)
+        if val is None:
+            clauses.append(f"{col} IS NULL")
+        else:
+            clauses.append(f"lower({col}) = %s")
+            params.append(str(val))
+    return " AND ".join(clauses), tuple(params)
+
+
+def normalize_attrition_raw_upload(df_raw: pd.DataFrame, scope: Optional[dict] = None) -> pd.DataFrame:
+    if df_raw is None or df_raw.empty:
+        return pd.DataFrame(columns=ATTRITION_UPLOAD_FIELDS)
+    df = df_raw.copy()
+    out = pd.DataFrame(index=df.index)
+
+    col_brid = _pick_col(df, "BRID", "AgentID(BRID)", "Employee Id", "EmployeeID", "employee_id")
+    col_name = _pick_col(df, "Name", "Employee Name", "Full Name")
+    col_sup_brid = _pick_col(df, "Supervisor BRID", "Line Manager BRID", "Manager BRID")
+    col_sup_name = _pick_col(
+        df,
+        "Supervisor Name",
+        "Line Manager Name",
+        "Line Manager Full Name",
+        "Manager Name",
+        "TL Name",
+    )
+    col_term = _pick_col(
+        df,
+        "Termination Date",
+        "Terminate Date",
+        "Resignation Date",
+        "Reporting Full Date",
+        "Term Date",
+        "termination_date",
+    )
+    col_ba = _pick_col(df, "Business Area", "Journey", "Org Unit", "IMH L05")
+    col_sba = _pick_col(df, "Sub Business Area", "SubBusinessArea", "Level 3", "IMH L06")
+    col_channel = _pick_col(df, "Channel")
+    col_site = _pick_col(df, "Site", "Building", "Position Location Building Description")
+
+    out["BRID"] = df[col_brid] if col_brid else np.nan
+    out["Name"] = df[col_name] if col_name else np.nan
+    out["Supervisor BRID"] = df[col_sup_brid] if col_sup_brid else np.nan
+    out["Supervisor Name"] = df[col_sup_name] if col_sup_name else np.nan
+    out["Termination Date"] = df[col_term] if col_term else np.nan
+    out["Business Area"] = df[col_ba] if col_ba else np.nan
+    out["Sub Business Area"] = df[col_sba] if col_sba else np.nan
+    out["Channel"] = df[col_channel] if col_channel else np.nan
+    out["Site"] = df[col_site] if col_site else np.nan
+
+    scope_ba = str((scope or {}).get("business_area") or (scope or {}).get("ba") or "").strip()
+    scope_sba = str((scope or {}).get("sub_business_area") or (scope or {}).get("sba") or "").strip()
+    scope_channel = str((scope or {}).get("channel") or "").strip()
+    scope_site = str((scope or {}).get("site") or "").strip()
+    if scope_ba:
+        out["Business Area"] = out["Business Area"].replace("", np.nan).fillna(scope_ba)
+    if scope_sba:
+        out["Sub Business Area"] = out["Sub Business Area"].replace("", np.nan).fillna(scope_sba)
+    if scope_channel:
+        out["Channel"] = out["Channel"].replace("", np.nan).fillna(scope_channel)
+    if scope_site:
+        out["Site"] = out["Site"].replace("", np.nan).fillna(scope_site)
+
+    for col in ATTRITION_UPLOAD_FIELDS:
+        if col not in out.columns:
+            out[col] = np.nan
+        if col == "Termination Date":
+            continue
+        out[col] = out[col].map(lambda x: str(x).strip() if not pd.isna(x) else x)
+        out[col] = out[col].replace({"": np.nan, "nan": np.nan, "none": np.nan, "null": np.nan, "None": np.nan})
+    out = out[ATTRITION_UPLOAD_FIELDS]
+    out = out.dropna(how="all").reset_index(drop=True)
+    return out
+
+
+def _attrition_fte_series(df_raw: pd.DataFrame) -> pd.Series:
+    if df_raw is None or df_raw.empty:
+        return pd.Series(dtype=float)
+    fte_col = _pick_col(df_raw, "FTE", "HC FTE", "HC", "Leavers FTE")
+    if not fte_col:
+        return pd.Series(np.ones(len(df_raw.index)), index=df_raw.index, dtype=float)
+    fte = pd.to_numeric(df_raw[fte_col], errors="coerce")
+    fte = fte.replace([np.inf, -np.inf], np.nan).fillna(1.0)
+    return fte.astype(float)
 
 
 def is_voice_shrinkage_like(df: pd.DataFrame) -> bool:
@@ -755,38 +894,54 @@ def weekly_avg_active_fte_from_roster(week_start: str = "Monday") -> pd.DataFram
     return weekly.sort_values("week")
 
 
-def attrition_weekly_from_raw(df_raw: pd.DataFrame, week_start: str = "Monday") -> pd.DataFrame:
+def attrition_weekly_from_raw(
+    df_raw: pd.DataFrame,
+    week_start: str = "Monday",
+    scope: Optional[dict] = None,
+) -> pd.DataFrame:
     if df_raw is None or df_raw.empty:
         return pd.DataFrame(columns=["week", "leavers_fte", "avg_active_fte", "attrition_pct", "program"])
-    df = df_raw.copy()
-    if "Resignation Date" not in df.columns:
-        if "Reporting Full Date" in df.columns:
-            df["Resignation Date"] = df["Reporting Full Date"]
-        else:
-            return pd.DataFrame(columns=["week", "leavers_fte", "avg_active_fte", "attrition_pct", "program"])
-    df = df[~df["Resignation Date"].isna()].copy()
-    if "FTE" not in df.columns:
-        df["FTE"] = 1.0
+    raw = df_raw.copy()
+    fte_series = _attrition_fte_series(raw)
+    df = normalize_attrition_raw_upload(raw, scope=scope)
+    if df.empty or "Termination Date" not in df.columns:
+        return pd.DataFrame(columns=["week", "leavers_fte", "avg_active_fte", "attrition_pct", "program"])
 
-    program_series = None
+    df["Termination Date"] = _parse_date_series(df["Termination Date"])
+    df["FTE"] = fte_series.reindex(df.index).fillna(1.0).astype(float)
+    df = df[~df["Termination Date"].isna()].copy()
+    if df.empty:
+        return pd.DataFrame(columns=["week", "leavers_fte", "avg_active_fte", "attrition_pct", "program"])
+
+    program_series = df["Business Area"].replace("", np.nan) if "Business Area" in df.columns else None
     hc = load_headcount()
-    if "BRID" in df.columns and isinstance(hc, pd.DataFrame) and not hc.empty:
+    if "BRID" in df.columns and isinstance(hc, pd.DataFrame) and not hc.empty and not df["BRID"].isna().all():
         brid_col = _pick_col(hc, "brid", "employee id", "employee_id")
         journey_col = _pick_col(hc, "journey", "business area", "level 0")
         if brid_col and journey_col:
-            map_brid = dict(zip(hc[brid_col].astype(str), hc[journey_col].astype(str)))
-            program_series = df["BRID"].astype(str).map(lambda x: map_brid.get(x))
+            map_brid = dict(
+                zip(
+                    hc[brid_col].map(lambda x: str(x).strip()),
+                    hc[journey_col].map(lambda x: str(x).strip() if not pd.isna(x) else np.nan),
+                )
+            )
+            mapped = df["BRID"].map(lambda x: map_brid.get(str(x).strip()) if not pd.isna(x) else np.nan)
+            if program_series is None:
+                program_series = mapped
+            else:
+                program_series = program_series.replace("", np.nan).fillna(mapped)
 
-    if program_series is None or program_series.isna().all():
-        lower = [str(c).strip().lower() for c in df.columns]
-        if any(name in lower for name in ["org unit", "business area", "journey"]):
-            pick = df.columns[lower.index(next(name for name in ["org unit", "business area", "journey"] if name in lower))]
-            program_series = df[pick]
+    scope_program = str((scope or {}).get("business_area") or (scope or {}).get("ba") or "").strip()
+    if scope_program:
+        if program_series is None:
+            program_series = pd.Series([scope_program] * len(df.index), index=df.index)
         else:
-            program_series = pd.Series(["All"] * len(df))
+            program_series = program_series.replace("", np.nan).fillna(scope_program)
+    if program_series is None:
+        program_series = pd.Series(["All"] * len(df.index), index=df.index)
 
     df["program"] = program_series.fillna("All").astype(str)
-    df["week"] = df["Resignation Date"].apply(lambda x: _week_floor(x, week_start))
+    df["week"] = df["Termination Date"].apply(lambda x: _week_floor(x, week_start))
     wk = df.groupby(["week", "program"], as_index=False)["FTE"].sum().rename(columns={"FTE": "leavers_fte"})
     den = weekly_avg_active_fte_from_roster(week_start=week_start)
     out = wk.merge(den, on="week", how="left")
@@ -799,28 +954,29 @@ def attrition_weekly_from_raw(df_raw: pd.DataFrame, week_start: str = "Monday") 
     return out[keep].sort_values(["week", "program"])
 
 
-def load_attrition_weekly() -> pd.DataFrame:
+def load_attrition_weekly(scope: Optional[dict] = None) -> pd.DataFrame:
     ensure_shrinkage_schema()
     if not has_dsn():
-        return pd.DataFrame(columns=["week", "attrition_pct", "program"])
+        return pd.DataFrame(columns=ATTRITION_WEEKLY_FIELDS)
+    scope_norm = _normalize_attrition_scope(scope)
+    where_sql, params = _scope_filter_sql(scope_norm)
     with db_conn() as conn:
         cur = conn.cursor()
         cur.execute(
-            """
+            f"""
             SELECT week, program, leavers_fte, avg_active_fte, attrition_pct
             FROM attrition_weekly_entries
+            WHERE {where_sql}
             ORDER BY week, program
-            """
+            """,
+            params,
         )
         rows = cur.fetchall()
         cols = [desc[0] for desc in cur.description]
     return pd.DataFrame(rows, columns=cols)
 
 
-def save_attrition_weekly(df: pd.DataFrame) -> int:
-    ensure_shrinkage_schema()
-    if not has_dsn():
-        return 0
+def _normalize_attrition_weekly(df: pd.DataFrame) -> pd.DataFrame:
     if isinstance(df, pd.DataFrame):
         data = df.copy()
     elif df is None:
@@ -828,13 +984,61 @@ def save_attrition_weekly(df: pd.DataFrame) -> int:
     else:
         data = pd.DataFrame(df)
     if data.empty:
-        return 0
+        return pd.DataFrame(columns=ATTRITION_WEEKLY_FIELDS)
     if "program" not in data.columns:
         data["program"] = "All"
-    data["week"] = pd.to_datetime(data["week"], errors="coerce").dt.date
+    data["program"] = data["program"].fillna("All").astype(str).str.strip().replace("", "All")
+    week_source = data["week"] if "week" in data.columns else (data["date"] if "date" in data.columns else None)
+    if week_source is None:
+        return pd.DataFrame(columns=ATTRITION_WEEKLY_FIELDS)
+    data["week"] = pd.to_datetime(week_source, errors="coerce").dt.date
+    data = data.dropna(subset=["week"])
     for col in ("leavers_fte", "avg_active_fte", "attrition_pct"):
         if col in data.columns:
             data[col] = pd.to_numeric(data[col], errors="coerce")
+        else:
+            data[col] = np.nan
+    # Recompute attrition % when missing and denominator is valid.
+    missing_pct = data["attrition_pct"].isna()
+    den = data["avg_active_fte"].replace({0: np.nan})
+    data.loc[missing_pct, "attrition_pct"] = (data.loc[missing_pct, "leavers_fte"] / den.loc[missing_pct]) * 100.0
+    data["attrition_pct"] = pd.to_numeric(data["attrition_pct"], errors="coerce").round(2)
+    data = data[ATTRITION_WEEKLY_FIELDS]
+    data = data.sort_values(["week", "program"]).reset_index(drop=True)
+    return data
+
+
+def _merge_attrition_weekly(*frames: pd.DataFrame) -> pd.DataFrame:
+    prepared: list[pd.DataFrame] = []
+    for frame in frames:
+        norm = _normalize_attrition_weekly(frame)
+        if isinstance(norm, pd.DataFrame) and not norm.empty:
+            prepared.append(norm)
+    if not prepared:
+        return pd.DataFrame(columns=ATTRITION_WEEKLY_FIELDS)
+    combo = pd.concat(prepared, ignore_index=True)
+    combo["_order"] = range(len(combo))
+    combo = combo.sort_values("_order").drop_duplicates(subset=["week", "program"], keep="last")
+    combo = combo.drop(columns=["_order"])
+    combo = combo.sort_values(["week", "program"]).reset_index(drop=True)
+    return combo[ATTRITION_WEEKLY_FIELDS]
+
+
+def save_attrition_weekly(df: pd.DataFrame, mode: str = "replace", scope: Optional[dict] = None) -> int:
+    ensure_shrinkage_schema()
+    if not has_dsn():
+        return 0
+    scope_norm = _normalize_attrition_scope(scope)
+    data = _normalize_attrition_weekly(df)
+    if data.empty:
+        return 0
+    for field in ATTRITION_SCOPE_FIELDS:
+        data[field] = (scope_norm or {}).get(field)
+    if str(mode or "replace").lower() == "append":
+        existing = _normalize_attrition_weekly(load_attrition_weekly(scope=scope_norm))
+        data = _merge_attrition_weekly(existing, data)
+        for field in ATTRITION_SCOPE_FIELDS:
+            data[field] = (scope_norm or {}).get(field)
 
     def _pg_float(value):
         num = pd.to_numeric(value, errors="coerce")
@@ -846,20 +1050,25 @@ def save_attrition_weekly(df: pd.DataFrame) -> int:
             return None
         return f
 
+    delete_where_sql, delete_params = _scope_filter_sql(scope_norm)
     with db_conn() as conn:
         with conn.cursor() as cur:
-            cur.execute("DELETE FROM attrition_weekly_entries")
+            cur.execute(f"DELETE FROM attrition_weekly_entries WHERE {delete_where_sql}", delete_params)
             cur.executemany(
                 """
                 INSERT INTO attrition_weekly_entries (
-                    week, program, leavers_fte, avg_active_fte, attrition_pct
+                    week, program, business_area, sub_business_area, channel, site, leavers_fte, avg_active_fte, attrition_pct
                 )
-                VALUES (%s, %s, %s, %s, %s)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
                 """,
                 [
                     (
                         row.get("week"),
                         row.get("program"),
+                        row.get("business_area"),
+                        row.get("sub_business_area"),
+                        row.get("channel"),
+                        row.get("site"),
                         _pg_float(row.get("leavers_fte")),
                         _pg_float(row.get("avg_active_fte")),
                         _pg_float(row.get("attrition_pct")),
@@ -870,29 +1079,47 @@ def save_attrition_weekly(df: pd.DataFrame) -> int:
     return int(len(data.index))
 
 
-def load_attrition_raw() -> pd.DataFrame:
+def load_attrition_raw(scope: Optional[dict] = None) -> pd.DataFrame:
     ensure_shrinkage_schema()
     if not has_dsn():
         return pd.DataFrame()
+    scope_norm = _normalize_attrition_scope(scope)
+    where_sql, params = _scope_filter_sql(scope_norm)
     with db_conn() as conn:
         cur = conn.cursor()
-        cur.execute("SELECT payload FROM attrition_raw_entries ORDER BY id")
+        cur.execute(f"SELECT payload FROM attrition_raw_entries WHERE {where_sql} ORDER BY id", params)
         rows = cur.fetchall()
     payloads = [row[0] if isinstance(row, tuple) else row for row in rows]
     return pd.DataFrame(payloads) if payloads else pd.DataFrame()
 
 
-def save_attrition_raw(df: pd.DataFrame) -> int:
+def save_attrition_raw(df: pd.DataFrame, scope: Optional[dict] = None) -> int:
     ensure_shrinkage_schema()
     if not has_dsn():
         return 0
-    rows = df.to_dict("records") if isinstance(df, pd.DataFrame) else []
+    scope_norm = _normalize_attrition_scope(scope)
+    delete_where_sql, delete_params = _scope_filter_sql(scope_norm)
+    norm = normalize_attrition_raw_upload(df, scope=scope)
+    rows = norm.to_dict("records") if isinstance(norm, pd.DataFrame) else []
     with db_conn() as conn:
         with conn.cursor() as cur:
-            cur.execute("DELETE FROM attrition_raw_entries")
+            cur.execute(f"DELETE FROM attrition_raw_entries WHERE {delete_where_sql}", delete_params)
             if rows:
                 cur.executemany(
-                    "INSERT INTO attrition_raw_entries (payload) VALUES (%s)",
-                    [(Json(_json_safe_row(row)),) for row in rows],
+                    """
+                    INSERT INTO attrition_raw_entries
+                    (business_area, sub_business_area, channel, site, payload)
+                    VALUES (%s, %s, %s, %s, %s)
+                    """,
+                    [
+                        (
+                            (scope_norm or {}).get("business_area"),
+                            (scope_norm or {}).get("sub_business_area"),
+                            (scope_norm or {}).get("channel"),
+                            (scope_norm or {}).get("site"),
+                            Json(_json_safe_row(row)),
+                        )
+                        for row in rows
+                    ],
                 )
     return int(len(rows))
