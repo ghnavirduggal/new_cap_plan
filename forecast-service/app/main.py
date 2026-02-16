@@ -296,6 +296,28 @@ def _invalidate_plan_detail_for_scope(scope: dict, dep: str | None = None) -> No
                 continue
 
 
+def _norm_brid(value: object) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    if re.match(r"^\d+\.0+$", text):
+        text = text.split(".", 1)[0]
+    return text.lower()
+
+
+def _canon_channel_name(value: object) -> str:
+    key = " ".join(str(value or "").strip().lower().replace(",", " ").split())
+    if key in {"back office", "backoffice", "bo"}:
+        return "back office"
+    if key in {"outbound", "out bound", "ob"}:
+        return "outbound"
+    if key in {"chat", "message us", "messageus", "messaging"}:
+        return "chat"
+    if key in {"voice", "inbound", "call", "telephony"}:
+        return "voice"
+    return key
+
+
 def _attrition_termination_map(df_raw: pd.DataFrame, scope: Optional[dict]) -> dict[str, str]:
     if df_raw is None or df_raw.empty:
         return {}
@@ -305,7 +327,7 @@ def _attrition_termination_map(df_raw: pd.DataFrame, scope: Optional[dict]) -> d
         return {}
     if norm is None or norm.empty or "BRID" not in norm.columns or "Termination Date" not in norm.columns:
         return {}
-    brid_norm = norm["BRID"].map(lambda v: str(v or "").strip().lower())
+    brid_norm = norm["BRID"].map(_norm_brid)
     term_series = _parse_date_series(norm["Termination Date"])
     work = pd.DataFrame({"brid_norm": brid_norm, "term": term_series})
     work["term"] = pd.to_datetime(work["term"], errors="coerce").dt.date
@@ -356,12 +378,12 @@ def _sync_attrition_to_plan_roster(df_raw: pd.DataFrame, scope: Optional[dict]) 
             ) or []
         except Exception:
             fallback = []
-        target_channel = _norm(scope_obj.get("channel"))
+        target_channel = _canon_channel_name(scope_obj.get("channel"))
         if target_channel:
             narrowed: list[dict] = []
             for plan in fallback:
                 chan_raw = str(plan.get("channel") or "")
-                chan_parts = [_norm(part) for part in chan_raw.split(",") if _norm(part)]
+                chan_parts = [_canon_channel_name(part) for part in chan_raw.split(",") if _canon_channel_name(part)]
                 if target_channel in chan_parts:
                     narrowed.append(plan)
             plans = narrowed
@@ -384,13 +406,13 @@ def _sync_attrition_to_plan_roster(df_raw: pd.DataFrame, scope: Optional[dict]) 
         for row in rows:
             if not isinstance(row, dict):
                 continue
-            brid = _norm_str(
+            brid = _norm_brid(
                 row.get("brid")
                 or row.get("BRID")
                 or row.get("employee_id")
                 or row.get("Employee ID")
                 or row.get("Employee Id")
-            ).lower()
+            )
             if not brid:
                 continue
             term_iso = term_map.get(brid)
