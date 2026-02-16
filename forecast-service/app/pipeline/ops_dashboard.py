@@ -638,8 +638,15 @@ def _load_bo(scopes: list[str], start: Optional[date] = None, end: Optional[date
     out = df.copy()
     if "items" not in out.columns:
         out["items"] = out["volume"] if "volume" in out.columns else 0.0
+    out["items"] = pd.to_numeric(out["items"], errors="coerce").fillna(0.0)
     if "sut_sec" not in out.columns:
-        out["sut_sec"] = 600.0
+        out["sut_sec"] = pd.NA
+    out["sut_sec"] = pd.to_numeric(out["sut_sec"], errors="coerce")
+    if "aht_sec" in out.columns:
+        aht_sec = pd.to_numeric(out["aht_sec"], errors="coerce")
+        # Many BO uploads store handle time under aht_sec; use it when sut_sec is missing/zero.
+        out["sut_sec"] = out["sut_sec"].where(out["sut_sec"].fillna(0.0) > 0.0, aht_sec)
+    out["sut_sec"] = out["sut_sec"].fillna(600.0)
     out["date"] = pd.to_datetime(out["date"], errors="coerce").dt.date
     return out
 
@@ -936,6 +943,51 @@ def _avg_aht_with_grain(voice: pd.DataFrame, grain: str) -> float:
     return float(bucket_vals["avg"].mean())
 
 
+def _avg_sut_with_grain(bo: pd.DataFrame, grain: str) -> float:
+    if bo is None or bo.empty or "items" not in bo.columns:
+        return 0.0
+    handle_col = "sut_sec" if "sut_sec" in bo.columns else ("aht_sec" if "aht_sec" in bo.columns else None)
+    if not handle_col:
+        return 0.0
+    df = bo.copy()
+    df["date"] = pd.to_datetime(df["date"], errors="coerce").dt.date
+    df["items"] = pd.to_numeric(df["items"], errors="coerce").fillna(0.0)
+    df[handle_col] = pd.to_numeric(df[handle_col], errors="coerce").fillna(0.0)
+    if grain in ("interval", "D", "daily"):
+        total_items = float(df["items"].sum())
+        if total_items <= 0:
+            return 0.0
+        numer = float((df["items"] * df[handle_col]).sum())
+        return float(numer / max(total_items, 1e-6))
+
+    daily = df.groupby("date", as_index=False).apply(
+        lambda g: pd.Series(
+            {
+                "sut_sec": float((g["items"] * g[handle_col]).sum() / max(1e-6, g["items"].sum())),
+                "weight": float(g["items"].sum()),
+            }
+        )
+    )
+    if daily.empty:
+        return 0.0
+    daily = _agg_by_grain(daily, "date", grain)
+
+    def _bucket_avg(group: pd.DataFrame) -> float:
+        wsum = float(group["weight"].sum())
+        if wsum > 0:
+            return float((group["sut_sec"] * group["weight"]).sum() / wsum)
+        return float(group["sut_sec"].mean()) if not group.empty else 0.0
+
+    bucket_vals = daily.groupby("bucket").apply(_bucket_avg)
+    if isinstance(bucket_vals, pd.Series):
+        bucket_vals = bucket_vals.reset_index(name="avg")
+    else:
+        bucket_vals = bucket_vals.rename(columns={0: "avg"})
+    if bucket_vals.empty:
+        return 0.0
+    return float(bucket_vals["avg"].mean())
+
+
 def _gap_df_with_grain(
     req_day: pd.DataFrame,
     supply: pd.DataFrame,
@@ -992,6 +1044,28 @@ def _top_volume_with_grain(voice: pd.DataFrame, grain: str, limit: int = 5) -> l
         return []
     vday = vday.groupby("bucket", as_index=False)["volume"].sum().sort_values("volume", ascending=False).head(limit)
     return [{"date": str(row["bucket"]), "volume": float(row["volume"])} for _, row in vday.iterrows()]
+
+
+def _top_workload_with_grain(
+    voice: pd.DataFrame,
+    bo: pd.DataFrame,
+    grain: str,
+    limit: int = 5,
+) -> list[dict[str, Any]]:
+    top_voice = _top_volume_with_grain(voice, grain, limit=limit)
+    if top_voice:
+        return top_voice
+    if bo is None or bo.empty or "items" not in bo.columns:
+        return []
+    bday = bo.copy()
+    bday["date"] = pd.to_datetime(bday["date"], errors="coerce").dt.date
+    bday["items"] = pd.to_numeric(bday["items"], errors="coerce").fillna(0.0)
+    bday = _add_bucket(bday, "date", grain)
+    if bday.empty:
+        return []
+    bday = bday.groupby("bucket", as_index=False)["items"].sum().sort_values("items", ascending=False).head(limit)
+    # Keep response contract (`volume`) so the UI can render without changes.
+    return [{"date": str(row["bucket"]), "volume": float(row["items"])} for _, row in bday.iterrows()]
 
 
 def _bucketed_weighted_avg_series(
@@ -1055,6 +1129,8 @@ def _compute_kpis_insights(base: dict, grain: str) -> dict:
     total_calls = float(voice["volume"].sum()) if not voice.empty and "volume" in voice.columns else 0.0
     total_items = float(bo["items"].sum()) if not bo.empty and "items" in bo.columns else 0.0
     avg_aht = _avg_aht_with_grain(voice, grain)
+    if avg_aht <= 0.0:
+        avg_aht = _avg_sut_with_grain(bo, grain)
 
     gap_df = _gap_df_with_grain(req_day, supply, voice, settings, weight_df, grain)
     worst_gap = {}
@@ -1091,7 +1167,7 @@ def _compute_kpis_insights(base: dict, grain: str) -> dict:
                 }
             )
 
-    top_volume_days = _top_volume_with_grain(voice, grain)
+    top_volume_days = _top_workload_with_grain(voice, bo, grain)
 
     return {
         "kpis": {"required_fte": kpi_req, "supply_fte": kpi_sup, "gap_fte": kpi_gap},
@@ -1464,6 +1540,8 @@ def refresh_ops(
     total_calls = float(voice["volume"].sum()) if not voice.empty and "volume" in voice.columns else 0.0
     total_items = float(bo["items"].sum()) if not bo.empty and "items" in bo.columns else 0.0
     avg_aht = _avg_aht_with_grain(voice, grain)
+    if avg_aht <= 0.0:
+        avg_aht = _avg_sut_with_grain(bo, grain)
 
     gap_df = _gap_df_with_grain(req_day, supply, voice, settings, weight_df, grain)
     worst_gap = {}
@@ -1512,7 +1590,7 @@ def refresh_ops(
                 }
             )
 
-    top_volume_days = _top_volume_with_grain(voice, grain)
+    top_volume_days = _top_workload_with_grain(voice, bo, grain)
 
     line_series = []
     if grain == "interval" and not voice.empty and "interval" in voice.columns and voice["interval"].notna().any():
