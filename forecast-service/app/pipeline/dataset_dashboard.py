@@ -22,11 +22,11 @@ def _normalize_channel(value: str) -> str:
     text = str(value or "").strip().lower()
     if not text:
         return ""
-    if "voice" in text:
+    if "voice" in text or text in {"inbound", "call", "telephony"}:
         return "Voice"
     if "back office" in text or "backoffice" in text or text in {"bo", "backoffice"}:
         return "Back Office"
-    if "outbound" in text or text in {"ob"}:
+    if "outbound" in text or "out bound" in text or text in {"ob"}:
         return "Outbound"
     if "blended" in text:
         return "Blended"
@@ -243,11 +243,14 @@ def dataset_snapshot(
     df = pd.merge(req_df, sup_df, on=["date", "program"], how="outer").fillna(
         {"total_req_fte": 0.0, "supply_fte": 0.0}
     )
-    df["staffing_pct"] = np.where(
-        df["total_req_fte"] > 0,
-        (df["supply_fte"] / df["total_req_fte"]) * 100.0,
-        np.nan,
-    )
+    req_fte = pd.to_numeric(df["total_req_fte"], errors="coerce")
+    sup_fte = pd.to_numeric(df["supply_fte"], errors="coerce")
+    df["total_req_fte"] = req_fte.fillna(0.0)
+    df["supply_fte"] = sup_fte.fillna(0.0)
+    df["staffing_pct"] = np.nan
+    valid_req = req_fte > 0
+    if valid_req.any():
+        df.loc[valid_req, "staffing_pct"] = (sup_fte[valid_req] / req_fte[valid_req]) * 100.0
     df = df.sort_values(["date", "program"]) if not df.empty else df
 
     daily = (
