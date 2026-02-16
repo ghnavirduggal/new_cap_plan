@@ -6,7 +6,7 @@ from typing import Optional
 
 import numpy as np
 import pandas as pd
-from psycopg.types.json import Json
+from psycopg2.extras import Json
 
 from app.pipeline.headcount import load_headcount
 from app.pipeline.ops_store import load_roster as load_roster_supply
@@ -835,6 +835,17 @@ def save_attrition_weekly(df: pd.DataFrame) -> int:
     for col in ("leavers_fte", "avg_active_fte", "attrition_pct"):
         if col in data.columns:
             data[col] = pd.to_numeric(data[col], errors="coerce")
+
+    def _pg_float(value):
+        num = pd.to_numeric(value, errors="coerce")
+        try:
+            f = float(num)
+        except Exception:
+            return None
+        if not np.isfinite(f):
+            return None
+        return f
+
     with db_conn() as conn:
         with conn.cursor() as cur:
             cur.execute("DELETE FROM attrition_weekly_entries")
@@ -849,9 +860,9 @@ def save_attrition_weekly(df: pd.DataFrame) -> int:
                     (
                         row.get("week"),
                         row.get("program"),
-                        row.get("leavers_fte"),
-                        row.get("avg_active_fte"),
-                        row.get("attrition_pct"),
+                        _pg_float(row.get("leavers_fte")),
+                        _pg_float(row.get("avg_active_fte")),
+                        _pg_float(row.get("attrition_pct")),
                     )
                     for _, row in data.iterrows()
                 ],
