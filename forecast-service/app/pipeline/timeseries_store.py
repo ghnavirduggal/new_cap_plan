@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import os
 import re
 import tempfile
@@ -7,6 +8,9 @@ from pathlib import Path
 from typing import Optional
 
 import pandas as pd
+
+_SCOPE_FILE_MAX_LEN = 160
+_SCOPE_HASH_LEN = 12
 
 
 def _repo_root() -> Path:
@@ -73,30 +77,54 @@ def _canonical_scope_key(scope_key: str) -> str:
     return _safe_component(raw)
 
 
+def _compact_scope_token(token: str) -> str:
+    value = str(token or "").strip("_")
+    if not value:
+        return "global"
+    if len(value) <= _SCOPE_FILE_MAX_LEN:
+        return value
+    digest = hashlib.sha1(value.encode("utf-8")).hexdigest()[:_SCOPE_HASH_LEN]
+    suffix = f"__h{digest}"
+    keep = max(_SCOPE_FILE_MAX_LEN - len(suffix), 1)
+    prefix = value[:keep].rstrip("_")
+    if not prefix:
+        prefix = value[:keep]
+    return f"{prefix}{suffix}"
+
+
+def scope_file_keys(scope_key: str) -> list[str]:
+    canonical = _canonical_scope_key(scope_key)
+    compact = _compact_scope_token(canonical)
+    keys = [compact]
+    if canonical != compact:
+        keys.append(canonical)
+    return keys
+
+
 def load_timeseries_csv(kind: str, scope_key: str) -> pd.DataFrame:
     if not kind:
         return pd.DataFrame()
     safe_kind = _safe_component(kind)
-    safe_scope = _canonical_scope_key(scope_key)
-    filename = f"timeseries_{safe_kind}_{safe_scope}.csv"
-    for outdir in _exports_candidates():
-        path = outdir / filename
-        if not path.exists():
-            # Case-insensitive fallback (Windows mounts can preserve case, Linux lookups are strict).
+    for safe_scope in scope_file_keys(scope_key):
+        filename = f"timeseries_{safe_kind}_{safe_scope}.csv"
+        for outdir in _exports_candidates():
+            path = outdir / filename
+            if not path.exists():
+                # Case-insensitive fallback (Windows mounts can preserve case, Linux lookups are strict).
+                try:
+                    target = path.name.lower()
+                    for cand in outdir.glob(f"timeseries_{safe_kind}_*.csv"):
+                        if cand.name.lower() == target:
+                            path = cand
+                            break
+                except Exception:
+                    continue
+            if not path.exists():
+                continue
             try:
-                target = path.name.lower()
-                for cand in outdir.glob(f"timeseries_{safe_kind}_*.csv"):
-                    if cand.name.lower() == target:
-                        path = cand
-                        break
+                return pd.read_csv(path)
             except Exception:
                 continue
-        if not path.exists():
-            continue
-        try:
-            return pd.read_csv(path)
-        except Exception:
-            continue
     return pd.DataFrame()
 
 
@@ -105,7 +133,7 @@ def save_timeseries(kind: str, scope_key: str, df: pd.DataFrame, mode: str = "ap
         return {"status": "missing_kind"}
     outdir = _exports_dir()
     safe_kind = _safe_component(kind)
-    safe_scope = _canonical_scope_key(scope_key)
+    safe_scope = scope_file_keys(scope_key)[0]
     path = outdir / f"timeseries_{safe_kind}_{safe_scope}.csv"
     if df is None or df.empty:
         return {"status": "empty", "rows": 0, "path": str(path)}
