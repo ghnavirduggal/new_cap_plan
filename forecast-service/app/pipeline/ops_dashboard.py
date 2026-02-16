@@ -809,15 +809,33 @@ def _filter_scope_df(
                 sset = {str(v).strip().lower() for v in values if str(v).strip()}
                 out = out[out[col].astype(str).str.strip().str.lower().isin(sset)]
 
-    _filter("program", ba)
-    _filter("Business Area", ba)
+    has_ba_col = any(col in out.columns for col in ("Business Area", "business_area", "ba"))
+    if has_ba_col:
+        _filter("Business Area", ba)
+        _filter("business_area", ba)
+        _filter("ba", ba)
+    else:
+        # Legacy fallback: some old supply tables stored BA in `program`.
+        _filter("program", ba)
+
     _filter("Sub Business Area", sba)
+    _filter("sub_business_area", sba)
+    _filter("sub_ba", sba)
+
+    has_channel_col = any(col in out.columns for col in ("LOB", "Channel", "lob", "channel"))
     _filter("LOB", ch, is_channel=True)
     _filter("Channel", ch, is_channel=True)
+    _filter("lob", ch, is_channel=True)
+    _filter("channel", ch, is_channel=True)
+    if not has_channel_col:
+        _filter("program", ch, is_channel=True)
+
     _filter("site", site)
     _filter("Site", site)
+    _filter("site_name", site)
     _filter("location", loc)
     _filter("Location", loc)
+    _filter("loc", loc)
     _filter("country", loc)
     _filter("Country", loc)
     return out
