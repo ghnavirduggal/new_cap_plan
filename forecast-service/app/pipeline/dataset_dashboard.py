@@ -148,6 +148,14 @@ def dataset_snapshot(
     loc: list[str],
     site: list[str],
 ) -> dict[str, Any]:
+    def _json_safe_records(frame: pd.DataFrame) -> list[dict[str, Any]]:
+        if not isinstance(frame, pd.DataFrame) or frame.empty:
+            return []
+        out = frame.copy()
+        out = out.replace([np.inf, -np.inf], np.nan)
+        out = out.where(pd.notna(out), None)
+        return out.to_dict("records")
+
     try:
         start = pd.to_datetime(start_date).date() if start_date else _today_range(56)[0]
         end = pd.to_datetime(end_date).date() if end_date else _today_range(56)[1]
@@ -262,4 +270,4 @@ def dataset_snapshot(
         if col in daily.columns:
             daily[col] = pd.to_numeric(daily[col], errors="coerce")
 
-    return {"rows": df.to_dict("records"), "chart": daily.to_dict("records")}
+    return {"rows": _json_safe_records(df), "chart": _json_safe_records(daily)}
