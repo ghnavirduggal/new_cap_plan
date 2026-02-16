@@ -9,7 +9,7 @@ from typing import Optional
 
 import pandas as pd
 
-_SCOPE_FILE_MAX_LEN = 160
+_SCOPE_FILE_MAX_LEN = 28
 _SCOPE_HASH_LEN = 12
 
 
@@ -143,11 +143,25 @@ def save_timeseries(kind: str, scope_key: str, df: pd.DataFrame, mode: str = "ap
         save_timeseries_rows(kind, scope_key, df.to_dict("records"), mode=mode)
     except Exception:
         pass
-    if mode != "replace" and path.exists():
-        try:
-            existing = pd.read_csv(path)
-        except Exception:
-            existing = pd.DataFrame()
+    if mode != "replace":
+        existing = pd.DataFrame()
+        if path.exists():
+            try:
+                existing = pd.read_csv(path)
+            except Exception:
+                existing = pd.DataFrame()
+        # Backward compatibility: merge from legacy long filenames when first switching to compact names.
+        if existing.empty:
+            for legacy_scope in scope_file_keys(scope_key)[1:]:
+                legacy_path = outdir / f"timeseries_{safe_kind}_{legacy_scope}.csv"
+                if not legacy_path.exists():
+                    continue
+                try:
+                    existing = pd.read_csv(legacy_path)
+                except Exception:
+                    existing = pd.DataFrame()
+                if not existing.empty:
+                    break
         if not existing.empty:
             df = pd.concat([existing, df], ignore_index=True)
     if "date" in df.columns:
