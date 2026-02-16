@@ -73,12 +73,16 @@ export default function PieChart({ data, height = 260, className, valueFormatter
         <circle cx={cx} cy={cy} r={45} fill="#fff" />
       </svg>
       <div className="chart-legend">
-        {data.labels.map((label, idx) => (
-          <span key={label} className="chart-legend-item">
-            <span className="chart-legend-dot" style={{ background: COLORS[idx % COLORS.length] }} />
-            {label}
-          </span>
-        ))}
+        {data.labels.map((label, idx) => {
+          const safeVal = Number.isFinite(data.values[idx]) ? data.values[idx] : 0;
+          const pct = chart.total > 0 ? (safeVal / chart.total) * 100 : 0;
+          return (
+            <span key={label} className="chart-legend-item">
+              <span className="chart-legend-dot" style={{ background: COLORS[idx % COLORS.length] }} />
+              {label}: {pct.toFixed(1)}% ({fmt(safeVal, label)})
+            </span>
+          );
+        })}
       </div>
     </div>
   );
