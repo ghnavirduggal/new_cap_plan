@@ -291,7 +291,12 @@ export default function OpsPage() {
   const channelMix = useMemo(() => {
     const labels = summary?.pie?.labels ?? [];
     const values = summary?.pie?.values ?? [];
-    const rows = labels.map((label, idx) => ({ label, value: values[idx] ?? 0 }));
+    const total = values.reduce((sum, val) => sum + (Number.isFinite(val) ? val : 0), 0);
+    const rows = labels.map((label, idx) => {
+      const value = values[idx] ?? 0;
+      const pct = total > 0 ? (value / total) * 100 : 0;
+      return { label, value, pct };
+    });
     return rows.sort((a, b) => b.value - a.value).slice(0, 4);
   }, [summary?.pie?.labels, summary?.pie?.values]);
 
@@ -563,7 +568,7 @@ export default function OpsPage() {
                   channelMix.map((item) => (
                     <div key={item.label} className="ops-signal-row">
                       <span>{item.label}</span>
-                      <strong>{formatCount(item.value)}</strong>
+                      <strong>{formatCount(item.value)} ({item.pct.toFixed(1)}%)</strong>
                     </div>
                   ))
                 ) : (
