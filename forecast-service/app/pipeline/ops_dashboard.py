@@ -18,7 +18,7 @@ from app.pipeline.ops_store import (
     load_roster,
     load_timeseries_any,
 )
-from app.pipeline.timeseries_store import _canonical_scope_key
+from app.pipeline.timeseries_store import scope_file_keys
 from app.pipeline.settings_store import load_settings
 
 
@@ -714,7 +714,11 @@ def _filter_map_df_by_exports(map_df: pd.DataFrame, export_scopes: set[str]) -> 
     if map_df is None or map_df.empty or not export_scopes:
         return map_df
     sks = map_df["sk"].dropna().astype(str).unique().tolist()
-    keep = {sk for sk in sks if _canonical_scope_key(sk).lower() in export_scopes}
+    keep = {
+        sk
+        for sk in sks
+        if any(scope_key.lower() in export_scopes for scope_key in scope_file_keys(sk))
+    }
     logger.info("ops_dashboard export scope filter total=%s keep=%s", len(sks), len(keep))
     if not keep:
         return map_df.iloc[0:0].copy()
