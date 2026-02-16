@@ -987,7 +987,19 @@ def load_roster() -> pd.DataFrame:
         )
         rows = cur.fetchall()
         cols = [desc[0] for desc in cur.description]
-    return pd.DataFrame(rows, columns=cols)
+    df = pd.DataFrame(rows, columns=cols)
+    if not df.empty:
+        return df
+
+    # Fallback for environments where roster uploads are stored only as payload rows.
+    with db_conn() as conn:
+        cur = conn.cursor()
+        cur.execute("SELECT payload FROM roster_long_entries ORDER BY date, id")
+        payload_rows = cur.fetchall()
+    payloads = [row[0] if isinstance(row, tuple) else row for row in payload_rows if row]
+    if payloads:
+        return pd.DataFrame(payloads)
+    return pd.DataFrame()
 
 
 def load_hiring() -> pd.DataFrame:
