@@ -58,7 +58,30 @@ def _safe_component(value: Optional[str]) -> str:
     return cleaned or "all"
 
 
+def _safe_component_lower(value: Optional[str]) -> str:
+    return _safe_component(value).lower()
+
+
 def _canonical_scope_key(scope_key: str) -> str:
+    if not scope_key:
+        return "global"
+    raw = str(scope_key).strip()
+    lower = raw.lower()
+    if lower.startswith("location|"):
+        _, loc = raw.split("|", 1)
+        return f"location_{_safe_component_lower(loc)}"
+    if "|" in raw:
+        parts = raw.split("|")
+        while len(parts) < 4:
+            parts.append("all")
+        ba, sba, channel, site = parts[:4]
+        return "hier_" + "_".join(
+            _safe_component_lower(part) for part in (ba, sba, channel, site)
+        )
+    return _safe_component_lower(raw)
+
+
+def _canonical_scope_key_legacy(scope_key: str) -> str:
     if not scope_key:
         return "global"
     raw = str(scope_key).strip()
@@ -94,10 +117,23 @@ def _compact_scope_token(token: str) -> str:
 
 def scope_file_keys(scope_key: str) -> list[str]:
     canonical = _canonical_scope_key(scope_key)
-    compact = _compact_scope_token(canonical)
-    keys = [compact]
-    if canonical != compact:
-        keys.append(canonical)
+    legacy = _canonical_scope_key_legacy(scope_key)
+    variants: list[str] = [canonical]
+    if legacy and legacy not in variants:
+        variants.append(legacy)
+    keys: list[str] = []
+    seen: set[str] = set()
+    for variant in variants:
+        compact = _compact_scope_token(variant)
+        for key in (compact, variant):
+            k = str(key or "").strip()
+            if not k:
+                continue
+            low = k.lower()
+            if low in seen:
+                continue
+            seen.add(low)
+            keys.append(k)
     return keys
 
 
