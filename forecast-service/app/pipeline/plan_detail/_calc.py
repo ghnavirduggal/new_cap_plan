@@ -1322,7 +1322,14 @@ def _fill_tables_fixed(ptype, pid, fw_cols, _tick, whatif=None, grain: str = 'we
         if ovr_sut_bo is not None and f_bo > 0:
             f_num += ovr_sut_bo * f_bo; f_den += f_bo
         elif b_sut_col_F:
-            f_num += _get(bF_w, w, b_sut_col_F, 0.0) * _get(bF_w, w, b_itm_col, 0.0); f_den += _get(bF_w, w, b_itm_col, 0.0)
+            bo_sut_week = _get(bF_w, w, b_sut_col_F, 0.0)
+            bo_items_week = _get(bF_w, w, b_itm_col, 0.0)
+            # Prefer actual BO weekly items as weight; if unavailable/zero, fall back
+            # to BO forecast items for the week so uploaded SUT still applies.
+            bo_weight = bo_items_week if bo_items_week > 0 else (f_bo if f_bo > 0 else 0.0)
+            if bo_sut_week > 0 and bo_weight > 0:
+                f_num += bo_sut_week * bo_weight
+                f_den += bo_weight
         if f_den > 0:
             forecast_aht_sut = (f_num / f_den)
         else:
@@ -1477,12 +1484,21 @@ def _fill_tables_fixed(ptype, pid, fw_cols, _tick, whatif=None, grain: str = 'we
             elif b_sut_col_F:
                 ii = _get(bF_w, w, b_itm_col, 0.0)
                 ss = _get(bF_w, w, b_sut_col_F, 0.0)
-                if ii > 0 and ss > 0:
-                    f_num += ss * ii; f_den += ii
+                # If weekly BO items are not present for weighting, use weekly forecast
+                # BO volume so forecast SUT does not incorrectly fall to default 600.
+                bo_weight = ii if ii > 0 else (f_bo if f_bo > 0 else 0.0)
+                if bo_weight > 0 and ss > 0:
+                    f_num += ss * bo_weight; f_den += bo_weight
             if f_den > 0:
                 forecast_sut = (f_num / f_den)
             else:
-                forecast_sut = float(planned_sut_w.get(w, s_budget_sut))
+                # Last non-default fallback: use the BO weekly SUT value directly
+                # if it exists, even when BO item weights are unavailable.
+                ss_direct = _get(bF_w, w, b_sut_col_F, float("nan")) if b_sut_col_F else float("nan")
+                if pd.notna(ss_direct) and float(ss_direct) > 0:
+                    forecast_sut = float(ss_direct)
+                else:
+                    forecast_sut = float(planned_sut_w.get(w, s_budget_sut))
             forecast_sut = float(forecast_sut) if pd.notna(forecast_sut) else 0.0
             forecast_sut = max(0.0, forecast_sut)
             try:
