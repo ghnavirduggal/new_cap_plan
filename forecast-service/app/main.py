@@ -61,6 +61,7 @@ from app.pipeline.shrinkage_store import (
     _parse_date_series,
     attrition_weekly_from_raw,
     is_voice_shrinkage_like,
+    load_attrition_raw,
     load_attrition_weekly,
     load_shrinkage_weekly,
     merge_shrink_weekly,
@@ -344,7 +345,11 @@ def _attrition_termination_map(df_raw: pd.DataFrame, scope: Optional[dict]) -> d
     }
 
 
-def _sync_attrition_to_plan_roster(df_raw: pd.DataFrame, scope: Optional[dict]) -> dict:
+def _sync_attrition_to_plan_roster(
+    df_raw: pd.DataFrame,
+    scope: Optional[dict],
+    target_plan_ids: Optional[set[int] | list[int]] = None,
+) -> dict:
     term_map = _attrition_termination_map(df_raw, scope)
     if not term_map:
         return {"updated_plans": 0, "updated_rows": 0}
@@ -391,6 +396,18 @@ def _sync_attrition_to_plan_roster(df_raw: pd.DataFrame, scope: Optional[dict]) 
             plans = fallback
     if not plans:
         return {"updated_plans": 0, "updated_rows": 0}
+
+    plan_id_filter: set[int] = set()
+    if target_plan_ids:
+        for pid in target_plan_ids:
+            try:
+                plan_id_filter.add(int(pid))
+            except Exception:
+                continue
+    if plan_id_filter:
+        plans = [p for p in plans if int(p.get("id") or 0) in plan_id_filter]
+        if not plans:
+            return {"updated_plans": 0, "updated_rows": 0}
 
     updated_plans = 0
     updated_rows = 0
@@ -447,6 +464,42 @@ def _sync_attrition_to_plan_roster(df_raw: pd.DataFrame, scope: Optional[dict]) 
             updated_plans += 1
             updated_rows += row_updates
     return {"updated_plans": updated_plans, "updated_rows": updated_rows}
+
+
+def _plan_scope_for_attrition(plan: Optional[dict]) -> Optional[dict]:
+    plan_obj = plan if isinstance(plan, dict) else {}
+    ba = _norm_str(plan_obj.get("vertical") or plan_obj.get("business_area"))
+    sba = _norm_str(plan_obj.get("sub_ba") or plan_obj.get("sub_business_area"))
+    if not ba or not sba:
+        return None
+    channel_raw = _norm_str(plan_obj.get("channel") or plan_obj.get("lob"))
+    channel = channel_raw.split(",")[0].strip() if channel_raw else ""
+    site = _norm_str(plan_obj.get("site") or plan_obj.get("location") or plan_obj.get("country"))
+    return {
+        "business_area": ba,
+        "sub_business_area": sba,
+        "channel": channel,
+        "site": site,
+    }
+
+
+def _resync_saved_attrition_to_roster(
+    scope: Optional[dict],
+    *,
+    target_plan_ids: Optional[set[int] | list[int]] = None,
+) -> dict:
+    if not isinstance(scope, dict):
+        return {"updated_plans": 0, "updated_rows": 0}
+    try:
+        raw_df = load_attrition_raw(scope=scope)
+    except Exception:
+        return {"updated_plans": 0, "updated_rows": 0}
+    if not isinstance(raw_df, pd.DataFrame) or raw_df.empty:
+        return {"updated_plans": 0, "updated_rows": 0}
+    try:
+        return _sync_attrition_to_plan_roster(raw_df, scope, target_plan_ids=target_plan_ids)
+    except Exception:
+        return {"updated_plans": 0, "updated_rows": 0}
 
 
 def _settings_path(scope_type: str, location: Optional[str], ba: Optional[str], sba: Optional[str], channel: Optional[str], site: Optional[str]) -> str:
@@ -2060,7 +2113,17 @@ def compare_plans(payload: dict):
 
 @app.get("/api/planning/plan/table")
 def get_plan_table(plan_id: int = Query(...), name: str = Query(...)):
-    return {"rows": load_plan_table(int(plan_id), name)}
+    pid = int(plan_id)
+    table_name = str(name or "")
+    if table_name.strip().lower() == "emp":
+        try:
+            plan = load_plan(pid) or {}
+        except Exception:
+            plan = {}
+        scope = _plan_scope_for_attrition(plan)
+        if scope:
+            _resync_saved_attrition_to_roster(scope, target_plan_ids={pid})
+    return {"rows": load_plan_table(pid, name)}
 
 
 @app.post("/api/planning/plan/table")
@@ -2389,6 +2452,7 @@ def get_attrition_weekly(
             "channel": channel,
             "site": site,
         }
+        _resync_saved_attrition_to_roster(scope)
     df = load_attrition_weekly(scope=scope)
     if isinstance(df, pd.DataFrame) and not df.empty:
         df = df.replace([np.inf, -np.inf], np.nan)
