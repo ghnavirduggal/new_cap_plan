@@ -154,6 +154,16 @@ def _to_json(value: object) -> Optional[Json]:
             return Json(value)
     return Json(value)
 
+
+def _conn_execute(conn: Any, sql: str, params: Optional[tuple] = None):
+    """Run SQL for both psycopg2 raw connections and execute-capable wrappers."""
+    if hasattr(conn, "execute"):
+        return conn.execute(sql, params or ())
+    cur = conn.cursor()
+    cur.execute(sql, params or ())
+    return cur
+
+
 def upsert_plan(payload: dict) -> dict:
     if not has_dsn():
         return {"status": "missing_dsn"}
@@ -202,7 +212,8 @@ def upsert_plan(payload: dict) -> dict:
                 exclude_id=int(plan_id),
             )
         with db_conn() as conn:
-            conn.execute(
+            _conn_execute(
+                conn,
                 """
                 UPDATE planning_plans
                 SET plan_key = %s,
@@ -669,7 +680,8 @@ def record_activity(
     actor_name = actor or _user()
     payload_json = _to_json(payload)
     with db_conn() as conn:
-        conn.execute(
+        _conn_execute(
+            conn,
             """
             INSERT INTO planning_activity (plan_id, actor, action, entity_type, entity_id, payload)
             VALUES (%s, %s, %s, %s, %s, %s)
