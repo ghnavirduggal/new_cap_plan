@@ -1084,6 +1084,10 @@ def _fill_tables_fixed_daily(ptype, pid, _fw_cols_unused, _tick, whatif=None):
             if m.any():
                 for d in day_ids:
                     shr_df.loc[m, d] = pd.to_numeric(shr_df.loc[m, d], errors="coerce").fillna(0.0).round(1)
+        # Percent rows become strings (e.g. "12.3%"), so ensure day columns can hold mixed types.
+        for d in day_ids:
+            if d in shr_df.columns:
+                shr_df[d] = shr_df[d].astype(object)
         # Round pct to 1 decimal and add % suffix
         for lab in pct_labels:
             m = shr_df["metric"].astype(str).str.strip().eq(lab)
