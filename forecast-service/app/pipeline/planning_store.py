@@ -592,49 +592,58 @@ def save_plan_table(plan_id: int, table_name: str, rows: list[dict]) -> dict:
     if _is_plan_locked(int(plan_id)):
         return {"status": "locked", "rows": 0}
     payload = Json(_sanitize_json(rows or []))
-    with db_conn() as conn:
-        cur = conn.cursor()
-        cur.execute(
-            """
-            INSERT INTO planning_plan_tables (plan_id, table_name, payload)
-            VALUES (%s, %s, %s)
-            ON CONFLICT (plan_id, table_name)
-            DO UPDATE SET payload = EXCLUDED.payload, updated_at = NOW()
-            """,
-            (int(plan_id), table_name, payload),
-        )
-        cur.execute(
-            """
-            INSERT INTO planning_plan_table_history (plan_id, table_name, payload, created_by)
-            VALUES (%s, %s, %s, %s)
-            """,
-            (int(plan_id), table_name, payload, _user()),
-        )
-        cur.execute("SELECT plan_key FROM planning_plans WHERE id = %s", (int(plan_id),))
-        row = cur.fetchone()
-    if row:
-        mark_plan_dirty(row[0])
     try:
-        _record_plan_activity(int(plan_id), table_name)
+        with db_conn() as conn:
+            cur = conn.cursor()
+            cur.execute(
+                """
+                INSERT INTO planning_plan_tables (plan_id, table_name, payload)
+                VALUES (%s, %s, %s)
+                ON CONFLICT (plan_id, table_name)
+                DO UPDATE SET payload = EXCLUDED.payload, updated_at = NOW()
+                """,
+                (int(plan_id), table_name, payload),
+            )
+            cur.execute(
+                """
+                INSERT INTO planning_plan_table_history (plan_id, table_name, payload, created_by)
+                VALUES (%s, %s, %s, %s)
+                """,
+                (int(plan_id), table_name, payload, _user()),
+            )
+            cur.execute("SELECT plan_key FROM planning_plans WHERE id = %s", (int(plan_id),))
+            row = cur.fetchone()
+        # Keep a local mirror for resilience across container/DB lifecycle interruptions.
+        try:
+            _save_plan_table_local(int(plan_id), str(table_name), rows)
+        except Exception:
+            pass
+        if row:
+            mark_plan_dirty(row[0])
+        try:
+            _record_plan_activity(int(plan_id), table_name)
+        except Exception:
+            pass
+        try:
+            from app.pipeline.plan_detail.calc_engine import mark_plan_dirty_deps
+            base = str(table_name or "").split("_")[0].lower()
+            if base == "emp":
+                dep = "roster"
+            elif base == "nh":
+                dep = "newhire"
+            elif base == "shr":
+                dep = "shrinkage"
+            elif base == "attr":
+                dep = "attrition"
+            else:
+                dep = f"plan_tables:{base or 'unknown'}"
+            mark_plan_dirty_deps(int(plan_id), dep)
+        except Exception:
+            pass
+        return {"status": "saved", "rows": len(rows or [])}
     except Exception:
-        pass
-    try:
-        from app.pipeline.plan_detail.calc_engine import mark_plan_dirty_deps
-        base = str(table_name or "").split("_")[0].lower()
-        if base == "emp":
-            dep = "roster"
-        elif base == "nh":
-            dep = "newhire"
-        elif base == "shr":
-            dep = "shrinkage"
-        elif base == "attr":
-            dep = "attrition"
-        else:
-            dep = f"plan_tables:{base or 'unknown'}"
-        mark_plan_dirty_deps(int(plan_id), dep)
-    except Exception:
-        pass
-    return {"status": "saved", "rows": len(rows or [])}
+        # DB write failed; persist locally so user-entered roster/files do not vanish.
+        return _save_plan_table_local(int(plan_id), str(table_name), rows)
 
 
 def _record_plan_activity(plan_id: int, table_name: str) -> None:
@@ -774,17 +783,21 @@ def load_plan_table(plan_id: int, table_name: str) -> list[dict]:
     if not has_dsn():
         return _load_plan_table_local(int(plan_id), str(table_name))
     ensure_planning_schema()
-    with db_conn() as conn:
-        cur = conn.cursor()
-        cur.execute(
-            """
-            SELECT payload
-            FROM planning_plan_tables
-            WHERE plan_id = %s AND table_name = %s
-            """,
-            (int(plan_id), table_name),
-        )
-        row = cur.fetchone()
-    if not row:
-        return []
-    return row[0] or []
+    try:
+        with db_conn() as conn:
+            cur = conn.cursor()
+            cur.execute(
+                """
+                SELECT payload
+                FROM planning_plan_tables
+                WHERE plan_id = %s AND table_name = %s
+                """,
+                (int(plan_id), table_name),
+            )
+            row = cur.fetchone()
+        if row and row[0] is not None:
+            return row[0] or []
+    except Exception:
+        pass
+    # Fallback to local mirror when DB is temporarily unavailable or row is missing.
+    return _load_plan_table_local(int(plan_id), str(table_name))
