@@ -58,11 +58,13 @@ from app.pipeline.roster_store import (
 )
 from app.pipeline.settings_store import load_holidays, load_settings, save_holidays, save_settings
 from app.pipeline.shrinkage_store import (
+    _parse_date_series,
     attrition_weekly_from_raw,
     is_voice_shrinkage_like,
     load_attrition_weekly,
     load_shrinkage_weekly,
     merge_shrink_weekly,
+    normalize_attrition_raw_upload,
     normalize_shrink_weekly,
     normalize_shrinkage_bo,
     normalize_shrinkage_voice,
@@ -292,6 +294,137 @@ def _invalidate_plan_detail_for_scope(scope: dict, dep: str | None = None) -> No
                 _PRECOMPUTE_EXECUTOR.submit(_precompute_plan_detail, int(pid))
             except Exception:
                 continue
+
+
+def _attrition_termination_map(df_raw: pd.DataFrame, scope: Optional[dict]) -> dict[str, str]:
+    if df_raw is None or df_raw.empty:
+        return {}
+    try:
+        norm = normalize_attrition_raw_upload(df_raw, scope=scope)
+    except Exception:
+        return {}
+    if norm is None or norm.empty or "BRID" not in norm.columns or "Termination Date" not in norm.columns:
+        return {}
+    brid_norm = norm["BRID"].map(lambda v: str(v or "").strip().lower())
+    term_series = _parse_date_series(norm["Termination Date"])
+    work = pd.DataFrame({"brid_norm": brid_norm, "term": term_series})
+    work["term"] = pd.to_datetime(work["term"], errors="coerce").dt.date
+    work = work[
+        (work["brid_norm"].str.len() > 0)
+        & work["term"].notna()
+    ].copy()
+    if work.empty:
+        return {}
+    work = work.sort_values("term").drop_duplicates(subset=["brid_norm"], keep="last")
+    return {
+        str(row["brid_norm"]): row["term"].isoformat()
+        for _, row in work.iterrows()
+    }
+
+
+def _sync_attrition_to_plan_roster(df_raw: pd.DataFrame, scope: Optional[dict]) -> dict:
+    term_map = _attrition_termination_map(df_raw, scope)
+    if not term_map:
+        return {"updated_plans": 0, "updated_rows": 0}
+
+    business_area = _norm_str((scope or {}).get("business_area") or (scope or {}).get("ba"))
+    sub_business_area = _norm_str((scope or {}).get("sub_business_area") or (scope or {}).get("sba"))
+    if not business_area or not sub_business_area:
+        return {"updated_plans": 0, "updated_rows": 0}
+
+    scope_obj = {
+        "scope_type": "hier",
+        "business_area": business_area,
+        "sub_business_area": sub_business_area,
+        "channel": _norm_str((scope or {}).get("channel")),
+        "site": _norm_str((scope or {}).get("site")),
+    }
+
+    def _norm(v: object) -> str:
+        return " ".join(str(v or "").strip().lower().split())
+
+    plans = _plans_matching_scope(scope_obj)
+    if not plans:
+        try:
+            fallback = list_plans(
+                business_area=business_area,
+                sub_business_area=sub_business_area,
+                site=scope_obj.get("site") or None,
+                status_filter=None,
+                include_deleted=False,
+                limit=1000,
+            ) or []
+        except Exception:
+            fallback = []
+        target_channel = _norm(scope_obj.get("channel"))
+        if target_channel:
+            narrowed: list[dict] = []
+            for plan in fallback:
+                chan_raw = str(plan.get("channel") or "")
+                chan_parts = [_norm(part) for part in chan_raw.split(",") if _norm(part)]
+                if target_channel in chan_parts:
+                    narrowed.append(plan)
+            plans = narrowed
+        else:
+            plans = fallback
+    if not plans:
+        return {"updated_plans": 0, "updated_rows": 0}
+
+    updated_plans = 0
+    updated_rows = 0
+    for plan in plans:
+        pid = int(plan.get("id") or 0)
+        if not pid:
+            continue
+        rows = load_plan_table(pid, "emp")
+        if not isinstance(rows, list) or not rows:
+            continue
+        changed = False
+        row_updates = 0
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            brid = _norm_str(
+                row.get("brid")
+                or row.get("BRID")
+                or row.get("employee_id")
+                or row.get("Employee ID")
+                or row.get("Employee Id")
+            ).lower()
+            if not brid:
+                continue
+            term_iso = term_map.get(brid)
+            if not term_iso:
+                continue
+            current_term = _norm_str(
+                row.get("terminate_date")
+                or row.get("Terminate Date")
+                or row.get("termination_date")
+                or row.get("Termination Date")
+            )
+            current_term = current_term[:10] if len(current_term) >= 10 else current_term
+            if current_term != term_iso:
+                row["terminate_date"] = term_iso
+                if "Terminate Date" in row:
+                    row["Terminate Date"] = term_iso
+                changed = True
+            current_status = _norm(row.get("current_status") or row.get("Current Status"))
+            if current_status != "terminated":
+                row["current_status"] = "Terminated"
+                if "Current Status" in row:
+                    row["Current Status"] = "Terminated"
+                changed = True
+            row_updates += 1
+        if not changed:
+            continue
+        try:
+            result = save_plan_table(pid, "emp", rows)
+        except Exception:
+            continue
+        if str(result.get("status") or "").lower() == "saved":
+            updated_plans += 1
+            updated_rows += row_updates
+    return {"updated_plans": updated_plans, "updated_rows": updated_rows}
 
 
 def _settings_path(scope_type: str, location: Optional[str], ba: Optional[str], sba: Optional[str], channel: Optional[str], site: Optional[str]) -> str:
@@ -2312,10 +2445,15 @@ def attrition_raw_endpoint(payload: dict):
     raw_df = df_from_payload(rows)
     weekly = attrition_weekly_from_raw(raw_df, scope=scope)
     combined = weekly
+    roster_sync = {"updated_plans": 0, "updated_rows": 0}
     if save_flag:
         save_attrition_raw(raw_df, scope=scope)
         save_attrition_weekly(weekly, mode=mode, scope=scope)
         combined = load_attrition_weekly(scope=scope)
+        try:
+            roster_sync = _sync_attrition_to_plan_roster(raw_df, scope)
+        except Exception:
+            roster_sync = {"updated_plans": 0, "updated_rows": 0}
         try:
             _invalidate_plan_detail_for_scope(
                 {
@@ -2329,7 +2467,12 @@ def attrition_raw_endpoint(payload: dict):
             )
         except Exception:
             pass
-    return {"weekly": df_to_records(weekly), "combined": df_to_records(combined), "mode": mode}
+    return {
+        "weekly": df_to_records(weekly),
+        "combined": df_to_records(combined),
+        "mode": mode,
+        "roster_sync": roster_sync,
+    }
 
 
 @app.post("/api/forecast/volume-summary")
