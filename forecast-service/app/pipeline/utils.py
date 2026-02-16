@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import datetime as dt
+from decimal import Decimal
 from math import isfinite
 from typing import Any, Iterable
 
@@ -79,6 +80,14 @@ def sanitize_for_json(value: Any) -> Any:
         return None
     if isinstance(value, pd.Timestamp):
         return value.isoformat()
+    if isinstance(value, Decimal):
+        if not value.is_finite():
+            return None
+        try:
+            f = float(value)
+        except Exception:
+            return str(value)
+        return f if isfinite(f) else None
     if isinstance(value, np.generic):
         return sanitize_for_json(value.item())
     if isinstance(value, float):
