@@ -5,6 +5,7 @@ import base64, io, re, json
 
 import pandas as pd
 import numpy as np
+from pandas.api.types import is_numeric_dtype
 
 import dash
 from dash import html, dcc, dash_table, Input, Output, State, no_update
@@ -2338,7 +2339,7 @@ def _weekly_reduce(df: pd.DataFrame, value_candidates=("value","hc","headcount",
             break
     if not val_col:
         # single numeric column fallback
-        nums = [c for c in df.columns if c != date_col and np.issubdtype(df[c].dtype, np.number)]
+        nums = [c for c in df.columns if c != date_col and is_numeric_dtype(df[c])]
         if nums:
             val_col = nums[0]
         else:
