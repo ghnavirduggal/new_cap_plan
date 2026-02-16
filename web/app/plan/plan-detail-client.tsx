@@ -526,6 +526,15 @@ function toRosterRows(rows: Array<Record<string, any>>) {
   });
 }
 
+function hasAnyValue(value: any) {
+  return String(value ?? "").trim() !== "";
+}
+
+function normalizeRosterUploadRows(rows: Array<Record<string, any>>) {
+  const mapped = toRosterRows(rows);
+  return mapped.filter((row) => Object.values(row || {}).some((value) => hasAnyValue(value)));
+}
+
 function buildIntervalOptions(startWeek?: string, endWeek?: string) {
   const start = toDate(startWeek);
   const end = toDate(endWeek);
@@ -718,6 +727,9 @@ export default function PlanDetailClient({ planId, rollupBa }: PlanDetailClientP
   const lastRosterSaveAtRef = useRef<number | null>(null);
   const rosterSavingRef = useRef(false);
   const lastRosterSavedRowsRef = useRef<Array<Record<string, any>>>([]);
+  const lastBulkSaveAtRef = useRef<number | null>(null);
+  const bulkSavingRef = useRef(false);
+  const lastBulkSavedRowsRef = useRef<Array<Record<string, any>>>([]);
   const [tpTab, setTpTab] = useState<"tp-transfer" | "tp-promo" | "tp-both">("tp-transfer");
   const [tpForm, setTpForm] = useState<Record<string, any>>({
     biz_area: "",
@@ -927,6 +939,15 @@ export default function PlanDetailClient({ planId, rollupBa }: PlanDetailClientP
               merged.emp = prev.emp ?? [];
             } else if (lastRosterSavedRowsRef.current.length > 0) {
               merged.emp = lastRosterSavedRowsRef.current;
+            }
+          }
+          const lastBulkSaveAt = lastBulkSaveAtRef.current ?? 0;
+          const keepRecentBulk = Date.now() - lastBulkSaveAt < 7000 || bulkSavingRef.current;
+          if (keepRecentBulk && (next.bulk_files?.length ?? 0) === 0) {
+            if ((prev?.bulk_files?.length ?? 0) > 0) {
+              merged.bulk_files = prev.bulk_files ?? [];
+            } else if (lastBulkSavedRowsRef.current.length > 0) {
+              merged.bulk_files = lastBulkSavedRowsRef.current;
             }
           }
           return merged;
@@ -1453,6 +1474,8 @@ export default function PlanDetailClient({ planId, rollupBa }: PlanDetailClientP
 
   useEffect(() => {
     rosterSnapshotRef.current = null;
+    lastBulkSavedRowsRef.current = [];
+    lastBulkSaveAtRef.current = null;
   }, [planId]);
 
   useEffect(() => {
@@ -1775,27 +1798,67 @@ export default function PlanDetailClient({ planId, rollupBa }: PlanDetailClientP
     setLoading(true);
     try {
       const rawRows = await parseFile(file);
-      const rosterRows = toRosterRows(rawRows);
+      const rosterRows = normalizeRosterUploadRows(rawRows);
+      const ext = (file.name.split(".").pop() || "").toLowerCase();
+      const validExt = ext === "csv" || ext === "xlsx" || ext === "xls";
+      const hasBrid = rosterRows.some((row) => hasAnyValue(row?.brid));
+      const validUpload = validExt && rosterRows.length > 0 && hasBrid;
+      const invalidStatus = !validExt
+        ? "Invalid format (supported: csv/xlsx/xls)"
+        : rosterRows.length === 0
+          ? "Invalid format (no valid roster rows found)"
+          : "Invalid format (BRID column/value missing)";
+      const bulkEntry = {
+        file_name: file.name,
+        ext,
+        size_kb: Math.round(file.size / 1024),
+        is_valid: validUpload ? "Yes" : "No",
+        status: validUpload ? `Uploaded (${rosterRows.length} rows)` : invalidStatus
+      };
+      const nextBulkRows = [...(tables.bulk_files ?? []), bulkEntry];
+      lastBulkSavedRowsRef.current = nextBulkRows;
+      lastBulkSaveAtRef.current = Date.now();
+      let bulkSaveFailed = false;
+
+      // Persist bulk upload audit rows immediately.
+      if (planId) {
+        bulkSavingRef.current = true;
+        try {
+          await apiPost("/api/planning/plan/table", {
+            plan_id: planId,
+            name: "bulk_files",
+            rows: nextBulkRows
+          });
+          lastBulkSavedRowsRef.current = nextBulkRows;
+          lastBulkSaveAtRef.current = Date.now();
+        } catch {
+          bulkSaveFailed = true;
+        } finally {
+          bulkSavingRef.current = false;
+        }
+      }
+      if (bulkSaveFailed) {
+        notify("warning", "Bulk upload audit could not be persisted. Please save the plan.");
+      }
+
+      if (!validUpload) {
+        setTables((prev) => ({ ...prev, bulk_files: nextBulkRows }));
+        notify("error", "Upload failed. Please upload the correct roster template format.");
+        return;
+      }
+
       const nextRows = [...(tables.emp ?? []), ...rosterRows];
       setTables((prev) => ({
         ...prev,
         emp: nextRows,
-        bulk_files: [
-          ...(prev.bulk_files ?? []),
-          {
-            file_name: file.name,
-            ext: file.name.split(".").pop() || "",
-            size_kb: Math.round(file.size / 1024),
-            is_valid: "Yes",
-            status: "Uploaded"
-          }
-        ]
+        bulk_files: nextBulkRows
       }));
       pendingRosterSaveRef.current = nextRows;
       setRosterSaveTick((v) => v + 1);
-      notify("success", "Roster rows added.");
+      notify("success", `Roster rows added (${rosterRows.length}).`);
     } catch (error: any) {
-      notify("error", error?.message || "Roster upload failed.");
+      const detail = error?.message ? ` (${error.message})` : "";
+      notify("error", `Upload failed. Please upload the correct roster template format.${detail}`);
     } finally {
       setLoading(false);
     }
