@@ -338,6 +338,10 @@ def ensure_shrinkage_schema() -> None:
                     id BIGSERIAL PRIMARY KEY,
                     week DATE,
                     program TEXT,
+                    business_area TEXT,
+                    sub_business_area TEXT,
+                    channel TEXT,
+                    site TEXT,
                     leavers_fte NUMERIC,
                     avg_active_fte NUMERIC,
                     attrition_pct NUMERIC,
@@ -345,14 +349,34 @@ def ensure_shrinkage_schema() -> None:
                 )
                 """
             )
+            conn.execute("ALTER TABLE attrition_weekly_entries ADD COLUMN IF NOT EXISTS business_area TEXT")
+            conn.execute("ALTER TABLE attrition_weekly_entries ADD COLUMN IF NOT EXISTS sub_business_area TEXT")
+            conn.execute("ALTER TABLE attrition_weekly_entries ADD COLUMN IF NOT EXISTS channel TEXT")
+            conn.execute("ALTER TABLE attrition_weekly_entries ADD COLUMN IF NOT EXISTS site TEXT")
+            _safe_index(
+                conn,
+                "CREATE INDEX IF NOT EXISTS idx_attrition_scope_week ON attrition_weekly_entries (business_area, sub_business_area, channel, site, week)",
+            )
             conn.execute(
                 """
                 CREATE TABLE IF NOT EXISTS attrition_raw_entries (
                     id BIGSERIAL PRIMARY KEY,
+                    business_area TEXT,
+                    sub_business_area TEXT,
+                    channel TEXT,
+                    site TEXT,
                     payload JSONB NOT NULL,
                     created_at TIMESTAMPTZ DEFAULT NOW()
                 )
                 """
+            )
+            conn.execute("ALTER TABLE attrition_raw_entries ADD COLUMN IF NOT EXISTS business_area TEXT")
+            conn.execute("ALTER TABLE attrition_raw_entries ADD COLUMN IF NOT EXISTS sub_business_area TEXT")
+            conn.execute("ALTER TABLE attrition_raw_entries ADD COLUMN IF NOT EXISTS channel TEXT")
+            conn.execute("ALTER TABLE attrition_raw_entries ADD COLUMN IF NOT EXISTS site TEXT")
+            _safe_index(
+                conn,
+                "CREATE INDEX IF NOT EXISTS idx_attrition_raw_scope ON attrition_raw_entries (business_area, sub_business_area, channel, site, created_at DESC)",
             )
 
 
