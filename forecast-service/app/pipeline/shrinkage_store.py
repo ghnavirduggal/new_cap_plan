@@ -106,16 +106,20 @@ def _normalize_attrition_scope(scope: Optional[dict] = None) -> Optional[dict[st
 def _scope_filter_sql(
     scope: Optional[dict[str, Optional[str]]] = None,
     *,
+    fields: Optional[list[str]] = None,
     table_alias: str = "",
 ) -> tuple[str, tuple]:
+    active_fields = [f for f in (ATTRITION_SCOPE_FIELDS if fields is None else fields) if f]
+    if not active_fields:
+        return "TRUE", tuple()
     prefix = f"{table_alias}." if table_alias else ""
-    cols = [f"{prefix}{field}" for field in ATTRITION_SCOPE_FIELDS]
+    cols = [f"{prefix}{field}" for field in active_fields]
     if not scope:
         # Legacy/global rows: no scope values set.
         return " AND ".join(f"{col} IS NULL" for col in cols), tuple()
     clauses: list[str] = []
     params: list[str] = []
-    for field, col in zip(ATTRITION_SCOPE_FIELDS, cols):
+    for field, col in zip(active_fields, cols):
         val = scope.get(field)
         if val is None:
             clauses.append(f"{col} IS NULL")
@@ -123,6 +127,26 @@ def _scope_filter_sql(
             clauses.append(f"lower({col}) = %s")
             params.append(str(val))
     return " AND ".join(clauses), tuple(params)
+
+
+def _table_columns(conn, table_name: str) -> set[str]:
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT lower(column_name)
+            FROM information_schema.columns
+            WHERE table_schema = current_schema()
+              AND table_name = %s
+            """,
+            (table_name,),
+        )
+        rows = cur.fetchall()
+    return {str((row or [None])[0] or "").strip().lower() for row in rows}
+
+
+def _scope_fields_present(conn, table_name: str) -> list[str]:
+    existing = _table_columns(conn, table_name)
+    return [field for field in ATTRITION_SCOPE_FIELDS if field in existing]
 
 
 def normalize_attrition_raw_upload(df_raw: pd.DataFrame, scope: Optional[dict] = None) -> pd.DataFrame:
@@ -959,8 +983,9 @@ def load_attrition_weekly(scope: Optional[dict] = None) -> pd.DataFrame:
     if not has_dsn():
         return pd.DataFrame(columns=ATTRITION_WEEKLY_FIELDS)
     scope_norm = _normalize_attrition_scope(scope)
-    where_sql, params = _scope_filter_sql(scope_norm)
     with db_conn() as conn:
+        scope_fields = _scope_fields_present(conn, "attrition_weekly_entries")
+        where_sql, params = _scope_filter_sql(scope_norm, fields=scope_fields)
         cur = conn.cursor()
         cur.execute(
             f"""
@@ -1032,13 +1057,6 @@ def save_attrition_weekly(df: pd.DataFrame, mode: str = "replace", scope: Option
     data = _normalize_attrition_weekly(df)
     if data.empty:
         return 0
-    for field in ATTRITION_SCOPE_FIELDS:
-        data[field] = (scope_norm or {}).get(field)
-    if str(mode or "replace").lower() == "append":
-        existing = _normalize_attrition_weekly(load_attrition_weekly(scope=scope_norm))
-        data = _merge_attrition_weekly(existing, data)
-        for field in ATTRITION_SCOPE_FIELDS:
-            data[field] = (scope_norm or {}).get(field)
 
     def _pg_float(value):
         num = pd.to_numeric(value, errors="coerce")
@@ -1050,28 +1068,29 @@ def save_attrition_weekly(df: pd.DataFrame, mode: str = "replace", scope: Option
             return None
         return f
 
-    delete_where_sql, delete_params = _scope_filter_sql(scope_norm)
     with db_conn() as conn:
+        scope_fields = _scope_fields_present(conn, "attrition_weekly_entries")
+        for field in scope_fields:
+            data[field] = (scope_norm or {}).get(field)
+        if str(mode or "replace").lower() == "append":
+            existing = _normalize_attrition_weekly(load_attrition_weekly(scope=scope_norm))
+            data = _merge_attrition_weekly(existing, data)
+            for field in scope_fields:
+                data[field] = (scope_norm or {}).get(field)
+        delete_where_sql, delete_params = _scope_filter_sql(scope_norm, fields=scope_fields)
+        insert_cols = ["week", "program", *scope_fields, "leavers_fte", "avg_active_fte", "attrition_pct"]
+        placeholders = ", ".join(["%s"] * len(insert_cols))
+        columns_sql = ", ".join(insert_cols)
         with conn.cursor() as cur:
             cur.execute(f"DELETE FROM attrition_weekly_entries WHERE {delete_where_sql}", delete_params)
             cur.executemany(
-                """
-                INSERT INTO attrition_weekly_entries (
-                    week, program, business_area, sub_business_area, channel, site, leavers_fte, avg_active_fte, attrition_pct
-                )
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
-                """,
+                f"INSERT INTO attrition_weekly_entries ({columns_sql}) VALUES ({placeholders})",
                 [
-                    (
-                        row.get("week"),
-                        row.get("program"),
-                        row.get("business_area"),
-                        row.get("sub_business_area"),
-                        row.get("channel"),
-                        row.get("site"),
-                        _pg_float(row.get("leavers_fte")),
-                        _pg_float(row.get("avg_active_fte")),
-                        _pg_float(row.get("attrition_pct")),
+                    tuple(
+                        _pg_float(row.get(col))
+                        if col in {"leavers_fte", "avg_active_fte", "attrition_pct"}
+                        else row.get(col)
+                        for col in insert_cols
                     )
                     for _, row in data.iterrows()
                 ],
@@ -1084,8 +1103,9 @@ def load_attrition_raw(scope: Optional[dict] = None) -> pd.DataFrame:
     if not has_dsn():
         return pd.DataFrame()
     scope_norm = _normalize_attrition_scope(scope)
-    where_sql, params = _scope_filter_sql(scope_norm)
     with db_conn() as conn:
+        scope_fields = _scope_fields_present(conn, "attrition_raw_entries")
+        where_sql, params = _scope_filter_sql(scope_norm, fields=scope_fields)
         cur = conn.cursor()
         cur.execute(f"SELECT payload FROM attrition_raw_entries WHERE {where_sql} ORDER BY id", params)
         rows = cur.fetchall()
@@ -1098,27 +1118,21 @@ def save_attrition_raw(df: pd.DataFrame, scope: Optional[dict] = None) -> int:
     if not has_dsn():
         return 0
     scope_norm = _normalize_attrition_scope(scope)
-    delete_where_sql, delete_params = _scope_filter_sql(scope_norm)
     norm = normalize_attrition_raw_upload(df, scope=scope)
     rows = norm.to_dict("records") if isinstance(norm, pd.DataFrame) else []
     with db_conn() as conn:
+        scope_fields = _scope_fields_present(conn, "attrition_raw_entries")
+        delete_where_sql, delete_params = _scope_filter_sql(scope_norm, fields=scope_fields)
+        insert_cols = [*scope_fields, "payload"]
+        placeholders = ", ".join(["%s"] * len(insert_cols))
+        columns_sql = ", ".join(insert_cols)
         with conn.cursor() as cur:
             cur.execute(f"DELETE FROM attrition_raw_entries WHERE {delete_where_sql}", delete_params)
             if rows:
                 cur.executemany(
-                    """
-                    INSERT INTO attrition_raw_entries
-                    (business_area, sub_business_area, channel, site, payload)
-                    VALUES (%s, %s, %s, %s, %s)
-                    """,
+                    f"INSERT INTO attrition_raw_entries ({columns_sql}) VALUES ({placeholders})",
                     [
-                        (
-                            (scope_norm or {}).get("business_area"),
-                            (scope_norm or {}).get("sub_business_area"),
-                            (scope_norm or {}).get("channel"),
-                            (scope_norm or {}).get("site"),
-                            Json(_json_safe_row(row)),
-                        )
+                        tuple((scope_norm or {}).get(col) for col in scope_fields) + (Json(_json_safe_row(row)),)
                         for row in rows
                     ],
                 )
