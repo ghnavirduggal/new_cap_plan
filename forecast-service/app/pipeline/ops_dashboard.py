@@ -814,13 +814,12 @@ def _filter_scope_df(
         _filter("Business Area", ba)
         _filter("business_area", ba)
         _filter("ba", ba)
-    else:
-        # Legacy fallback: some old supply tables stored BA in `program`.
-        _filter("program", ba)
 
-    _filter("Sub Business Area", sba)
-    _filter("sub_business_area", sba)
-    _filter("sub_ba", sba)
+    has_sba_col = any(col in out.columns for col in ("Sub Business Area", "sub_business_area", "sub_ba"))
+    if has_sba_col:
+        _filter("Sub Business Area", sba)
+        _filter("sub_business_area", sba)
+        _filter("sub_ba", sba)
 
     has_channel_col = any(col in out.columns for col in ("LOB", "Channel", "lob", "channel"))
     _filter("LOB", ch, is_channel=True)
@@ -1002,7 +1001,24 @@ def _compute_ops_base(
     t_hiring = time.perf_counter()
     roster_f = _filter_scope_df(roster, ba, sba, ch, site, loc)
     hiring_f = _filter_scope_df(hiring, ba, sba, ch, site, loc)
+    # Supply rows often don't carry BA/SBA; if scoped filter removes everything,
+    # retry with channel/site/location-only filters.
+    if isinstance(roster, pd.DataFrame) and not roster.empty and roster_f.empty and (ba or sba):
+        roster_f = _filter_scope_df(roster, [], [], ch, site, loc)
+    if isinstance(hiring, pd.DataFrame) and not hiring.empty and hiring_f.empty and (ba or sba):
+        hiring_f = _filter_scope_df(hiring, [], [], ch, site, loc)
     supply = supply_fte_daily(roster_f, hiring_f)
+    if supply.empty and (
+        (isinstance(roster, pd.DataFrame) and not roster.empty)
+        or (isinstance(hiring, pd.DataFrame) and not hiring.empty)
+    ):
+        # Final fallback: compute from raw supply tables, then apply channel filter only.
+        supply = supply_fte_daily(roster, hiring)
+        if not supply.empty and ch and "program" in supply.columns:
+            ch_set = {_normalize_channel(v).strip().lower() for v in ch if str(v).strip()}
+            supply = supply[
+                supply["program"].astype(str).map(_normalize_channel).str.strip().str.lower().isin(ch_set)
+            ]
     if not supply.empty:
         supply["date"] = pd.to_datetime(supply["date"], errors="coerce").dt.date
         supply = supply[pd.notna(supply["date"])]
