@@ -240,6 +240,12 @@ def dataset_snapshot(
     roster = load_roster()
     hiring = load_hiring()
     sup_df = supply_fte_daily(roster, hiring)
+    if not sup_df.empty and ch and "program" in sup_df.columns:
+        ch_set = {_normalize_channel(v).strip().lower() for v in ch if str(v).strip()}
+        if ch_set:
+            sup_df = sup_df[
+                sup_df["program"].astype(str).map(_normalize_channel).str.strip().str.lower().isin(ch_set)
+            ]
     if not sup_df.empty:
         sup_df["date"] = pd.to_datetime(sup_df["date"], errors="coerce").dt.date
         sup_df = sup_df[pd.notna(sup_df["date"])]
@@ -258,7 +264,43 @@ def dataset_snapshot(
     valid_req = req_fte > 0
     if valid_req.any():
         df.loc[valid_req, "staffing_pct"] = (sup_fte[valid_req] / req_fte[valid_req]) * 100.0
+
+    # If supply exists but channel/program labels don't align with demand rows,
+    # distribute date-level supply across programs proportionally to required FTE.
+    try:
+        has_req = bool((pd.to_numeric(df["total_req_fte"], errors="coerce") > 0).any())
+        has_sup = bool((pd.to_numeric(df["supply_fte"], errors="coerce") > 0).any())
+    except Exception:
+        has_req = False
+        has_sup = False
+    if has_req and not has_sup and isinstance(sup_df, pd.DataFrame) and not sup_df.empty and not req_df.empty:
+        req_alloc = req_df.copy()
+        req_alloc["date"] = pd.to_datetime(req_alloc["date"], errors="coerce").dt.date
+        req_alloc["total_req_fte"] = pd.to_numeric(req_alloc["total_req_fte"], errors="coerce").fillna(0.0)
+        req_day = req_alloc.groupby("date", as_index=False)["total_req_fte"].sum().rename(
+            columns={"total_req_fte": "req_day_total"}
+        )
+        sup_day = sup_df.groupby("date", as_index=False)["supply_fte"].sum().rename(
+            columns={"supply_fte": "supply_day_total"}
+        )
+        req_alloc = req_alloc.merge(req_day, on="date", how="left").merge(sup_day, on="date", how="left")
+        req_alloc["req_day_total"] = pd.to_numeric(req_alloc["req_day_total"], errors="coerce").fillna(0.0)
+        req_alloc["supply_day_total"] = pd.to_numeric(req_alloc["supply_day_total"], errors="coerce").fillna(0.0)
+        req_alloc["supply_fte"] = np.where(
+            req_alloc["req_day_total"] > 0,
+            req_alloc["supply_day_total"] * (req_alloc["total_req_fte"] / req_alloc["req_day_total"]),
+            0.0,
+        )
+        req_alloc["staffing_pct"] = np.where(
+            req_alloc["total_req_fte"] > 0,
+            (req_alloc["supply_fte"] / req_alloc["total_req_fte"]) * 100.0,
+            np.nan,
+        )
+        df = req_alloc[["date", "program", "total_req_fte", "supply_fte", "staffing_pct"]].copy()
+
     df = df.sort_values(["date", "program"]) if not df.empty else df
+    if "program" in df.columns:
+        df = df.rename(columns={"program": "channel"})
 
     daily = (
         df.groupby("date", as_index=False)[["total_req_fte", "supply_fte"]].sum()
