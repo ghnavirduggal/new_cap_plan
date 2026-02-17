@@ -10,6 +10,7 @@ from app.pipeline.capacity_core import required_fte_daily, supply_fte_daily
 from app.pipeline.headcount import CHANNEL_LIST, _hcu_cols, _hcu_df
 from app.pipeline.ops_store import load_hiring, load_roster, load_timeseries_any
 from app.pipeline.settings_store import load_settings
+from app.pipeline.utils import sanitize_for_json
 
 
 def _today_range(days: int = 56) -> tuple[date, date]:
@@ -151,10 +152,8 @@ def dataset_snapshot(
     def _json_safe_records(frame: pd.DataFrame) -> list[dict[str, Any]]:
         if not isinstance(frame, pd.DataFrame) or frame.empty:
             return []
-        out = frame.copy()
-        out = out.replace([np.inf, -np.inf], np.nan)
-        out = out.where(pd.notna(out), None)
-        return out.to_dict("records")
+        out = frame.replace([np.inf, -np.inf], np.nan)
+        return sanitize_for_json(out.to_dict("records"))
 
     try:
         start = pd.to_datetime(start_date).date() if start_date else _today_range(56)[0]
