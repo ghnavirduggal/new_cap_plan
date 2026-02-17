@@ -1380,15 +1380,17 @@ def headcount_options(
 def dataset_snapshot_endpoint(payload: dict):
     if not isinstance(payload, dict):
         raise HTTPException(status_code=400, detail="Dataset payload must be a JSON object.")
-    return dataset_snapshot(
-        payload.get("start_date"),
-        payload.get("end_date"),
-        payload.get("series") or "auto",
-        payload.get("ba") or [],
-        payload.get("sba") or [],
-        payload.get("ch") or [],
-        payload.get("loc") or [],
-        payload.get("site") or [],
+    return sanitize_for_json(
+        dataset_snapshot(
+            payload.get("start_date"),
+            payload.get("end_date"),
+            payload.get("series") or "auto",
+            payload.get("ba") or [],
+            payload.get("sba") or [],
+            payload.get("ch") or [],
+            payload.get("loc") or [],
+            payload.get("site") or [],
+        )
     )
 
 
@@ -1673,7 +1675,7 @@ def plan_debug_voice_weekly(
         return {
             "rows": int(len(x.index)),
             "weekly_vol": wk_val,
-            "daily": daily.assign(date=daily["date"].dt.date.astype(str)).to_dict("records"),
+            "daily": sanitize_for_json(daily.assign(date=daily["date"].dt.date.astype(str)).to_dict("records")),
         }
 
     return {
@@ -1732,7 +1734,7 @@ def plan_debug_upper(plan_id: int = Query(...)):
         for c in ("volume", "aht_sec"):
             if c in df.columns:
                 out[f"{c}_nulls"] = int(pd.to_numeric(df[c], errors="coerce").isna().sum())
-        out["sample"] = df.head(3).to_dict("records")
+        out["sample"] = sanitize_for_json(df.head(3).to_dict("records"))
         return out
 
     return {
@@ -2106,7 +2108,7 @@ def compare_plans(payload: dict):
     def _records(df: pd.DataFrame) -> list[dict]:
         if df.empty:
             return []
-        return df.reset_index().to_dict("records")
+        return sanitize_for_json(df.reset_index().to_dict("records"))
 
     return {"current": _records(curr_df), "compare": _records(comp_df), "delta": _records(diff_df)}
 
@@ -3079,7 +3081,8 @@ def push_forecast_to_plan(payload: dict):
                 raw_df = pd.DataFrame(interval_rows or [])
                 cols = list(raw_df.columns)
                 if not raw_df.empty:
-                    sample = raw_df.head(1).to_dict("records")[0]
+                    sample_rows = sanitize_for_json(raw_df.head(1).to_dict("records"))
+                    sample = sample_rows[0] if sample_rows else None
                 date_col = _pick_col(raw_df, ("date", "Date"))
                 vol_col = _pick_col(raw_df, ("interval_forecast", "forecast", "volume"))
                 interval_col = _pick_col(
