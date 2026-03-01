@@ -22,6 +22,7 @@ import time
 from app.pipeline.headcount import (
     business_areas,
     channels_for_scope,
+    critical_team_options,
     headcount_template,
     locations,
     preview_headcount,
@@ -31,7 +32,7 @@ from app.pipeline.headcount import (
 )
 from app.pipeline.budget_store import load_budget_rows, upsert_budget_rows
 from app.pipeline.dataset_dashboard import dataset_snapshot
-from app.pipeline.ops_dashboard import ops_options, refresh_ops_async, refresh_ops_part
+from app.pipeline.ops_dashboard import ops_options, refresh_ops_async, refresh_ops_part, workforce_preview
 from app.pipeline.ops_store import (
     get_latest_timeseries_hash,
     load_timeseries_any,
@@ -1376,6 +1377,25 @@ def headcount_options(
     }
 
 
+@app.get("/api/forecast/settings/critical-team-options")
+def settings_critical_team_options(
+    ba: Optional[str] = None,
+    sba: Optional[str] = None,
+    ch: Optional[str] = None,
+    location: Optional[str] = None,
+    site: Optional[str] = None,
+):
+    return {
+        "options": critical_team_options(
+            ba=ba,
+            sba=sba,
+            ch=ch,
+            location=location,
+            site=site,
+        )
+    }
+
+
 @app.post("/api/forecast/dataset")
 def dataset_snapshot_endpoint(payload: dict):
     if not isinstance(payload, dict):
@@ -1532,6 +1552,67 @@ def planning_consolidated(payload: dict):
     if status != "ready":
         return {"status": status, "job": meta}
     return {"status": "ready", "job": meta, "data": serialize_bundle(result)}
+
+
+@app.post("/api/planning/plan/rebalancing")
+def planning_rebalancing_preview(payload: dict):
+    if not isinstance(payload, dict):
+        raise HTTPException(status_code=400, detail="Rebalancing payload must be a JSON object.")
+
+    plan_id = payload.get("plan_id")
+    rollup_ba = str(payload.get("rollup_ba") or payload.get("business_area") or "").strip()
+    grain = str(payload.get("grain") or "D")
+    start_date = payload.get("start_date")
+    end_date = payload.get("end_date")
+
+    ba: list[str] = []
+    sba: list[str] = []
+    ch: list[str] = []
+    site: list[str] = []
+    loc: list[str] = []
+
+    if plan_id:
+        plan = load_plan(int(plan_id))
+        if not plan:
+            raise HTTPException(status_code=404, detail="Plan not found.")
+        ba_val = str(plan.get("business_area") or plan.get("vertical") or "").strip()
+        if ba_val:
+            ba = [ba_val]
+        if not start_date:
+            start_date = plan.get("start_week")
+        if not end_date:
+            end_date = plan.get("end_week")
+    elif rollup_ba:
+        ba = [rollup_ba]
+
+    overrides = payload.get("policy") if isinstance(payload.get("policy"), dict) else {}
+    policy: dict[str, Any] = {}
+
+    def _copy_ratio(dst: str, *keys: str):
+        for key in keys:
+            val = overrides.get(key)
+            if val is None:
+                continue
+            policy[dst] = val
+            return
+
+    _copy_ratio("cross_skill_efficiency_pct", "cross_skill_efficiency_pct", "xskill_efficiency_pct")
+    _copy_ratio("max_lend_pct", "max_lend_pct", "xskill_max_lend_pct")
+    if isinstance(overrides.get("lock_critical_teams"), list):
+        policy["lock_critical_teams"] = overrides.get("lock_critical_teams")
+
+    workforce = workforce_preview(
+        start_date,
+        end_date,
+        grain,
+        ba,
+        sba,
+        ch,
+        site,
+        loc,
+        policy_overrides=policy,
+    )
+    return sanitize_for_json({"status": "ready", "workforce": workforce})
 
 
 @app.get("/api/planning/plan")
