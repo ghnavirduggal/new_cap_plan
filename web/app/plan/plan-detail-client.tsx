@@ -6,6 +6,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import AppShell from "../_components/AppShell";
 import DataTable from "../_components/DataTable";
 import EditableTable from "../_components/EditableTable";
+import MultiSelect from "../_components/MultiSelect";
 import { useGlobalLoader } from "../_components/GlobalLoader";
 import { useToast } from "../_components/ToastProvider";
 import { apiGet, apiPost } from "../../lib/api";
@@ -58,6 +59,32 @@ type WhatIfState = {
   attrDelta: number;
   volDelta: number;
   backlogCarryover: boolean;
+  rebalanceEnabled: boolean;
+  xskillEfficiencyPct: number;
+  xskillMaxLendPct: number;
+  lockCriticalTeams: string[];
+};
+
+type SelectOption = {
+  label: string;
+  value: string;
+};
+
+type WorkforcePreview = {
+  org_hiring?: {
+    required_fte?: number;
+    supply_fte?: number;
+    estimated_shortfall_fte?: number;
+    estimated_surplus_fte?: number;
+    potential_hiring_saved_fte?: number;
+    net_hiring_fte?: number;
+    post_rebalance_shortfall_fte?: number;
+    cross_skill_efficiency_pct?: number;
+    max_lend_pct?: number;
+    locked_critical_scope_count?: number;
+  };
+  scope_balance?: Array<Record<string, any>>;
+  rebalancing?: Array<Record<string, any>>;
 };
 
 type PlanComputeResponse = {
@@ -80,6 +107,7 @@ const TABLES: PlanTableConfig[] = [
   { key: "seat", label: "Seat Utilization", editable: true },
   { key: "bva", label: "Budget vs Actual" },
   { key: "nh", label: "New Hire"},
+  { key: "xskill", label: "Borrow / Lend" },
   { key: "emp", label: "Employee Roster"},
   { key: "notes", label: "Notes" },
 ];
@@ -276,7 +304,11 @@ const WHATIF_DEFAULT: WhatIfState = {
   shrinkDelta: 0,
   attrDelta: 0,
   volDelta: 0,
-  backlogCarryover: true
+  backlogCarryover: true,
+  rebalanceEnabled: true,
+  xskillEfficiencyPct: 85,
+  xskillMaxLendPct: 60,
+  lockCriticalTeams: []
 };
 
 function formatMetaRow(label: string, value?: string) {
@@ -697,6 +729,9 @@ export default function PlanDetailClient({ planId, rollupBa }: PlanDetailClientP
   const [compareWarning, setCompareWarning] = useState("");
   const [compareResult, setCompareResult] = useState<CompareResult | null>(null);
   const [whatIf, setWhatIf] = useState<WhatIfState>(WHATIF_DEFAULT);
+  const [xskillPreview, setXskillPreview] = useState<WorkforcePreview | null>(null);
+  const [xskillLoading, setXskillLoading] = useState(false);
+  const [criticalTeamOptions, setCriticalTeamOptions] = useState<SelectOption[]>([]);
   const [noteText, setNoteText] = useState("");
   const [rosterTab, setRosterTab] = useState<"roster" | "bulk">("roster");
   const rosterSnapshotRef = useRef<Array<Record<string, any>> | null>(null);
@@ -805,6 +840,18 @@ export default function PlanDetailClient({ planId, rollupBa }: PlanDetailClientP
     () => filterRowsByDateRange(upperRows, viewFrom, viewTo),
     [upperRows, viewFrom, viewTo]
   );
+  const rebalanceRows = useMemo(() => xskillPreview?.rebalancing ?? [], [xskillPreview?.rebalancing]);
+  const scopeBalanceRows = useMemo(() => xskillPreview?.scope_balance ?? [], [xskillPreview?.scope_balance]);
+  const orgHiring = xskillPreview?.org_hiring ?? {};
+  const lockCriticalTeamChoices = useMemo(() => {
+    const merged = new Map<string, string>();
+    criticalTeamOptions.forEach((option) => merged.set(option.value, option.label));
+    (whatIf.lockCriticalTeams ?? []).forEach((value) => {
+      const key = String(value || "").trim();
+      if (key && !merged.has(key)) merged.set(key, key);
+    });
+    return Array.from(merged.entries()).map(([value, label]) => ({ value, label }));
+  }, [criticalTeamOptions, whatIf.lockCriticalTeams]);
   const canEdit = EDITABLE_TABLES.has(activeConfig.key) && grain === "week" && !isRollup && !isLocked;
   const editableColumns = useMemo(() => {
     const cols = new Set<string>();
@@ -1127,6 +1174,88 @@ export default function PlanDetailClient({ planId, rollupBa }: PlanDetailClientP
     []
   );
 
+  const loadCriticalTeamOptions = useCallback(async () => {
+    const params = new URLSearchParams();
+    if (planMeta?.business_area) params.set("ba", String(planMeta.business_area));
+    if (planMeta?.sub_business_area) params.set("sba", String(planMeta.sub_business_area));
+    if (planMeta?.channel) {
+      const ch = String(planMeta.channel)
+        .split(",")
+        .map((v) => v.trim())
+        .filter(Boolean)[0];
+      if (ch) params.set("ch", ch);
+    }
+    if (planMeta?.site) params.set("site", String(planMeta.site));
+    if (planMeta?.location) params.set("location", String(planMeta.location));
+    try {
+      const res = await apiGet<{ options?: string[] }>(
+        `/api/forecast/settings/critical-team-options${params.toString() ? `?${params.toString()}` : ""}`
+      );
+      const next = (res.options ?? [])
+        .map((value) => String(value || "").trim())
+        .filter(Boolean)
+        .map((value) => ({ label: value, value }));
+      setCriticalTeamOptions(next);
+    } catch {
+      setCriticalTeamOptions([]);
+    }
+  }, [planMeta?.business_area, planMeta?.channel, planMeta?.location, planMeta?.site, planMeta?.sub_business_area]);
+
+  const loadRebalancePreview = useCallback(
+    async (policy?: Partial<WhatIfState>) => {
+      if (!planId && !rollupBa) return;
+      setXskillLoading(true);
+      try {
+        const eff = Number(policy?.xskillEfficiencyPct ?? whatIf.xskillEfficiencyPct);
+        const lend = Number(policy?.xskillMaxLendPct ?? whatIf.xskillMaxLendPct);
+        const lockTeams = Array.isArray(policy?.lockCriticalTeams)
+          ? policy?.lockCriticalTeams ?? []
+          : whatIf.lockCriticalTeams;
+        const enabled =
+          policy?.rebalanceEnabled !== undefined ? Boolean(policy.rebalanceEnabled) : Boolean(whatIf.rebalanceEnabled);
+        const grainMap: Record<string, string> = {
+          week: "W",
+          day: "D",
+          month: "M",
+          interval: "D"
+        };
+        const payload: Record<string, any> = {
+          grain: grainMap[String(grain || "week")] || "D",
+          start_date: planMeta?.start_week,
+          end_date: planMeta?.end_week,
+          policy: {
+            cross_skill_efficiency_pct: (Number.isFinite(eff) ? eff : WHATIF_DEFAULT.xskillEfficiencyPct) / 100,
+            max_lend_pct: enabled
+              ? (Number.isFinite(lend) ? lend : WHATIF_DEFAULT.xskillMaxLendPct) / 100
+              : 0,
+            lock_critical_teams: (lockTeams ?? []).map((v) => String(v || "").trim()).filter(Boolean)
+          }
+        };
+        if (planId) {
+          payload.plan_id = planId;
+        } else if (rollupBa) {
+          payload.rollup_ba = rollupBa;
+        }
+        const res = await apiPost<{ status?: string; workforce?: WorkforcePreview }>(
+          "/api/planning/plan/rebalancing",
+          payload
+        );
+        const workforce = res.workforce ?? {};
+        setXskillPreview(workforce);
+        setTables((prev) => ({
+          ...prev,
+          xskill: workforce.rebalancing ?? [],
+          xskill_balance: workforce.scope_balance ?? []
+        }));
+      } catch (error: any) {
+        notify("error", error?.message || "Could not load rebalancing preview.");
+      } finally {
+        setXskillLoading(false);
+      }
+    },
+    [grain, notify, planId, planMeta?.end_week, planMeta?.start_week, rollupBa, whatIf.lockCriticalTeams, whatIf.rebalanceEnabled, whatIf.xskillEfficiencyPct, whatIf.xskillMaxLendPct]
+  );
+
   const loadWhatIf = useCallback(async () => {
     if (!planId || isRollup) return;
     try {
@@ -1134,12 +1263,29 @@ export default function PlanDetailClient({ planId, rollupBa }: PlanDetailClientP
         `/api/planning/plan/whatif?plan_id=${planId}`
       );
       const overrides = res.overrides ?? {};
+      const toPct = (value: any, fallback: number) => {
+        const num = Number(value);
+        if (!Number.isFinite(num)) return fallback;
+        return num <= 1 ? num * 100 : num;
+      };
       setWhatIf({
         ahtDelta: Number(overrides.aht_delta ?? 0),
         shrinkDelta: Number(overrides.shrink_delta ?? 0),
         attrDelta: Number(overrides.attr_delta ?? 0),
         volDelta: Number(overrides.vol_delta ?? 0),
-        backlogCarryover: Boolean(overrides.backlog_carryover ?? true)
+        backlogCarryover: Boolean(overrides.backlog_carryover ?? true),
+        rebalanceEnabled: Boolean(overrides.rebalance_enabled ?? true),
+        xskillEfficiencyPct: toPct(
+          overrides.cross_skill_efficiency_pct ?? overrides.xskill_efficiency_pct,
+          WHATIF_DEFAULT.xskillEfficiencyPct
+        ),
+        xskillMaxLendPct: toPct(
+          overrides.max_lend_pct ?? overrides.xskill_max_lend_pct,
+          WHATIF_DEFAULT.xskillMaxLendPct
+        ),
+        lockCriticalTeams: Array.isArray(overrides.lock_critical_teams)
+          ? overrides.lock_critical_teams.map((v: any) => String(v || "").trim()).filter(Boolean)
+          : []
       });
     } catch {
       setWhatIf(WHATIF_DEFAULT);
@@ -1345,6 +1491,17 @@ export default function PlanDetailClient({ planId, rollupBa }: PlanDetailClientP
   }, [isRollup, loadNewHireClasses, loadWhatIf]);
 
   useEffect(() => {
+    if (isRollup) return;
+    if (!planMeta) return;
+    void loadCriticalTeamOptions();
+  }, [isRollup, loadCriticalTeamOptions, planMeta]);
+
+  useEffect(() => {
+    if (!planMeta && !isRollup) return;
+    void loadRebalancePreview();
+  }, [isRollup, loadRebalancePreview, planMeta, planId, rollupBa]);
+
+  useEffect(() => {
     if (rosterAction !== "tp") return;
     const ba = planMeta?.business_area || "";
     const sba = planMeta?.sub_business_area || "";
@@ -1488,12 +1645,13 @@ export default function PlanDetailClient({ planId, rollupBa }: PlanDetailClientP
     if (typeof window === "undefined") return;
     const handler = () => {
       void computePlanTables();
+      void loadRebalancePreview();
     };
     window.addEventListener("settingsUpdated", handler);
     return () => {
       window.removeEventListener("settingsUpdated", handler);
     };
-  }, [computePlanTables]);
+  }, [computePlanTables, loadRebalancePreview]);
 
   useEffect(() => {
     // Only schedule a timeout when there is a message to display
@@ -1552,11 +1710,16 @@ export default function PlanDetailClient({ planId, rollupBa }: PlanDetailClientP
           shrink_delta: whatIf.shrinkDelta,
           attr_delta: whatIf.attrDelta,
           vol_delta: whatIf.volDelta,
-          backlog_carryover: whatIf.backlogCarryover
+          backlog_carryover: whatIf.backlogCarryover,
+          rebalance_enabled: whatIf.rebalanceEnabled,
+          cross_skill_efficiency_pct: (Number(whatIf.xskillEfficiencyPct) || WHATIF_DEFAULT.xskillEfficiencyPct) / 100,
+          max_lend_pct: (Number(whatIf.xskillMaxLendPct) || WHATIF_DEFAULT.xskillMaxLendPct) / 100,
+          lock_critical_teams: (whatIf.lockCriticalTeams || []).map((v) => String(v || "").trim()).filter(Boolean)
         },
         action: "apply"
       });
       await refreshAll();
+      await loadRebalancePreview();
       setMessage("What-if applied.");
     } catch (error: any) {
       notify("error", error?.message || "Could not apply what-if.");
@@ -1578,6 +1741,7 @@ export default function PlanDetailClient({ planId, rollupBa }: PlanDetailClientP
       });
       setWhatIf(WHATIF_DEFAULT);
       await refreshAll();
+      await loadRebalancePreview(WHATIF_DEFAULT);
       setMessage("What-if cleared.");
     } catch (error: any) {
       notify("error", error?.message || "Could not clear what-if.");
@@ -2390,7 +2554,30 @@ export default function PlanDetailClient({ planId, rollupBa }: PlanDetailClientP
             <h3>{activeConfig.label}</h3>
             {activeConfig.description ? <p>{activeConfig.description}</p> : null}
           </div>
-          {isRollup ? (
+          {activeConfig.key === "xskill" ? (
+            <div className="plan-rollup">
+              <div className="plan-meta" style={{ marginBottom: 12 }}>
+                {formatMetaRow("Required FTE", String(orgHiring.required_fte ?? 0))}
+                {formatMetaRow("Supply FTE", String(orgHiring.supply_fte ?? 0))}
+                {formatMetaRow("Pre-Rebalance Shortfall", String(orgHiring.estimated_shortfall_fte ?? 0))}
+                {formatMetaRow("Hiring Saved", String(orgHiring.potential_hiring_saved_fte ?? 0))}
+                {formatMetaRow("Net Hiring", String(orgHiring.net_hiring_fte ?? 0))}
+                {formatMetaRow("Post-Rebalance Shortfall", String(orgHiring.post_rebalance_shortfall_fte ?? 0))}
+                {formatMetaRow("Efficiency %", String(orgHiring.cross_skill_efficiency_pct ?? 0))}
+                {formatMetaRow("Max Lend %", String(orgHiring.max_lend_pct ?? 0))}
+                {formatMetaRow("Locked Scopes", String(orgHiring.locked_critical_scope_count ?? 0))}
+              </div>
+              {xskillLoading ? <div className="plan-message">Loading rebalancing preview…</div> : null}
+              <div style={{ marginBottom: 12 }}>
+                <h4 style={{ margin: "8px 0" }}>Borrow / Lend Moves</h4>
+                <DataTable data={rebalanceRows} emptyLabel="No borrowing/lending moves for this scope." />
+              </div>
+              <div>
+                <h4 style={{ margin: "8px 0" }}>Scope Balance</h4>
+                <DataTable data={scopeBalanceRows} emptyLabel="No scope balance rows available." />
+              </div>
+            </div>
+          ) : isRollup ? (
             <div className="plan-rollup">
               <DataTable
                 data={filteredRows}
@@ -2586,6 +2773,34 @@ export default function PlanDetailClient({ planId, rollupBa }: PlanDetailClientP
                     onChange={(event) => setWhatIf((prev) => ({ ...prev, volDelta: Number(event.target.value) }))}
                   />
                 </label>
+                <label>
+                  Cross-Skill Efficiency (%)
+                  <input
+                    className="input"
+                    type="number"
+                    min={0}
+                    max={100}
+                    value={whatIf.xskillEfficiencyPct}
+                    step={1}
+                    onChange={(event) =>
+                      setWhatIf((prev) => ({ ...prev, xskillEfficiencyPct: Number(event.target.value) }))
+                    }
+                  />
+                </label>
+                <label>
+                  Max Lend (%)
+                  <input
+                    className="input"
+                    type="number"
+                    min={0}
+                    max={100}
+                    value={whatIf.xskillMaxLendPct}
+                    step={1}
+                    onChange={(event) =>
+                      setWhatIf((prev) => ({ ...prev, xskillMaxLendPct: Number(event.target.value) }))
+                    }
+                  />
+                </label>
               </div>
               <label className="plan-whatif-checkbox">
                 <input
@@ -2595,7 +2810,31 @@ export default function PlanDetailClient({ planId, rollupBa }: PlanDetailClientP
                 />
                 Apply backlog to next week (Back Office)
               </label>
+              <label className="plan-whatif-checkbox">
+                <input
+                  type="checkbox"
+                  checked={whatIf.rebalanceEnabled}
+                  onChange={(event) => setWhatIf((prev) => ({ ...prev, rebalanceEnabled: event.target.checked }))}
+                />
+                Enable cross-skill borrowing/lending
+              </label>
+              <div style={{ marginTop: 8 }}>
+                <div className="label">Lock Critical Teams</div>
+                <MultiSelect
+                  options={lockCriticalTeamChoices}
+                  values={whatIf.lockCriticalTeams}
+                  onChange={(next) => setWhatIf((prev) => ({ ...prev, lockCriticalTeams: next }))}
+                  placeholder="Select protected teams"
+                />
+              </div>
               <div className="plan-whatif-actions">
+                <button
+                  type="button"
+                  className="btn btn-light"
+                  onClick={() => void loadRebalancePreview()}
+                >
+                  Preview Rebalance
+                </button>
                 <button type="button" className="btn btn-primary" onClick={handleApplyWhatIf}>
                   Apply What-If
                 </button>
