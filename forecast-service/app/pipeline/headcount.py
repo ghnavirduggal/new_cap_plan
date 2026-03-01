@@ -353,6 +353,89 @@ def channels_for_scope(_ba: Optional[str] = None, _sba: Optional[str] = None) ->
     return CHANNEL_LIST[:]
 
 
+def _normalize_channel(value: object) -> str:
+    text = str(value or "").strip().lower()
+    if not text:
+        return ""
+    if "voice" in text or text in {"inbound", "call", "telephony"}:
+        return "Voice"
+    if "back office" in text or "backoffice" in text or text in {"bo", "backoffice"}:
+        return "Back Office"
+    if "outbound" in text or "out bound" in text or text in {"ob"}:
+        return "Outbound"
+    if "blended" in text:
+        return "Blended"
+    if "message" in text or "msg" in text:
+        return "MessageUs"
+    if "chat" in text:
+        return "Chat"
+    return str(value).strip()
+
+
+def critical_team_options(
+    ba: Optional[str] = None,
+    sba: Optional[str] = None,
+    ch: Optional[str] = None,
+    location: Optional[str] = None,
+    site: Optional[str] = None,
+) -> list[str]:
+    df = _hcu_df()
+    if df.empty:
+        return []
+    cols = _hcu_cols(df)
+    if not (cols.get("ba") and cols.get("sba")):
+        return []
+
+    out = pd.DataFrame()
+    out["ba"] = df[cols["ba"]].astype(str).fillna("").str.strip()
+    out["sba"] = df[cols["sba"]].astype(str).fillna("").str.strip()
+    if cols.get("lob") and cols["lob"] in df.columns:
+        out["ch"] = df[cols["lob"]].astype(str).fillna("").str.strip().map(_normalize_channel)
+    else:
+        out["ch"] = "Voice"
+    if cols.get("loc") and cols["loc"] in df.columns:
+        out["loc"] = df[cols["loc"]].astype(str).fillna("").str.strip()
+    else:
+        out["loc"] = ""
+    if cols.get("site") and cols["site"] in df.columns:
+        out["site"] = df[cols["site"]].astype(str).fillna("").str.strip()
+    else:
+        out["site"] = ""
+
+    if ba:
+        ba_key = str(ba).strip().lower()
+        out = out[out["ba"].str.lower() == ba_key]
+    if sba:
+        sba_key = str(sba).strip().lower()
+        out = out[out["sba"].str.lower() == sba_key]
+    if ch:
+        ch_key = _normalize_channel(ch).strip().lower()
+        out = out[out["ch"].str.lower() == ch_key]
+    if location:
+        loc_key = str(location).strip().lower()
+        out = out[out["loc"].str.lower() == loc_key]
+    if site:
+        site_key = str(site).strip().lower()
+        out = out[out["site"].str.lower() == site_key]
+
+    out = out[(out["ba"] != "") & (out["sba"] != "") & (out["ch"] != "")]
+    if out.empty:
+        return []
+
+    scopes = (
+        out["ba"].astype(str).str.strip()
+        + " / "
+        + out["sba"].astype(str).str.strip()
+        + " / "
+        + out["ch"].astype(str).str.strip()
+    )
+    scopes = scopes.dropna().astype(str).str.strip()
+    scopes = scopes[scopes != ""]
+    if scopes.empty:
+        return []
+    return sorted(scopes.drop_duplicates().tolist())
+
+
 def preview_headcount(rows: Optional[int] = 50) -> list[dict[str, Any]]:
     df = _hcu_df()
     if df.empty:
