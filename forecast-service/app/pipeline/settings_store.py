@@ -34,6 +34,9 @@ DEFAULT_SETTINGS = {
     "sda_aht_uplift_pct": [],
     "throughput_train_pct": 100.0,
     "throughput_nest_pct": 100.0,
+    "cross_skill_efficiency_pct": 0.85,
+    "max_lend_pct": 0.60,
+    "lock_critical_teams": [],
 }
 
 
