@@ -39,6 +39,20 @@ type OpsSummary = {
   site?: { labels: string[]; values: number[] };
   waterfall?: { labels: string[]; values: number[]; measure?: Array<"relative" | "total"> };
   summary?: Array<Record<string, any>>;
+  workforce?: {
+    org_hiring?: {
+      required_fte?: number;
+      supply_fte?: number;
+      estimated_shortfall_fte?: number;
+      estimated_surplus_fte?: number;
+      potential_hiring_saved_fte?: number;
+      net_hiring_fte?: number;
+      post_rebalance_shortfall_fte?: number;
+      cross_skill_efficiency_pct?: number;
+    };
+    scope_balance?: Array<Record<string, any>>;
+    rebalancing?: Array<Record<string, any>>;
+  };
 };
 
 const GRAIN_OPTIONS = [
@@ -112,7 +126,7 @@ export default function OpsPage() {
       ].join("::"),
     [filters]
   );
-  const parts = ["kpis", "line", "bar", "pie", "site", "waterfall", "summary"];
+  const parts = ["kpis", "line", "bar", "pie", "site", "waterfall", "summary", "workforce"];
 
   const loadOptions = async () => {
     const params = new URLSearchParams();
@@ -159,6 +173,8 @@ export default function OpsPage() {
         return Boolean(summary.waterfall);
       case "summary":
         return Boolean(summary.summary);
+      case "workforce":
+        return Boolean(summary.workforce);
       default:
         return false;
     }
@@ -254,6 +270,7 @@ export default function OpsPage() {
   const siteLoading = showPartSkeleton("site");
   const waterfallLoading = showPartSkeleton("waterfall");
   const summaryLoading = showPartSkeleton("summary");
+  const workforceLoading = showPartSkeleton("workforce");
   const anyLoading = parts.some((part) => isPartLoading(part));
   const coverage = kpis.required_fte > 0 ? (kpis.supply_fte / kpis.required_fte) * 100 : 0;
   const gapIsSurplus = kpis.gap_fte <= 0;
@@ -311,6 +328,10 @@ export default function OpsPage() {
       return next;
     });
   }, [summary?.summary]);
+  const workforce = summary?.workforce ?? {};
+  const orgHiring = workforce.org_hiring ?? {};
+  const rebalanceRows = useMemo(() => workforce.rebalancing ?? [], [workforce.rebalancing]);
+  const scopeBalanceRows = useMemo(() => workforce.scope_balance ?? [], [workforce.scope_balance]);
 
   const activeFilters = [
     { label: "Business Area", values: filters.ba },
@@ -609,6 +630,64 @@ export default function OpsPage() {
                   <div className="ops-signal-empty">No volume data.</div>
                 )}
               </div>
+            </div>
+          </div>
+        </section>
+
+        <section className="ops-panel">
+          <div className="ops-panel__header">
+            <div>
+              <h2>Org Hiring &amp; Cross-Skill Rebalancing</h2>
+              <p>Estimate organisation-wide hiring need and suggest borrow/lend staffing moves across BA/SBA.</p>
+            </div>
+            {workforceLoading || anyLoading ? <LoadingPill /> : null}
+          </div>
+          <div className="ops-insight-grid">
+            <div className="ops-insight-card">
+              <div className="ops-insight-label">Net Hiring FTE</div>
+              <div className="ops-insight-value">{workforceLoading ? "—" : formatNumber(orgHiring.net_hiring_fte ?? 0)}</div>
+              <div className="ops-insight-sub">After cross-skill borrowing</div>
+            </div>
+            <div className="ops-insight-card">
+              <div className="ops-insight-label">Potential Hiring Saved</div>
+              <div className="ops-insight-value">{workforceLoading ? "—" : formatNumber(orgHiring.potential_hiring_saved_fte ?? 0)}</div>
+              <div className="ops-insight-sub">Via staff lending</div>
+            </div>
+            <div className="ops-insight-card">
+              <div className="ops-insight-label">Estimated Shortfall</div>
+              <div className="ops-insight-value">{workforceLoading ? "—" : formatNumber(orgHiring.estimated_shortfall_fte ?? 0)}</div>
+              <div className="ops-insight-sub">Across selected scope</div>
+            </div>
+            <div className="ops-insight-card">
+              <div className="ops-insight-label">Cross-Skill Efficiency</div>
+              <div className="ops-insight-value">
+                {workforceLoading ? "—" : `${formatNumber(orgHiring.cross_skill_efficiency_pct ?? 85)}%`}
+              </div>
+              <div className="ops-insight-sub">Effective FTE after transfer</div>
+            </div>
+          </div>
+          <div className="ops-chart-layout" style={{ marginTop: 14 }}>
+            <div className="ops-chart-card ops-chart-card--main">
+              <div className="ops-chart-head">
+                <h3>Suggested Borrow/Lend Moves</h3>
+                <span className="ops-chart-tag">Top 25 recommendations</span>
+              </div>
+              {workforceLoading ? (
+                <div className="ops-chart-loading">Loading recommendations…</div>
+              ) : (
+                <DataTable data={rebalanceRows} />
+              )}
+            </div>
+            <div className="ops-chart-card">
+              <div className="ops-chart-head">
+                <h3>Scope Balance</h3>
+                <span className="ops-chart-tag">Required vs Supply</span>
+              </div>
+              {workforceLoading ? (
+                <div className="ops-chart-loading">Loading scope balances…</div>
+              ) : (
+                <DataTable data={scopeBalanceRows} />
+              )}
             </div>
           </div>
         </section>
