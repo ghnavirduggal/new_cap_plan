@@ -1066,6 +1066,8 @@ def _compute_ops_base(
         "req_day": req_day,
         "supply": supply,
         "weight_df": weight_df,
+        "roster": roster,
+        "hiring": hiring,
     }
 
 
@@ -1613,51 +1615,328 @@ def _compute_waterfall_part(base: dict, grain: str) -> dict:
     }
 
 
-def _compute_summary_part(base: dict) -> dict:
+def _scope_workload_table(base: dict) -> pd.DataFrame:
     map_df = base.get("map_df", pd.DataFrame())
     voice = base.get("voice", pd.DataFrame())
     bo = base.get("bo", pd.DataFrame())
     chat = base.get("chat", pd.DataFrame())
     ob = base.get("ob", pd.DataFrame())
-    summary_rows: list[dict[str, Any]] = []
-    if not map_df.empty:
-        v_sum = (
-            voice.groupby("scope_key", as_index=False)["volume"].sum()
-            if not voice.empty and "scope_key" in voice.columns
-            else pd.DataFrame(columns=["scope_key", "volume"])
-        )
-        b_sum = (
-            bo.groupby("scope_key", as_index=False)["items"].sum()
-            if not bo.empty and "scope_key" in bo.columns
-            else pd.DataFrame(columns=["scope_key", "items"])
-        )
-        c_sum = (
-            chat.groupby("scope_key", as_index=False)["items"].sum().rename(columns={"items": "chat_items"})
-            if not chat.empty and "scope_key" in chat.columns
-            else pd.DataFrame(columns=["scope_key", "chat_items"])
-        )
-        ob_col = "opc" if "opc" in ob.columns else ("volume" if "volume" in ob.columns else None)
-        o_sum = (
-            ob.groupby("scope_key", as_index=False)[ob_col].sum().rename(columns={ob_col: "outbound_opc"})
-            if ob_col and not ob.empty and "scope_key" in ob.columns
-            else pd.DataFrame(columns=["scope_key", "outbound_opc"])
-        )
-        sk_map = map_df.drop_duplicates(subset=["sk", "ba", "sba", "ch", "site", "loc"]).rename(columns={"sk": "scope_key"})
-        merged = (
-            sk_map.merge(v_sum, on="scope_key", how="left")
-            .merge(b_sum, on="scope_key", how="left")
-            .merge(c_sum, on="scope_key", how="left")
-            .merge(o_sum, on="scope_key", how="left")
-        )
-        merged["volume"] = merged["volume"].fillna(0)
-        merged["items"] = merged["items"].fillna(0)
-        merged["chat_items"] = merged["chat_items"].fillna(0)
-        merged["outbound_opc"] = merged["outbound_opc"].fillna(0)
-        merged["workload"] = merged[["volume", "items", "chat_items", "outbound_opc"]].sum(axis=1)
-        tbl = merged.groupby(
-            ["ba", "sba", "ch", "site", "loc"], as_index=False
-        )[["volume", "items", "chat_items", "outbound_opc", "workload"]].sum()
-        summary_rows = tbl.to_dict("records")
+    if map_df is None or map_df.empty:
+        return pd.DataFrame()
+
+    v_sum = (
+        voice.groupby("scope_key", as_index=False)["volume"].sum()
+        if not voice.empty and "scope_key" in voice.columns
+        else pd.DataFrame(columns=["scope_key", "volume"])
+    )
+    b_sum = (
+        bo.groupby("scope_key", as_index=False)["items"].sum()
+        if not bo.empty and "scope_key" in bo.columns
+        else pd.DataFrame(columns=["scope_key", "items"])
+    )
+    c_sum = (
+        chat.groupby("scope_key", as_index=False)["items"].sum().rename(columns={"items": "chat_items"})
+        if not chat.empty and "scope_key" in chat.columns
+        else pd.DataFrame(columns=["scope_key", "chat_items"])
+    )
+    ob_col = "opc" if "opc" in ob.columns else ("volume" if "volume" in ob.columns else None)
+    o_sum = (
+        ob.groupby("scope_key", as_index=False)[ob_col].sum().rename(columns={ob_col: "outbound_opc"})
+        if ob_col and not ob.empty and "scope_key" in ob.columns
+        else pd.DataFrame(columns=["scope_key", "outbound_opc"])
+    )
+    sk_map = map_df.drop_duplicates(subset=["sk", "ba", "sba", "ch", "site", "loc"]).rename(columns={"sk": "scope_key"})
+    merged = (
+        sk_map.merge(v_sum, on="scope_key", how="left")
+        .merge(b_sum, on="scope_key", how="left")
+        .merge(c_sum, on="scope_key", how="left")
+        .merge(o_sum, on="scope_key", how="left")
+    )
+    merged["volume"] = pd.to_numeric(merged.get("volume"), errors="coerce").fillna(0.0)
+    merged["items"] = pd.to_numeric(merged.get("items"), errors="coerce").fillna(0.0)
+    merged["chat_items"] = pd.to_numeric(merged.get("chat_items"), errors="coerce").fillna(0.0)
+    merged["outbound_opc"] = pd.to_numeric(merged.get("outbound_opc"), errors="coerce").fillna(0.0)
+    merged["workload"] = merged[["volume", "items", "chat_items", "outbound_opc"]].sum(axis=1)
+    tbl = merged.groupby(
+        ["ba", "sba", "ch", "site", "loc"], as_index=False
+    )[["volume", "items", "chat_items", "outbound_opc", "workload"]].sum()
+    return tbl
+
+
+def _scope_avg_supply_fte(base: dict, scope_tbl: pd.DataFrame) -> pd.Series:
+    roster = base.get("roster", pd.DataFrame())
+    hiring = base.get("hiring", pd.DataFrame())
+    start = base.get("start")
+    end = base.get("end")
+    if scope_tbl is None or scope_tbl.empty:
+        return pd.Series(dtype="float64")
+    if (roster is None or roster.empty) and (hiring is None or hiring.empty):
+        return pd.Series([0.0] * int(len(scope_tbl.index)))
+
+    vals: list[float] = []
+    any_non_zero = False
+    for _, row in scope_tbl.iterrows():
+        ba_v = str(row.get("ba") or "").strip()
+        sba_v = str(row.get("sba") or "").strip()
+        ch_v = str(row.get("ch") or "").strip()
+        site_v = str(row.get("site") or "").strip()
+        loc_v = str(row.get("loc") or "").strip()
+        ba_q = [ba_v] if ba_v else []
+        sba_q = [sba_v] if sba_v else []
+        ch_q = [ch_v] if ch_v else []
+        site_q = [site_v] if site_v else []
+        loc_q = [loc_v] if loc_v else []
+
+        roster_f = _filter_scope_df(roster, ba_q, sba_q, ch_q, site_q, loc_q) if isinstance(roster, pd.DataFrame) else pd.DataFrame()
+        hiring_f = _filter_scope_df(hiring, ba_q, sba_q, ch_q, site_q, loc_q) if isinstance(hiring, pd.DataFrame) else pd.DataFrame()
+        if (roster_f.empty and hiring_f.empty) and (ba_q or sba_q):
+            roster_f = _filter_scope_df(roster, [], [], ch_q, site_q, loc_q) if isinstance(roster, pd.DataFrame) else pd.DataFrame()
+            hiring_f = _filter_scope_df(hiring, [], [], ch_q, site_q, loc_q) if isinstance(hiring, pd.DataFrame) else pd.DataFrame()
+
+        sup = supply_fte_daily(roster_f, hiring_f)
+        avg_val = 0.0
+        if isinstance(sup, pd.DataFrame) and not sup.empty:
+            sup["date"] = pd.to_datetime(sup["date"], errors="coerce").dt.date
+            sup = sup[pd.notna(sup["date"])]
+            if start:
+                sup = sup[sup["date"] >= start]
+            if end:
+                sup = sup[sup["date"] <= end]
+            if not sup.empty:
+                day_tot = sup.groupby("date", as_index=False)["supply_fte"].sum()
+                avg_val = float(pd.to_numeric(day_tot["supply_fte"], errors="coerce").fillna(0.0).mean())
+        vals.append(avg_val)
+        if avg_val > 0:
+            any_non_zero = True
+    if not any_non_zero:
+        return pd.Series([0.0] * int(len(scope_tbl.index)))
+    return pd.Series(vals)
+
+
+def _policy_ratio(value: Any, default: float, *, minimum: float = 0.0, maximum: float = 1.0) -> float:
+    try:
+        ratio = float(value)
+    except Exception:
+        ratio = float(default)
+    if not pd.notna(ratio):
+        ratio = float(default)
+    if ratio > 1.0:
+        ratio = ratio / 100.0
+    ratio = max(float(minimum), min(float(maximum), float(ratio)))
+    return ratio
+
+
+def _norm_policy_token(value: Any) -> str:
+    return " ".join(str(value or "").strip().lower().split())
+
+
+def _lock_scope_tokens_from_settings(value: Any) -> set[str]:
+    tokens: set[str] = set()
+    queue: list[Any] = [value]
+    while queue:
+        item = queue.pop(0)
+        if item is None:
+            continue
+        if isinstance(item, (list, tuple, set)):
+            queue.extend(list(item))
+            continue
+        if isinstance(item, dict):
+            for key in ("teams", "scopes", "items", "values", "lock_critical_teams"):
+                nested = item.get(key)
+                if isinstance(nested, (list, tuple, set)):
+                    queue.extend(list(nested))
+            raw_scope = item.get("scope") or item.get("scope_key") or item.get("name") or item.get("label") or item.get("team")
+            if raw_scope:
+                queue.append(raw_scope)
+            ba_v = str(item.get("business_area") or item.get("ba") or "").strip()
+            sba_v = str(item.get("sub_business_area") or item.get("sub_ba") or item.get("sba") or "").strip()
+            ch_v = _normalize_channel(str(item.get("channel") or item.get("ch") or item.get("lob") or "").strip())
+            site_v = str(item.get("site") or "").strip()
+            if ba_v:
+                tokens.add(_norm_policy_token(ba_v))
+            if ba_v and sba_v:
+                tokens.add(_norm_policy_token(f"{ba_v}|{sba_v}"))
+                tokens.add(_norm_policy_token(f"{ba_v} / {sba_v}"))
+            if ba_v and sba_v and ch_v:
+                tokens.add(_norm_policy_token(f"{ba_v}|{sba_v}|{ch_v}"))
+                tokens.add(_norm_policy_token(f"{ba_v} / {sba_v} / {ch_v}"))
+            if ba_v and sba_v and ch_v and site_v:
+                tokens.add(_norm_policy_token(f"{ba_v}|{sba_v}|{ch_v}|{site_v}"))
+                tokens.add(_norm_policy_token(f"{ba_v} / {sba_v} / {ch_v} / {site_v}"))
+            continue
+        text = str(item).strip()
+        if not text:
+            continue
+        for part in text.replace(";", ",").splitlines():
+            for token in part.split(","):
+                norm = _norm_policy_token(token)
+                if norm:
+                    tokens.add(norm)
+    return tokens
+
+
+def _scope_tokens_for_lock_check(row: pd.Series) -> set[str]:
+    ba_v = str(row.get("ba") or "").strip()
+    sba_v = str(row.get("sba") or "").strip()
+    ch_v = _normalize_channel(str(row.get("ch") or "").strip())
+    site_v = str(row.get("site") or "").strip()
+    loc_v = str(row.get("loc") or "").strip()
+    tokens = {
+        _norm_policy_token(str(row.get("scope") or "").strip()),
+        _norm_policy_token(ba_v),
+        _norm_policy_token(sba_v),
+        _norm_policy_token(ch_v),
+        _norm_policy_token(site_v),
+        _norm_policy_token(loc_v),
+    }
+    if ba_v and sba_v:
+        tokens.add(_norm_policy_token(f"{ba_v}|{sba_v}"))
+        tokens.add(_norm_policy_token(f"{ba_v} / {sba_v}"))
+    if ba_v and sba_v and ch_v:
+        tokens.add(_norm_policy_token(f"{ba_v}|{sba_v}|{ch_v}"))
+        tokens.add(_norm_policy_token(f"{ba_v} / {sba_v} / {ch_v}"))
+    if ba_v and sba_v and ch_v and site_v:
+        tokens.add(_norm_policy_token(f"{ba_v}|{sba_v}|{ch_v}|{site_v}"))
+        tokens.add(_norm_policy_token(f"{ba_v} / {sba_v} / {ch_v} / {site_v}"))
+    return {token for token in tokens if token}
+
+
+def _is_scope_locked(row: pd.Series, lock_tokens: set[str]) -> bool:
+    if not lock_tokens:
+        return False
+    return any(token in lock_tokens for token in _scope_tokens_for_lock_check(row))
+
+
+def _compute_workforce_part(base: dict, grain: str) -> dict:
+    tbl = _scope_workload_table(base)
+    if tbl is None or tbl.empty:
+        return {"workforce": {"org_hiring": {}, "scope_balance": [], "rebalancing": []}}
+
+    settings = base.get("settings", {}) or {}
+    xskill_eff = _policy_ratio(settings.get("cross_skill_efficiency_pct"), 0.85)
+    max_lend_ratio = _policy_ratio(settings.get("max_lend_pct"), 0.60)
+    lock_tokens = _lock_scope_tokens_from_settings(settings.get("lock_critical_teams"))
+
+    kpi_req, kpi_sup, _kpi_gap, _coverage = _compute_weighted_kpis(base, grain)
+    total_workload = float(pd.to_numeric(tbl["workload"], errors="coerce").fillna(0.0).sum())
+    if total_workload > 0:
+        tbl["workload_share"] = pd.to_numeric(tbl["workload"], errors="coerce").fillna(0.0) / total_workload
+    else:
+        tbl["workload_share"] = 0.0
+    tbl["required_fte_est"] = float(kpi_req) * tbl["workload_share"]
+
+    scoped_supply = _scope_avg_supply_fte(base, tbl)
+    if scoped_supply.empty or float(pd.to_numeric(scoped_supply, errors="coerce").fillna(0.0).sum()) <= 0:
+        # Fallback: distribute total supply by workload share when scoped supply is unavailable.
+        tbl["supply_fte_est"] = float(kpi_sup) * tbl["workload_share"]
+    else:
+        tbl["supply_fte_est"] = pd.to_numeric(scoped_supply, errors="coerce").fillna(0.0).values
+        sup_total = float(pd.to_numeric(tbl["supply_fte_est"], errors="coerce").fillna(0.0).sum())
+        if sup_total > 0 and kpi_sup > 0:
+            # Rebase scoped estimates to overall supply KPI for consistency with chart/KPI totals.
+            tbl["supply_fte_est"] = tbl["supply_fte_est"] * (float(kpi_sup) / sup_total)
+
+    tbl["gap_fte"] = tbl["required_fte_est"] - tbl["supply_fte_est"]
+    tbl["shortfall_fte"] = tbl["gap_fte"].clip(lower=0.0)
+    tbl["surplus_fte"] = (-tbl["gap_fte"]).clip(lower=0.0)
+
+    def _scope_label(row: pd.Series) -> str:
+        ba_v = str(row.get("ba") or "").strip()
+        sba_v = str(row.get("sba") or "").strip()
+        ch_v = _normalize_channel(str(row.get("ch") or "").strip())
+        return " / ".join([x for x in [ba_v, sba_v, ch_v] if x]) or "Unscoped"
+
+    tbl["scope"] = tbl.apply(_scope_label, axis=1)
+    if lock_tokens:
+        tbl["locked_critical"] = tbl.apply(lambda row: _is_scope_locked(row, lock_tokens), axis=1)
+    else:
+        tbl["locked_critical"] = False
+
+    total_short = float(pd.to_numeric(tbl["shortfall_fte"], errors="coerce").fillna(0.0).sum())
+    total_surplus = float(pd.to_numeric(tbl["surplus_fte"], errors="coerce").fillna(0.0).sum())
+    unlocked_surplus = float(
+        pd.to_numeric(tbl.loc[~tbl["locked_critical"], "surplus_fte"], errors="coerce").fillna(0.0).sum()
+    )
+    transferable_eff = unlocked_surplus * max_lend_ratio * xskill_eff
+    hiring_saved = min(total_short, transferable_eff)
+    net_hiring = max(0.0, total_short - transferable_eff)
+
+    scope_balance = (
+        tbl.sort_values("shortfall_fte", ascending=False)[
+            [
+                "scope",
+                "ba",
+                "sba",
+                "ch",
+                "site",
+                "loc",
+                "required_fte_est",
+                "supply_fte_est",
+                "gap_fte",
+                "shortfall_fte",
+                "surplus_fte",
+                "locked_critical",
+            ]
+        ]
+        .head(50)
+        .to_dict("records")
+    )
+
+    donors = tbl[(tbl["surplus_fte"] > 0) & (~tbl["locked_critical"])].copy().sort_values("surplus_fte", ascending=False)
+    recv = tbl[tbl["shortfall_fte"] > 0].copy().sort_values("shortfall_fte", ascending=False)
+    if not donors.empty:
+        donors["rem_surplus"] = donors["surplus_fte"].astype(float) * max_lend_ratio
+    rebalancing: list[dict[str, Any]] = []
+    if xskill_eff > 0:
+        for r_idx, r in recv.iterrows():
+            need_eff = float(r["shortfall_fte"])
+            if need_eff <= 0:
+                continue
+            for d_idx, d in donors.iterrows():
+                avail = float(d.get("rem_surplus", 0.0))
+                if avail <= 0 or need_eff <= 0:
+                    continue
+                move_fte = min(avail, need_eff / xskill_eff)
+                if move_fte < 0.1:
+                    continue
+                eff_fte = move_fte * xskill_eff
+                donors.loc[d_idx, "rem_surplus"] = max(0.0, avail - move_fte)
+                need_eff = max(0.0, need_eff - eff_fte)
+                rebalancing.append(
+                    {
+                        "from_scope": str(d["scope"]),
+                        "to_scope": str(r["scope"]),
+                        "lend_fte": float(round(move_fte, 2)),
+                        "effective_fte": float(round(eff_fte, 2)),
+                        "remaining_shortfall_fte": float(round(need_eff, 2)),
+                    }
+                )
+                if len(rebalancing) >= 25:
+                    break
+            if len(rebalancing) >= 25:
+                break
+
+    total_effective_moved = float(sum(float(item.get("effective_fte", 0.0) or 0.0) for item in rebalancing))
+    rem_shortfall = max(0.0, total_short - total_effective_moved)
+
+    org_hiring = {
+        "required_fte": float(round(kpi_req, 2)),
+        "supply_fte": float(round(kpi_sup, 2)),
+        "estimated_shortfall_fte": float(round(total_short, 2)),
+        "estimated_surplus_fte": float(round(total_surplus, 2)),
+        "potential_hiring_saved_fte": float(round(hiring_saved, 2)),
+        "net_hiring_fte": float(round(net_hiring, 2)),
+        "post_rebalance_shortfall_fte": float(round(max(0.0, rem_shortfall), 2)),
+        "cross_skill_efficiency_pct": float(round(xskill_eff * 100.0, 1)),
+        "max_lend_pct": float(round(max_lend_ratio * 100.0, 1)),
+        "locked_critical_scope_count": int(tbl["locked_critical"].sum()),
+    }
+    return {"workforce": {"org_hiring": org_hiring, "scope_balance": scope_balance, "rebalancing": rebalancing}}
+
+
+def _compute_summary_part(base: dict) -> dict:
+    tbl = _scope_workload_table(base)
+    summary_rows: list[dict[str, Any]] = tbl.to_dict("records") if isinstance(tbl, pd.DataFrame) and not tbl.empty else []
     return {"summary": summary_rows}
 
 
@@ -1702,6 +1981,8 @@ def refresh_ops_part(
             return _compute_waterfall_part(base, grain)
         if part == "summary":
             return _compute_summary_part(base)
+        if part == "workforce":
+            return _compute_workforce_part(base, grain)
         return {"error": f"Unknown part '{part}'."}
 
     if cached_base is not None and not stale:
@@ -1755,6 +2036,7 @@ def refresh_ops(
         _compute_site_part(base),
         _compute_waterfall_part(base, grain),
         _compute_summary_part(base),
+        _compute_workforce_part(base, grain),
     ):
         result.update(payload)
 
@@ -1774,3 +2056,28 @@ def refresh_ops(
     )
     _ops_cache_set(cache_key, result)
     return result
+
+
+def workforce_preview(
+    start_date: Optional[str],
+    end_date: Optional[str],
+    grain: str,
+    ba: list[str],
+    sba: list[str],
+    ch: list[str],
+    site: list[str],
+    loc: list[str],
+    policy_overrides: Optional[dict] = None,
+) -> dict:
+    """
+    Compute only workforce rebalancing payload for planning screens.
+    Optional policy_overrides can inject temporary what-if values without
+    persisting them to settings.
+    """
+    base = _compute_ops_base(start_date, end_date, ba, sba, ch, site, loc)
+    if isinstance(policy_overrides, dict) and policy_overrides:
+        settings = dict(base.get("settings") or {})
+        settings.update(policy_overrides)
+        base["settings"] = settings
+    payload = _compute_workforce_part(base, grain)
+    return payload.get("workforce") or {"org_hiring": {}, "scope_balance": [], "rebalancing": []}
