@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useState } from "react";
 import DataTable from "../_components/DataTable";
 import { useGlobalLoader } from "../_components/GlobalLoader";
+import MultiSelect from "../_components/MultiSelect";
 import { useToast } from "../_components/ToastProvider";
 import { apiGet, apiPost } from "../../lib/api";
 import { parseExcelFile } from "../../lib/excel";
@@ -51,6 +52,11 @@ type HeadcountOptions = {
   channels: string[];
 };
 
+type SelectOption = {
+  label: string;
+  value: string;
+};
+
 type SettingsState = {
   intervalMinutes: number;
   hoursPerFte: number;
@@ -77,6 +83,9 @@ type SettingsState = {
   sdaAhtPct: number[];
   throughputTrainPct: number;
   throughputNestPct: number;
+  crossSkillEfficiencyPct: number;
+  maxLendPct: number;
+  lockCriticalTeams: string[];
 };
 
 const EMPTY_UPLOADS: Record<UploadKey, UploadState> = {
@@ -127,7 +136,10 @@ const DEFAULT_SETTINGS: SettingsState = {
   sdaLoginPct: [],
   sdaAhtPct: [],
   throughputTrainPct: 100,
-  throughputNestPct: 100
+  throughputNestPct: 100,
+  crossSkillEfficiencyPct: 85,
+  maxLendPct: 60,
+  lockCriticalTeams: []
 };
 
 const FORECAST_TABS = [
@@ -159,6 +171,37 @@ function toNumberList(value: any): number[] {
   }
   const num = Number(value);
   return Number.isFinite(num) ? [num] : [];
+}
+
+function toStringList(value: any): string[] {
+  if (value === null || value === undefined) return [];
+  if (Array.isArray(value)) {
+    return Array.from(
+      new Set(
+        value
+          .map((entry) => String(entry ?? "").trim())
+          .filter((entry) => entry.length > 0)
+      )
+    );
+  }
+  if (typeof value === "string") {
+    return Array.from(
+      new Set(
+        value
+          .split(/\r?\n|,|;/)
+          .map((entry) => entry.trim())
+          .filter((entry) => entry.length > 0)
+      )
+    );
+  }
+  const text = String(value).trim();
+  return text ? [text] : [];
+}
+
+function toPctInput(value: any, fallback: number): number {
+  const num = Number(value);
+  if (!Number.isFinite(num)) return fallback;
+  return num <= 1 ? num * 100 : num;
 }
 
 function ensureLength(values: number[], length: number, fallback: number) {
@@ -229,6 +272,7 @@ export default function SettingsClient({
   const [activeTab, setActiveTab] = useState<(typeof FORECAST_TABS)[number]["key"]>("voice");
   const [activeTacticalTab, setActiveTacticalTab] = useState<(typeof TACTICAL_TABS)[number]["key"]>("voice");
   const [settings, setSettings] = useState<SettingsState>(DEFAULT_SETTINGS);
+  const [criticalTeamOptions, setCriticalTeamOptions] = useState<SelectOption[]>([]);
   const [settingsMessage, setSettingsMessage] = useState("");
   const [holidaysRows, setHolidaysRows] = useState<Record<string, any>[]>([]);
   const [holidaysMessage, setHolidaysMessage] = useState("");
@@ -313,6 +357,7 @@ export default function SettingsClient({
     }
     void loadSettings();
     void loadHolidays();
+    void loadCriticalTeamOptions();
   }, [scopeMode, scope.location, scope.businessArea, scope.subBusinessArea, scope.channel, scope.site]);
 
   useEffect(() => {
@@ -462,6 +507,31 @@ export default function SettingsClient({
     }
   };
 
+  const loadCriticalTeamOptions = async () => {
+    try {
+      const query = new URLSearchParams();
+      if (scopeMode === "location" && scope.location.trim()) {
+        query.set("location", scope.location.trim());
+      }
+      if (scopeMode === "hier") {
+        if (scope.businessArea.trim()) query.set("ba", scope.businessArea.trim());
+        if (scope.subBusinessArea.trim()) query.set("sba", scope.subBusinessArea.trim());
+        if (scope.channel.trim()) query.set("ch", scope.channel.trim());
+        if (scope.site.trim()) query.set("site", scope.site.trim());
+      }
+      const res = await apiGet<{ options?: string[] }>(
+        `/api/forecast/settings/critical-team-options${query.toString() ? `?${query.toString()}` : ""}`
+      );
+      const next = (res.options ?? [])
+        .map((value) => String(value || "").trim())
+        .filter((value) => value.length > 0)
+        .map((value) => ({ label: value, value }));
+      setCriticalTeamOptions(next);
+    } catch {
+      setCriticalTeamOptions([]);
+    }
+  };
+
   const applySettings = (data: Record<string, any>) => {
     const nestingWeeks = Number(data.nesting_weeks ?? data.default_nesting_weeks ?? DEFAULT_SETTINGS.nestingWeeks) || 0;
     const sdaWeeks = Number(data.sda_weeks ?? data.default_sda_weeks ?? DEFAULT_SETTINGS.sdaWeeks) || 0;
@@ -495,7 +565,13 @@ export default function SettingsClient({
       sdaLoginPct: sdaLogin,
       sdaAhtPct: sdaAht,
       throughputTrainPct: Number(data.throughput_train_pct ?? DEFAULT_SETTINGS.throughputTrainPct),
-      throughputNestPct: Number(data.throughput_nest_pct ?? DEFAULT_SETTINGS.throughputNestPct)
+      throughputNestPct: Number(data.throughput_nest_pct ?? DEFAULT_SETTINGS.throughputNestPct),
+      crossSkillEfficiencyPct: toPctInput(
+        data.cross_skill_efficiency_pct,
+        DEFAULT_SETTINGS.crossSkillEfficiencyPct
+      ),
+      maxLendPct: toPctInput(data.max_lend_pct, DEFAULT_SETTINGS.maxLendPct),
+      lockCriticalTeams: toStringList(data.lock_critical_teams ?? DEFAULT_SETTINGS.lockCriticalTeams)
     });
   };
 
@@ -526,7 +602,10 @@ export default function SettingsClient({
       sda_productivity_pct: settings.sdaLoginPct,
       sda_aht_uplift_pct: settings.sdaAhtPct,
       throughput_train_pct: settings.throughputTrainPct,
-      throughput_nest_pct: settings.throughputNestPct
+      throughput_nest_pct: settings.throughputNestPct,
+      cross_skill_efficiency_pct: settings.crossSkillEfficiencyPct / 100,
+      max_lend_pct: settings.maxLendPct / 100,
+      lock_critical_teams: settings.lockCriticalTeams
     };
 
     const now = new Date();
@@ -667,6 +746,16 @@ export default function SettingsClient({
     }
     return "Editing settings for Global scope.";
   }, [scopeMode, scope]);
+
+  const lockCriticalTeamOptions = useMemo(() => {
+    const merged = new Map<string, string>();
+    criticalTeamOptions.forEach((option) => merged.set(option.value, option.label));
+    settings.lockCriticalTeams.forEach((value) => {
+      const key = String(value || "").trim();
+      if (key && !merged.has(key)) merged.set(key, key);
+    });
+    return Array.from(merged.entries()).map(([value, label]) => ({ value, label }));
+  }, [criticalTeamOptions, settings.lockCriticalTeams]);
 
   const headerNote = scopeLocked
     ? "Uploads are saved to the plan scope below."
@@ -1170,6 +1259,60 @@ export default function SettingsClient({
               }
             />
           </div>
+        </div>
+
+        <div style={{ marginTop: 18 }} className="forecast-section-title">
+          Cross-Skill Rebalancing Policy
+        </div>
+        <div className="grid grid-2" style={{ marginTop: 8 }}>
+          <div>
+            <div className="label">Cross-skill Efficiency %</div>
+            <input
+              className="input"
+              type="number"
+              min={0}
+              max={100}
+              step={1}
+              value={settings.crossSkillEfficiencyPct}
+              onChange={(event) =>
+                setSettings({
+                  ...settings,
+                  crossSkillEfficiencyPct: Number(event.target.value) || 0
+                })
+              }
+            />
+          </div>
+          <div>
+            <div className="label">Max Lend % (donor cap)</div>
+            <input
+              className="input"
+              type="number"
+              min={0}
+              max={100}
+              step={1}
+              value={settings.maxLendPct}
+              onChange={(event) =>
+                setSettings({
+                  ...settings,
+                  maxLendPct: Number(event.target.value) || 0
+                })
+              }
+            />
+          </div>
+        </div>
+        <div style={{ marginTop: 12 }}>
+          <div className="label">Lock Critical Teams</div>
+          <MultiSelect
+            options={lockCriticalTeamOptions}
+            values={settings.lockCriticalTeams}
+            onChange={(next) =>
+              setSettings({
+                ...settings,
+                lockCriticalTeams: next
+              })
+            }
+            placeholder="Select critical teams"
+          />
         </div>
 
         <div style={{ marginTop: 16, display: "flex", alignItems: "center", gap: 12 }}>
