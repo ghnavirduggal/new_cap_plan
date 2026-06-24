@@ -3100,26 +3100,35 @@ export default function PlanDetailClient({ planId, rollupBa }: PlanDetailClientP
                   </button>
                 </div>
                 <div className="ws-modal-body">
-                  <label>
-                    Select Plan
-                    <select
-                      className="select"
-                      value={comparePlanId}
-                      onChange={(event) => {
-                        const value = event.target.value;
-                        setComparePlanId(value ? Number(value) : "");
-                      }}
-                      disabled={!scopeOptions.length}
-                    >
-                      {scopeOptions.map((option) => (
-                        <option key={option.id} value={option.id}>
-                          {option.label || `${option.plan_name || "Plan"} (id ${option.id})`}
-                        </option>
-                      ))}
-                    </select>
-                  </label>
+                  <div className="compare-pick">
+                    <div className="compare-pick-card compare-pick-card--current">
+                      <span className="compare-pick-tag">Current</span>
+                      <span className="compare-pick-name">
+                        {planMeta?.plan_name || `Plan ${planId}`}
+                      </span>
+                    </div>
+                    <div className="compare-pick-vs">vs</div>
+                    <div className="compare-pick-card">
+                      <span className="compare-pick-tag">Compare with</span>
+                      <select
+                        className="select"
+                        value={comparePlanId}
+                        onChange={(event) => {
+                          const value = event.target.value;
+                          setComparePlanId(value ? Number(value) : "");
+                        }}
+                        disabled={!scopeOptions.length}
+                      >
+                        {scopeOptions.map((option) => (
+                          <option key={option.id} value={option.id}>
+                            {option.label || `${option.plan_name || "Plan"} (id ${option.id})`}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+                  </div>
                   {!scopeOptions.length ? <div className="plan-message">No other plans in scope.</div> : null}
-                  {compareWarning ? <div className="plan-message">{compareWarning}</div> : null}
+                  {compareWarning ? <div className="plan-message plan-message--error">{compareWarning}</div> : null}
                 </div>
                 <div className="ws-modal-footer">
                   <button type="button" className="btn btn-primary" onClick={handleCompare} disabled={!comparePlanId}>
@@ -3146,25 +3155,39 @@ export default function PlanDetailClient({ planId, rollupBa }: PlanDetailClientP
                   </button>
                 </div>
                 <div className="ws-modal-body plan-compare">
-                  <div>
-                    <h4>Current Plan</h4>
+                  <section className="compare-section">
+                    <header className="compare-section-head">
+                      <span className="compare-chip compare-chip--current">Current</span>
+                      <span className="compare-section-name">{planMeta?.plan_name || `Plan ${planId}`}</span>
+                    </header>
                     <DataTable data={compareResult.current} emptyLabel="No data." />
-                  </div>
-                  <div>
-                    <h4>Comparison Plan</h4>
+                  </section>
+                  <section className="compare-section">
+                    <header className="compare-section-head">
+                      <span className="compare-chip compare-chip--compare">Comparison</span>
+                      <span className="compare-section-name">
+                        {scopeOptions.find((o) => o.id === comparePlanId)?.plan_name ||
+                          scopeOptions.find((o) => o.id === comparePlanId)?.label ||
+                          "Selected plan"}
+                      </span>
+                    </header>
                     <DataTable data={compareResult.compare} emptyLabel="No data." />
-                  </div>
-                  <div>
-                    <h4>Delta (Current - Comparison)</h4>
-                    <DataTable data={compareResult.delta} emptyLabel="No data." />
-                  </div>
+                  </section>
+                  <section className="compare-section compare-section--delta">
+                    <header className="compare-section-head">
+                      <span className="compare-chip compare-chip--delta">Δ Delta</span>
+                      <span className="compare-section-name">Current − Comparison</span>
+                      <span className="compare-legend">
+                        <span className="compare-legend-pos">▲ higher</span>
+                        <span className="compare-legend-neg">▼ lower</span>
+                      </span>
+                    </header>
+                    <DataTable data={compareResult.delta} emptyLabel="No data." valueTone="signed" />
+                  </section>
                 </div>
                 <div className="ws-modal-footer">
-                  <button type="button" className="btn btn-light closeOptions" onClick={() => setCompareResultOpen(false)}>
-                    <svg width="16" height="16" viewBox="0 0 16 16">
-                      <line x1="2" y1="2" x2="14" y2="14" stroke="white" strokeWidth="2"/>
-                      <line x1="14" y1="2" x2="2" y2="14" stroke="white" strokeWidth="2"/>
-                    </svg>
+                  <button type="button" className="btn btn-primary" onClick={() => setCompareResultOpen(false)}>
+                    Close
                   </button>
                 </div>
               </div>

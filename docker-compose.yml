@@ -67,7 +67,13 @@ services:
     environment:
       DATABASE_URL: postgres://cap:cap@db:5432/cap_planner?sslmode=disable
       CORS_ORIGINS: http://localhost:3000
-      PLAN_CALC_REALTIME: "0"
+      # Realtime: run plan-detail (incl. FTE) calculations inline so the
+      # compute endpoint returns "ready" with data in one round-trip. With "0"
+      # the frontend had to poll every 1.2s until a background worker finished,
+      # which made the Capacity Plan tables feel slow to render. The FastAPI
+      # compute handlers are threadpooled, so inline compute won't block other
+      # requests.
+      PLAN_CALC_REALTIME: "1"
       PLAN_CALC_WORKERS: "2"
     ports:
       - "8082:8080"

@@ -9,6 +9,9 @@ type DataTableProps = {
   className?: string;
   dateMode?: "auto" | "day" | "month";
   wrapperRef?: Ref<HTMLDivElement>;
+  /** When "signed", colour numeric value cells green/red by sign (e.g. a delta
+   *  table). The first (label) column is never toned. */
+  valueTone?: "signed";
 };
 
 function isWholeNumberMetric(column?: string) {
@@ -102,7 +105,8 @@ export default function DataTable({
   maxRows,
   className,
   dateMode = "auto",
-  wrapperRef
+  wrapperRef,
+  valueTone
 }: DataTableProps) {
   const rows = data ?? [];
   // Hooks must run unconditionally and in the same order every render, so they
@@ -154,13 +158,27 @@ export default function DataTable({
         <tbody>
           {visibleRows.map((row, idx) => (
             <tr key={`${idx}-${columns[0] || "row"}`}>
-              {columns.map((col) => (
-                <td key={col} data-col={col} data-tip={(row as any)?.__tooltips?.[col] ?? ""}>
-                  {rawNumberCols.has(col) && typeof row?.[col] === "number"
-                    ? row?.[col]
-                    : formatCell(row?.[col], col)}
-                </td>
-              ))}
+              {columns.map((col, colIdx) => {
+                let toneClass = "";
+                if (valueTone === "signed" && colIdx > 0) {
+                  const num = typeof row?.[col] === "number" ? row[col] : Number(row?.[col]);
+                  if (Number.isFinite(num) && num !== 0) {
+                    toneClass = num > 0 ? "cell-pos" : "cell-neg";
+                  }
+                }
+                return (
+                  <td
+                    key={col}
+                    data-col={col}
+                    className={toneClass || undefined}
+                    data-tip={(row as any)?.__tooltips?.[col] ?? ""}
+                  >
+                    {rawNumberCols.has(col) && typeof row?.[col] === "number"
+                      ? row?.[col]
+                      : formatCell(row?.[col], col)}
+                  </td>
+                );
+              })}
             </tr>
           ))}
         </tbody>
