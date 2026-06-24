@@ -82,12 +82,14 @@ func main() {
     MaxAge:           300,
   }))
   r.Use(limitBody(maxBodyBytes()))
+  r.Use(authMiddleware)
 
   r.Get("/health", func(w http.ResponseWriter, r *http.Request) {
     respondJSON(w, http.StatusOK, map[string]any{"status": "ok"})
   })
 
   r.Route("/api", func(r chi.Router) {
+    r.Post("/auth/token", handleIssueToken)
     r.Get("/user", srv.handleUser)
     r.Get("/settings", srv.handleGetSettings)
     r.Post("/settings", srv.handleSaveSettings)
@@ -118,9 +120,16 @@ func main() {
 }
 
 func (s *server) handleUser(w http.ResponseWriter, r *http.Request) {
-  name := headerUser(r)
-  email := headerEmail(r)
-  photo := headerPhoto(r)
+  // Prefer the verified principal from the auth middleware. Fall back to proxy
+  // headers only when the upstream proxy is explicitly trusted.
+  var name, email, photo string
+  if p := principalFromContext(r); p != nil {
+    email = p.Email
+  } else if trustProxyAuth() {
+    name = headerUser(r)
+    email = headerEmail(r)
+    photo = headerPhoto(r)
+  }
   if name == "" && email != "" {
     name = strings.Split(email, "@")[0]
   }

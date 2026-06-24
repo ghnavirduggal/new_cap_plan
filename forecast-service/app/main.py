@@ -9,12 +9,12 @@ import logging
 from typing import Any, Optional
 from concurrent.futures import ThreadPoolExecutor
 
-from fastapi import FastAPI, File, HTTPException, Query, UploadFile
+from fastapi import FastAPI, File, HTTPException, Query, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 
 import config_manager
-from app import cap_store, plan_store
+from app import cap_store, plan_store, security
 from app.cap_store import resolve_settings as resolve_cap_settings
 from app.pipeline import settings_store
 import os
@@ -172,6 +172,56 @@ async def _limit_request_size(request, call_next):
     if cl and cl.isdigit() and int(cl) > _max_request_bytes():
         return JSONResponse(status_code=413, content={"detail": "Request body too large."})
     return await call_next(request)
+
+
+@app.middleware("http")
+async def _authenticate(request, call_next):
+    # Attach the authenticated principal (if any) to request.state, and when
+    # AUTH_ENABLED reject unauthenticated requests to protected routes. All of
+    # this is a no-op unless the AUTH_* env flags are set.
+    from fastapi.responses import JSONResponse
+
+    request.state.principal = security.principal_from_request(request)
+    if (
+        security.auth_enabled()
+        and request.state.principal is None
+        and not security.is_exempt_path(request.url.path)
+        and request.method != "OPTIONS"
+    ):
+        return JSONResponse(status_code=401, content={"detail": "Authentication required."})
+    return await call_next(request)
+
+
+@app.post("/api/auth/token")
+def issue_token(request: Request):
+    """Mint a short-lived session token from trusted proxy identity.
+
+    Only works when AUTH_JWT_SECRET is configured and the upstream proxy is
+    trusted (TRUST_PROXY_AUTH=1); otherwise returns 404 so it isn't an open
+    token oracle.
+    """
+    secret = os.getenv("AUTH_JWT_SECRET", "")
+    if not secret or not security.trust_proxy_auth():
+        raise HTTPException(status_code=404, detail="Not found.")
+    email = (
+        request.headers.get("x-forwarded-email")
+        or request.headers.get("x-email")
+        or request.headers.get("x-user-email")
+        or ""
+    ).strip()
+    if not email:
+        raise HTTPException(status_code=401, detail="No upstream identity.")
+    token = security.mint_jwt(email, secret, ttl_seconds=int(os.getenv("AUTH_TOKEN_TTL", "3600") or 3600))
+    return {"token": token, "token_type": "bearer", "email": email}
+
+
+def _authorize_plan_access(plan_id, request: Request) -> dict:
+    """Load a plan and enforce per-plan authorization (no-op unless AUTHZ_ENABLED)."""
+    plan = load_plan(int(plan_id))
+    if not plan:
+        raise HTTPException(status_code=404, detail="Plan not found.")
+    security.authorize_plan(plan, security.require_user(request))
+    return plan
 
 _COMBINED_TIMESERIES_KINDS = {
     "voice_forecast",
@@ -1645,6 +1695,7 @@ def planning_rebalancing_preview(payload: dict):
 
 @app.get("/api/planning/plan")
 def get_plans(
+    request: Request,
     plan_id: Optional[int] = Query(None),
     ba: Optional[str] = Query(None),
     sba: Optional[str] = Query(None),
@@ -1654,7 +1705,8 @@ def get_plans(
     status: Optional[str] = Query(None),
 ):
     if plan_id:
-        return {"plan": load_plan(int(plan_id))}
+        plan = _authorize_plan_access(plan_id, request)
+        return {"plan": plan}
     return {"plans": list_plans(ba, sba, channel, location, site, status_filter=status)}
 
 
@@ -1929,23 +1981,25 @@ def plan_scope_options(plan_id: int = Query(...)):
 
 
 @app.post("/api/planning/plan/delete")
-def delete_plan_endpoint(payload: dict):
+def delete_plan_endpoint(payload: dict, request: Request):
     if not isinstance(payload, dict):
         raise HTTPException(status_code=400, detail="Delete payload must be a JSON object.")
     plan_id = payload.get("plan_id")
     if not plan_id:
         raise HTTPException(status_code=400, detail="plan_id is required.")
+    _authorize_plan_access(plan_id, request)
     return delete_plan(int(plan_id))
 
 
 @app.post("/api/planning/plan/save-as")
-def save_plan_as(payload: dict):
+def save_plan_as(payload: dict, request: Request):
     if not isinstance(payload, dict):
         raise HTTPException(status_code=400, detail="Save-as payload must be a JSON object.")
     plan_id = payload.get("plan_id")
     name = (payload.get("name") or "").strip()
     if not plan_id or not name:
         raise HTTPException(status_code=400, detail="plan_id and name are required.")
+    _authorize_plan_access(plan_id, request)
     try:
         new_id = clone_plan(int(plan_id), name)
     except Exception as exc:
@@ -1955,7 +2009,7 @@ def save_plan_as(payload: dict):
 
 
 @app.post("/api/planning/plan/extend")
-def extend_plan_endpoint(payload: dict):
+def extend_plan_endpoint(payload: dict, request: Request):
     if not isinstance(payload, dict):
         raise HTTPException(status_code=400, detail="Extend payload must be a JSON object.")
     plan_id = payload.get("plan_id")
@@ -1964,6 +2018,7 @@ def extend_plan_endpoint(payload: dict):
         raise HTTPException(status_code=400, detail="plan_id is required.")
     if not weeks:
         raise HTTPException(status_code=400, detail="weeks is required.")
+    _authorize_plan_access(plan_id, request)
     try:
         plan_store.extend_plan_weeks(int(plan_id), int(weeks))
     except ValueError as exc:
@@ -1972,12 +2027,13 @@ def extend_plan_endpoint(payload: dict):
 
 
 @app.post("/api/planning/plan/export")
-def export_plan(payload: dict):
+def export_plan(payload: dict, request: Request):
     if not isinstance(payload, dict):
         raise HTTPException(status_code=400, detail="Export payload must be a JSON object.")
     plan_id = payload.get("plan_id")
     if not plan_id:
         raise HTTPException(status_code=400, detail="plan_id is required.")
+    _authorize_plan_access(plan_id, request)
     buf = io.BytesIO()
     keys = ["fw", "hc", "attr", "shr", "train", "ratio", "seat", "bva", "nh", "emp", "bulk_files", "notes"]
     try:
@@ -2244,7 +2300,7 @@ def get_plan_table(plan_id: int = Query(...), name: str = Query(...)):
 
 
 @app.post("/api/planning/plan/table")
-def save_plan_table_endpoint(payload: dict):
+def save_plan_table_endpoint(payload: dict, request: Request):
     if not isinstance(payload, dict):
         raise HTTPException(status_code=400, detail="Plan table payload must be a JSON object.")
     plan_id = payload.get("plan_id")
@@ -2252,6 +2308,7 @@ def save_plan_table_endpoint(payload: dict):
     rows = payload.get("rows") or []
     if not plan_id or not name:
         raise HTTPException(status_code=400, detail="plan_id and name are required.")
+    _authorize_plan_access(plan_id, request)
     result = save_plan_table(int(plan_id), str(name), rows)
     if result.get("status") == "locked":
         raise HTTPException(status_code=409, detail="Plan is locked (history).")
@@ -2266,12 +2323,13 @@ def save_plan_table_endpoint(payload: dict):
 
 
 @app.post("/api/planning/plan/detail/compute")
-def compute_plan_detail_endpoint(payload: dict):
+def compute_plan_detail_endpoint(payload: dict, request: Request):
     if not isinstance(payload, dict):
         raise HTTPException(status_code=400, detail="Plan detail payload must be a JSON object.")
     plan_id = payload.get("plan_id") or payload.get("id")
     if not plan_id:
         raise HTTPException(status_code=400, detail="plan_id is required.")
+    _authorize_plan_access(plan_id, request)
     try:
         plan = load_plan(int(plan_id))
         if plan and str(plan.get("status") or "").lower() == "history":
