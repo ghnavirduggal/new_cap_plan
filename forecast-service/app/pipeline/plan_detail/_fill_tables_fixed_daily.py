@@ -10,7 +10,7 @@ from plan_store import get_plan
 from cap_store import resolve_settings
 from cap_db import load_df
 from ._grain_cols import day_cols_for_weeks
-from ._common import _week_span, _canon_scope, _monday, get_plan_meta, _load_ts_with_fallback, _assemble_voice, _assemble_chat, _assemble_ob, _assemble_bo
+from ._common import _week_span, _canon_scope, _monday, get_plan_meta, _load_ts_with_fallback, _assemble_voice, _assemble_chat, _assemble_ob, _assemble_bo, _learning_curve_for_week
 from ._calc import (
     _ivl_seconds,
     _voice_interval_calc,
@@ -19,9 +19,70 @@ from ._calc import (
     _daily_from_intervals,
     _bo_daily_calc,
     _fill_tables_fixed,
+    _nh_effective_count,
     get_cached_consolidated_calcs,
 )
 from capacity_core import service_level as _erlang_service_level
+
+
+def _ramp_factor_by_week(pid, weeks, settings: dict, sup_w: dict) -> dict:
+    """Per-week effective/raw supply ratio capturing new-hire ramp drag, so the
+    daily grain applies learning-curve productivity to its capacity/SL like the
+    weekly/monthly grains do. Returns 1.0 for every week when there are no new-hire
+    classes (the common case), giving zero behavioural change for those plans.
+
+    effective_agents = supply + nest_eff + (sda_eff - sda_heads), matching the
+    weekly model (nesting precedes production so it is additive; SDA agents are
+    already counted at full headcount in supply, so only their shortfall applies).
+    """
+    week_ids = [str(_monday(w)) for w in weeks]
+    factors = {w: 1.0 for w in week_ids}
+    try:
+        classes = load_df(f"plan_{pid}_nh_classes")
+    except Exception:
+        classes = None
+    if not isinstance(classes, pd.DataFrame) or classes.empty:
+        return factors
+    from collections import defaultdict
+
+    def _w(d):
+        t = pd.to_datetime(d, errors="coerce")
+        return None if pd.isna(t) else str(_monday(t.date()))
+
+    nest: dict = defaultdict(lambda: defaultdict(float))
+    sda: dict = defaultdict(lambda: defaultdict(float))
+    sda_weeks = int(float(settings.get("sda_weeks", settings.get("default_sda_weeks", 0)) or 0))
+    for _, r in classes.iterrows():
+        n = _nh_effective_count(r, pt_fte_ratio=settings.get("pt_fte_ratio", 0.5))
+        if n <= 0:
+            continue
+        ns = _w(r.get("nesting_start")); ne = _w(r.get("nesting_end")); ps = _w(r.get("production_start"))
+        if ns and ne:
+            for i, w in enumerate([w for w in week_ids if ns <= w <= ne], start=1):
+                nest[w][i] += n
+        if ps and sda_weeks > 0:
+            for i, w in enumerate([w for w in week_ids if w >= ps][:sda_weeks], start=1):
+                sda[w][i] += n
+
+    def _eff(buckets_w, prod, uplift):
+        tot = 0.0
+        for age, cnt in (buckets_w or {}).items():
+            p = (float(prod[age - 1]) / 100.0) if age - 1 < len(prod) else 0.0
+            u = (float(uplift[age - 1]) / 100.0) if age - 1 < len(uplift) else 0.0
+            tot += float(cnt) * (p / max(0.05, 1.0 + u))
+        return tot
+
+    for w in week_ids:
+        sup = float(sup_w.get(w, 0.0) or 0.0)
+        if sup <= 0 and not (nest.get(w) or sda.get(w)):
+            continue
+        lc = _learning_curve_for_week(settings, None, w)
+        nest_eff = _eff(nest.get(w), lc.get("nesting_prod_pct", []), lc.get("nesting_aht_uplift_pct", []))
+        sda_eff = _eff(sda.get(w), lc.get("sda_prod_pct", []), lc.get("sda_aht_uplift_pct", []))
+        sda_heads = float(sum((sda.get(w) or {}).values()))
+        agents_eff = sup + nest_eff + (sda_eff - sda_heads)
+        factors[w] = (agents_eff / sup) if sup > 0 else 1.0
+    return factors
 
 
 def _to_frac(value) -> float:
@@ -710,6 +771,16 @@ def _fill_tables_fixed_daily(ptype, pid, _fw_cols_unused, _tick, whatif=None):
     except Exception:
         pass
 
+    # Capacity-effective supply: apply new-hire learning-curve ramp drag per week
+    # (matching weekly/monthly). m_supply stays the raw headcount for the displayed
+    # "Projected Supply HC" row; m_supply_cap feeds PHC / Service Level. Ramp factor
+    # is 1.0 (no change) for plans with no new-hire classes.
+    try:
+        _ramp_w = _ramp_factor_by_week(pid, locals().get("weeks", []) or _week_span(plan.get("start_week"), plan.get("end_week")), _settings, locals().get("sup_w", {}))
+    except Exception:
+        _ramp_w = {}
+    m_supply_cap = {d: float(m_supply.get(d, 0.0)) * float(_ramp_w.get(str(_monday(d)), 1.0)) for d in day_ids}
+
     # Prepare daily AHT/SUT maps used for BO calcs (computed here to avoid unbound refs)
     try:
         ahtF = _daily_weighted_aht(dfF, weight_col_upload)
@@ -757,7 +828,7 @@ def _fill_tables_fixed_daily(ptype, pid, _fw_cols_unused, _tick, whatif=None):
             # PHC = Supply FTE (per-day) * productive seconds per day / SUT_seconds
             for d in day_ids:
                 sut = max(1e-6, _sut_for_day(d))
-                sup_fte = float(m_supply.get(d, 0.0) or 0.0)
+                sup_fte = float(m_supply_cap.get(d, 0.0) or 0.0)  # ramp-adjusted for capacity
                 m_phc[d] = float((sup_fte * productive_sec) / sut)
 
     # Linear PHC (non-Erlang) when interval PHC is missing: use FTE @ Forecast and AHT/SUT.
@@ -796,7 +867,7 @@ def _fill_tables_fixed_daily(ptype, pid, _fw_cols_unused, _tick, whatif=None):
             except Exception:
                 dd = None
             req = float(((m_fte_a.get(d) if (dd is not None and dd <= today) else m_fte_f.get(d)) or m_fte_a.get(d) or 0.0))
-            sup = float(m_supply.get(d, 0.0) or 0.0)
+            sup = float(m_supply_cap.get(d, 0.0) or 0.0)  # ramp-adjusted for capacity/SL
             if bo_model_sl == "erlang":
                 # Offered load for the day = items*SUT/working-seconds; agents =
                 # supplied productive FTE for the day.
