@@ -260,29 +260,43 @@ def resolve_settings(
     site: Optional[str] = None,
     for_date: Optional[str] = None,
 ):
-    # Match the resolution order used in plan_detail/planning_calc.
-    if ba and subba and lob:
-        if site:
+    # Resolution order: site-specific hier override -> site-agnostic hier
+    # override -> GLOBAL settings -> defaults. A scope only "wins" when a
+    # settings file actually exists for it; otherwise inherit the next level up.
+    # (Previously a scoped plan fell straight to hier DEFAULTS when it had no
+    # hier file, so global Settings edits never reached scoped plans.)
+    def _scope_has_settings(scope_site) -> bool:
+        try:
+            from app.pipeline import settings_store as _ss
+        except Exception:
+            return False
+        variants = [
+            (ba, subba, lob, scope_site),
+            (
+                (ba or "").lower() or None,
+                (subba or "").lower() or None,
+                (lob or "").lower() or None,
+                (scope_site or "").lower() or None,
+            ),
+        ]
+        for b, s, l, si in variants:
             try:
-                from app.pipeline import settings_store as _settings_store
-
-                key = _settings_store._scope_key("hier", None, ba, subba, lob, site)
-                path = _settings_store._exports_dir() / f"settings_{key}.json"
-                key_lower = _settings_store._scope_key(
-                    "hier",
-                    None,
-                    (ba or "").lower() if ba else None,
-                    (subba or "").lower() if subba else None,
-                    (lob or "").lower() if lob else None,
-                    (site or "").lower() if site else None,
-                )
-                path_lower = _settings_store._exports_dir() / f"settings_{key_lower}.json"
-                if path.exists() or path_lower.exists():
-                    return load_settings("hier", None, ba, subba, lob, site, for_date)
+                key = _ss._scope_key("hier", None, b, s, l, si)
+                if _ss._versioned_settings_files(key):
+                    return True
+                if (_ss._exports_dir() / f"settings_{key}.json").exists():
+                    return True
             except Exception:
-                pass
-        # Fallback to site-agnostic settings for BA/SubBA/LOB
-        return load_settings("hier", None, ba, subba, lob, None, for_date)
+                continue
+        return False
+
+    if ba and subba and lob:
+        if site and _scope_has_settings(site):
+            return load_settings("hier", None, ba, subba, lob, site, for_date)
+        if _scope_has_settings(None):
+            return load_settings("hier", None, ba, subba, lob, None, for_date)
+        # No scope-specific override -> inherit GLOBAL settings (not hier defaults).
+        return load_settings("global", None, None, None, None, None, for_date)
     return load_settings("global", None, None, None, None, None, for_date)
 
 

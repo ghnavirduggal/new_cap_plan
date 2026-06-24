@@ -1099,19 +1099,29 @@ export default function PlanDetailClient({ planId, rollupBa }: PlanDetailClientP
   }, [grain, intervalDate, isRollup, loadTablesForGrain, planId, setLoading]);
 
   const computePlanTables = useCallback(
-    async (options?: { wait?: boolean; silent?: boolean }): Promise<void> => {
+    async (options?: { wait?: boolean; silent?: boolean; force?: boolean; forceToken?: string }): Promise<void> => {
     if (!planId) return;
     const silent = Boolean(options?.silent);
     if (!silent) {
       setLoading(true);
     }
     const waitForReady = Boolean(options?.wait);
+    // Force a fresh server recompute (bypassing the cache) so the latest Settings
+    // — e.g. Planned Shrinkage % — are picked up immediately on Refresh. The token
+    // is generated once and threaded through the poll loop so every poll targets
+    // the SAME fresh compute (unique token busts the cache; reusing it avoids
+    // spawning a new job per poll).
+    const forceToken = options?.forceToken ?? (options?.force ? `force:${Date.now()}` : undefined);
     const payload: Record<string, any> = {
       plan_id: planId,
       grain,
       persist: true,
       prefetch: false
     };
+    if (forceToken) {
+      payload.force_recompute = true;
+      payload.version_token = forceToken;
+    }
     if (grain === "interval" && intervalDate) {
       payload.interval_date = intervalDate;
     }
@@ -1172,13 +1182,13 @@ export default function PlanDetailClient({ planId, rollupBa }: PlanDetailClientP
         }
         if (waitForReady) {
           await new Promise((resolve) => setTimeout(resolve, 1200));
-          return computePlanTables({ wait: true, silent });
+          return computePlanTables({ wait: true, silent, forceToken });
         }
         if (computePollRef.current) {
           window.clearTimeout(computePollRef.current);
         }
         computePollRef.current = window.setTimeout(() => {
-          void computePlanTables(options);
+          void computePlanTables({ ...options, forceToken });
         }, 1200);
       }
     };
@@ -1380,7 +1390,9 @@ export default function PlanDetailClient({ planId, rollupBa }: PlanDetailClientP
         await loadRollupTables();
       } else {
         await loadTablesForGrain(grain, intervalDate);
-        await computePlanTables();
+        // Force a fresh recompute so edits made elsewhere (e.g. Settings →
+        // Planned Shrinkage %) are reflected immediately on Refresh.
+        await computePlanTables({ force: true, wait: true });
         await loadPlan();
       }
       setMessage("Refreshed.");

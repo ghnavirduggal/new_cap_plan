@@ -54,7 +54,13 @@ def _resolve_settings(
     loc: Optional[str],
 ) -> dict:
     if ba and sba and ch:
-        return load_settings("hier", None, ba, sba, ch, site)
+        # Use the shared resolver so a scoped plan without its own hier override
+        # inherits GLOBAL settings (cascade), rather than hier defaults.
+        try:
+            from app.cap_store import resolve_settings as _resolve
+            return _resolve(ba=ba, subba=sba, lob=ch, site=site)
+        except Exception:
+            return load_settings("hier", None, ba, sba, ch, site)
     if loc:
         return load_settings("location", loc, None, None, None, None)
     return load_settings("global", None, None, None, None, None)
