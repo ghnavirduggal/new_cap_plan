@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo } from "react";
+import { useMemo, useState, type ReactNode } from "react";
 
 type ChartPoint = { x: string; y: number | null };
 type ChartSeries = { name: string; points: ChartPoint[]; color?: string };
@@ -41,7 +41,10 @@ function buildPath(points: ChartPoint[], xMap: Map<string, number>, height: numb
   return path;
 }
 
+type Tip = { x: number; y: number; content: ReactNode } | null;
+
 export default function LineChart({ data, height = 260, className }: LineChartProps) {
+  const [tip, setTip] = useState<Tip>(null);
   const chart = useMemo(() => {
     if (!data || !data.series?.length) return null;
     const allVals = data.series.flatMap((series) =>
@@ -65,18 +68,18 @@ export default function LineChart({ data, height = 260, className }: LineChartPr
   xLabels.forEach((label, idx) => {
     xMap.set(label, padding + idx * step);
   });
-  const labelSkip = Math.max(1, Math.ceil(xLabels.length / 12));
+  const labelSkip = Math.max(1, Math.ceil(xLabels.length / 8));
   const span = chart.maxY - chart.minY || 1;
   const toY = (val: number) => padding + ((chart.maxY - val) / span) * (height - padding * 2);
 
   return (
-    <div className={`forecast-chart ${className ?? ""}`.trim()}>
+    <div className={`forecast-chart ${className ?? ""}`.trim()} style={{ position: "relative" }} onMouseLeave={() => setTip(null)}>
       <svg width="100%" height={height} viewBox={`0 0 ${width} ${height}`}>
         <line x1={padding} y1={height - padding} x2={width - padding} y2={height - padding} stroke="#e2e8f0" />
         <line x1={padding} y1={padding} x2={padding} y2={height - padding} stroke="#e2e8f0" />
         {xLabels.map((label, idx) =>
           idx % labelSkip === 0 ? (
-            <text key={label} x={padding + idx * step} y={height - 10} fontSize="10" fill="#64748b" textAnchor="middle">
+            <text key={label} x={padding + idx * step} y={height - 8} fontSize="13" fill="#475569" textAnchor="middle">
               {label}
             </text>
           ) : null
@@ -101,21 +104,46 @@ export default function LineChart({ data, height = 260, className }: LineChartPr
                 const y = toY(pt.y);
                 const delta = lastVal === null ? null : pt.y - lastVal;
                 lastVal = pt.y;
-                const deltaLabel =
-                  delta === null
-                    ? "Delta: n/a"
-                    : `Delta: ${delta >= 0 ? "+" : ""}${formatValue(delta)}`;
-                const title = `${series.name}\n${pt.x}\nValue: ${formatValue(pt.y)}\n${deltaLabel}`;
+                const ptVal = pt.y;
+                const ptX = pt.x;
+                const content = (
+                  <>
+                    <div className="chart-tip__title">{ptX}</div>
+                    <div className="chart-tip__row">
+                      <span className="chart-tip__dot" style={{ background: color }} />
+                      {series.name}: <strong>{formatValue(ptVal)}</strong>
+                    </div>
+                    {delta !== null ? (
+                      <div className="chart-tip__delta">Δ {delta >= 0 ? "+" : ""}{formatValue(delta)}</div>
+                    ) : null}
+                  </>
+                );
+                const show = (e: React.MouseEvent) => setTip({ x: e.clientX, y: e.clientY, content });
                 return (
-                  <circle key={`${series.name}-${pIdx}`} cx={x} cy={y} r={6} fill="transparent" stroke="transparent" pointerEvents="all">
-                    <title>{title}</title>
-                  </circle>
+                  <g key={`${series.name}-${pIdx}`}>
+                    <circle cx={x} cy={y} r={3} fill={color} className="chart-dot" />
+                    <circle
+                      cx={x}
+                      cy={y}
+                      r={12}
+                      fill="transparent"
+                      stroke="transparent"
+                      pointerEvents="all"
+                      onMouseEnter={show}
+                      onMouseMove={show}
+                    />
+                  </g>
                 );
               })}
             </g>
           );
         })}
       </svg>
+      {tip ? (
+        <div className="chart-tip" style={{ position: "fixed", left: tip.x + 14, top: tip.y + 14 }}>
+          {tip.content}
+        </div>
+      ) : null}
       <div className="chart-legend">
         {data.series.map((series, idx) => (
           <span key={series.name} className="chart-legend-item">

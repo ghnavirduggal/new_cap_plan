@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo } from "react";
+import { useMemo, useState, type ReactNode } from "react";
 
 type BarSeries = { name: string; values: number[]; color?: string };
 type BarChartData = { labels: string[]; series: BarSeries[] };
@@ -29,7 +29,10 @@ function maxStacked(labels: string[], series: BarSeries[]) {
   return maxVal;
 }
 
+type Tip = { x: number; y: number; content: ReactNode } | null;
+
 export default function BarChart({ data, height = 260, stacked = false, className, valueFormatter }: BarChartProps) {
+  const [tip, setTip] = useState<Tip>(null);
   const chart = useMemo(() => {
     if (!data || !data.labels?.length || !data.series?.length) return null;
     const maxVal = stacked
@@ -53,7 +56,7 @@ export default function BarChart({ data, height = 260, stacked = false, classNam
   const fmt = valueFormatter ?? ((value: number) => formatValue(value));
 
   return (
-    <div className={`forecast-chart ${className ?? ""}`.trim()}>
+    <div className={`forecast-chart ${className ?? ""}`.trim()} style={{ position: "relative" }} onMouseLeave={() => setTip(null)}>
       <svg width="100%" height={height} viewBox={`0 0 ${width} ${height}`}>
         <line x1={padding} y1={height - padding} x2={width - padding} y2={height - padding} stroke="#e2e8f0" />
         <line x1={padding} y1={padding} x2={padding} y2={height - padding} stroke="#e2e8f0" />
@@ -62,9 +65,9 @@ export default function BarChart({ data, height = 260, stacked = false, classNam
             <text
               key={`${label}-${idx}`}
               x={padding + idx * step + step / 2}
-              y={height - 10}
-              fontSize="10"
-              fill="#64748b"
+              y={height - 8}
+              fontSize="13"
+              fill="#475569"
               textAnchor="middle"
             >
               {label}
@@ -82,25 +85,45 @@ export default function BarChart({ data, height = 260, stacked = false, classNam
             if (stacked) {
               const y = height - padding - (running + barHeight);
               running += barHeight;
-              const title = `${label}\n${series.name}: ${fmt(value, label, series.name)}\nTotal: ${fmt(totals[idx] ?? 0, label, "Total")}`;
+              const content = (
+                <>
+                  <div className="chart-tip__title">{label}</div>
+                  <div className="chart-tip__row">
+                    <span className="chart-tip__dot" style={{ background: color }} />
+                    {series.name}: <strong>{fmt(value, label, series.name)}</strong>
+                  </div>
+                  <div className="chart-tip__delta">Total: {fmt(totals[idx] ?? 0, label, "Total")}</div>
+                </>
+              );
+              const show = (e: React.MouseEvent) => setTip({ x: e.clientX, y: e.clientY, content });
               return (
-                <rect key={`${label}-${series.name}`} x={xBase} y={y} width={barWidth} height={barHeight} fill={color}>
-                  <title>{title}</title>
-                </rect>
+                <rect key={`${label}-${series.name}`} x={xBase} y={y} width={barWidth} height={barHeight} fill={color} onMouseEnter={show} onMouseMove={show} />
               );
             }
             const seriesWidth = barWidth / data.series.length;
             const x = xBase + sIdx * seriesWidth;
             const y = height - padding - barHeight;
-            const title = `${label}\n${series.name}: ${fmt(value, label, series.name)}`;
+            const content = (
+              <>
+                <div className="chart-tip__title">{label}</div>
+                <div className="chart-tip__row">
+                  <span className="chart-tip__dot" style={{ background: color }} />
+                  {series.name}: <strong>{fmt(value, label, series.name)}</strong>
+                </div>
+              </>
+            );
+            const show = (e: React.MouseEvent) => setTip({ x: e.clientX, y: e.clientY, content });
             return (
-              <rect key={`${label}-${series.name}`} x={x} y={y} width={seriesWidth} height={barHeight} fill={color}>
-                <title>{title}</title>
-              </rect>
+              <rect key={`${label}-${series.name}`} x={x} y={y} width={seriesWidth} height={barHeight} fill={color} onMouseEnter={show} onMouseMove={show} />
             );
           });
         })}
       </svg>
+      {tip ? (
+        <div className="chart-tip" style={{ position: "fixed", left: tip.x + 14, top: tip.y + 14 }}>
+          {tip.content}
+        </div>
+      ) : null}
       <div className="chart-legend">
         {data.series.map((series, idx) => (
           <span key={series.name} className="chart-legend-item">

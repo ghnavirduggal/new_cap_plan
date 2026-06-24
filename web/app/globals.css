@@ -2187,6 +2187,45 @@ summary:focus-visible,
   color: #475569;
 }
 
+/* Interactive hover tooltip shown over LineChart / BarChart data points. */
+.chart-tip {
+  z-index: 60;
+  pointer-events: none;
+  background: rgba(15, 23, 42, 0.94);
+  color: #f8fafc;
+  border-radius: 10px;
+  padding: 8px 10px;
+  font-size: 12px;
+  line-height: 1.45;
+  box-shadow: 0 8px 22px rgba(15, 23, 42, 0.32);
+  max-width: 260px;
+}
+.chart-tip__title {
+  font-weight: 700;
+  margin-bottom: 3px;
+  color: #e2e8f0;
+}
+.chart-tip__row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  white-space: nowrap;
+}
+.chart-tip__row strong { margin-left: 2px; }
+.chart-tip__dot {
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  display: inline-block;
+  flex: 0 0 auto;
+}
+.chart-tip__delta {
+  margin-top: 2px;
+  color: #94a3b8;
+  font-size: 11px;
+}
+.chart-dot { transition: r 0.1s ease; }
+
 .chart-legend-item {
   display: inline-flex;
   align-items: center;
@@ -2647,6 +2686,11 @@ summary:focus-visible,
   min-height: 360px;
 }
 
+.ops-chart-card--half {
+  grid-column: span 3;
+  min-height: 320px;
+}
+
 .ops-chart-head {
   display: flex;
   justify-content: space-between;
@@ -2737,7 +2781,8 @@ summary:focus-visible,
     grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
   }
   .ops-chart-card,
-  .ops-chart-card--main {
+  .ops-chart-card--main,
+  .ops-chart-card--half {
     grid-column: auto;
   }
 }
@@ -4425,6 +4470,89 @@ summary:focus-visible,
 .ops-health-chip--info { color: #1d4ed8; background: rgba(37, 99, 235, 0.12); }
 .ops-health-chip--warning { color: #b45309; background: rgba(217, 119, 6, 0.14); }
 .ops-health-chip--critical { color: #b91c1c; background: rgba(239, 68, 68, 0.14); }
+
+/* Hover popover on the capacity-health chip: lists every signal/critical aspect. */
+.ops-health-chip-wrap { position: relative; }
+.ops-health-chip { cursor: pointer; }
+.ops-health-pop {
+  position: absolute;
+  top: calc(100% + 8px);
+  right: 0;
+  z-index: 70;
+  width: 360px;
+  max-width: 80vw;
+  max-height: 380px;
+  overflow-y: auto;
+  background: #ffffff;
+  border: 1px solid #e2e8f0;
+  border-radius: 14px;
+  box-shadow: 0 18px 40px rgba(15, 23, 42, 0.18);
+  padding: 14px;
+  animation: ops-rise 0.18s ease both;
+}
+.ops-health-pop__head {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding-bottom: 10px;
+  margin-bottom: 8px;
+  border-bottom: 1px solid #eef2f7;
+}
+.ops-health-pop__score {
+  font-size: 26px;
+  font-weight: 800;
+  line-height: 1;
+  padding: 8px 12px;
+  border-radius: 12px;
+}
+.ops-health-pop__score--good { color: #047857; background: rgba(16, 185, 129, 0.14); }
+.ops-health-pop__score--info { color: #1d4ed8; background: rgba(37, 99, 235, 0.12); }
+.ops-health-pop__score--warning { color: #b45309; background: rgba(217, 119, 6, 0.14); }
+.ops-health-pop__score--critical { color: #b91c1c; background: rgba(239, 68, 68, 0.14); }
+.ops-health-pop__title { font-weight: 700; color: #1f2937; font-size: 14px; }
+.ops-health-pop__sub { font-size: 12px; color: #64748b; }
+.ops-health-pop__list { display: flex; flex-direction: column; gap: 8px; }
+.ops-health-pop__item {
+  display: flex;
+  gap: 9px;
+  padding: 8px 10px;
+  border-radius: 10px;
+  background: #f8fafc;
+  border-left: 3px solid #cbd5e1;
+}
+.ops-health-pop__item--critical { border-left-color: #ef4444; background: rgba(239, 68, 68, 0.06); }
+.ops-health-pop__item--warning { border-left-color: #f59e0b; background: rgba(245, 158, 11, 0.06); }
+.ops-health-pop__item--good { border-left-color: #10b981; background: rgba(16, 185, 129, 0.06); }
+.ops-health-pop__item--info { border-left-color: #3b82f6; background: rgba(59, 130, 246, 0.06); }
+.ops-health-pop__icon { font-size: 15px; line-height: 1.3; flex: 0 0 auto; }
+.ops-health-pop__item-title { font-weight: 600; font-size: 12.5px; color: #1f2937; }
+.ops-health-pop__item-detail { font-size: 11.5px; color: #64748b; line-height: 1.4; margin-top: 2px; }
+.ops-health-pop__empty { font-size: 12px; color: #64748b; padding: 6px 2px; }
+
+/* Scope Balance table: keep it scrollable + readable inside the half-width card. */
+.ops-scope-table {
+  max-height: 320px;
+  overflow: auto;
+}
+.ops-scope-table table {
+  min-width: 520px;
+}
+.ops-scope-table th,
+.ops-scope-table td {
+  white-space: nowrap;
+}
+.ops-scope-table th:first-child,
+.ops-scope-table td:first-child {
+  white-space: normal;
+  min-width: 200px;
+  max-width: 280px;
+  position: sticky;
+  left: 0;
+  background: #ffffff;
+}
+.ops-scope-table thead th:first-child {
+  z-index: 1;
+}
 
 .ops-insight-feed {
   display: grid;
