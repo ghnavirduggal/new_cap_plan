@@ -955,9 +955,12 @@ def _fill_tables_fixed(ptype, pid, fw_cols, _tick, whatif=None, grain: str = 'we
     except Exception:
         wf_start, wf_end, wf_ovr = "", "", {}
 
-    # merge persisted overrides into live param
+    # merge persisted overrides into live param (unless the caller asked to
+    # replace persisted state — scenario compare passes __replace_persisted__ so
+    # it can compute under an arbitrary override set regardless of the live What-If).
     whatif = dict(whatif or {})
-    if isinstance(wf_ovr, dict):
+    _replace_persisted = bool(whatif.pop("__replace_persisted__", False))
+    if isinstance(wf_ovr, dict) and not _replace_persisted:
         whatif.update(wf_ovr)
 
     # extract simple dials (with safe defaults)

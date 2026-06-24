@@ -195,9 +195,11 @@ def _fill_tables_fixed_monthly(ptype, pid, fw_cols, _tick, whatif=None):
                         wf_ovr = {}
     except Exception:
         wf_start, wf_end, wf_ovr = "", "", {}
-    # merge persisted overrides into live param
+    # merge persisted overrides into live param (scenario compare passes
+    # __replace_persisted__ to compute under an arbitrary override set).
     whatif = dict(whatif or {})
-    if isinstance(wf_ovr, dict):
+    _replace_persisted = bool(whatif.pop("__replace_persisted__", False))
+    if isinstance(wf_ovr, dict) and not _replace_persisted:
         whatif.update(wf_ovr)
     # extract simple dials (with safe defaults)
 
