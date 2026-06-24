@@ -105,6 +105,25 @@ export async function apiPost<T>(path: string, body: any): Promise<T> {
   return res.json();
 }
 
+/**
+ * POST that returns the raw Response (for binary/blob downloads such as
+ * exports). Routes through fetchWithAuth so the bearer token is attached and
+ * a 401 is retried once — a plain fetch() would skip auth and 401 whenever
+ * AUTH_ENABLED is set.
+ */
+export async function apiPostRaw(path: string, body: any): Promise<Response> {
+  const res = await fetchWithAuth(`${resolveBase(path)}${path}`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body)
+  });
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error(text || `POST ${path} failed (${res.status})`);
+  }
+  return res;
+}
+
 export async function apiPostForm<T>(path: string, formData: FormData): Promise<T> {
   const res = await fetchWithAuth(`${resolveBase(path)}${path}`, {
     method: "POST",

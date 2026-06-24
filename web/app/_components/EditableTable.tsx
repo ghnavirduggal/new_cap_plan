@@ -29,6 +29,8 @@ function buildColumns(rows: Array<Record<string, any>>) {
   const columns: string[] = [];
   for (const row of rows) {
     Object.keys(row || {}).forEach((key) => {
+      // Hidden meta columns (e.g. __tooltips) must never render as editable cells.
+      if (key.startsWith("__")) return;
       if (!seen.has(key)) {
         seen.add(key);
         columns.push(key);
