@@ -870,12 +870,17 @@ def _fill_tables_fixed_daily(ptype, pid, _fw_cols_unused, _tick, whatif=None):
             base_req = float(m_fte_f.get(d, 0.0) or 0.0)
             req_queue_vals.append((base_req * (qval / fval)) if fval > 0 else 0.0)
 
-    # Apply backlog carryover to next day's forecast (Back Office only)
+    # Apply backlog carryover to next day's forecast (Back Office only).
+    # Only carry into the current/future days; carrying onto an already-completed
+    # day would stack backlog against that day's actuals.
     backlog_carryover = bool((whatif or {}).get("backlog_carryover", True))
+    _bk_today_d = str(pd.Timestamp("today").date())
     if backlog_carryover and is_bo and backlog_enabled:
         for i in range(len(day_ids) - 1):
             cur_d = day_ids[i]
             nxt_d = day_ids[i + 1]
+            if str(nxt_d) < _bk_today_d:
+                continue  # destination day already completed; do not stack backlog
             add = float(backlog_map.get(cur_d, 0.0) or 0.0)
             if add:
                 volF[nxt_d] = float(volF.get(nxt_d, 0.0) or 0.0) + add
@@ -899,16 +904,17 @@ def _fill_tables_fixed_daily(ptype, pid, _fw_cols_unused, _tick, whatif=None):
             base_f = float(m_fte_f.get(d, 0.0) or 0.0)
             if base_f == 0.0:
                 continue
-            base_v = float(volF_base.get(d, 0.0) or 0.0)
-            eff_v = float(volF.get(d, 0.0) or 0.0)
+            base_v = float(volF_base.get(d, 0.0) or 0.0)   # raw forecast (pre-backlog)
+            eff_v = float(volF.get(d, 0.0) or 0.0)          # raw forecast + carried backlog
+            backlog_v = max(0.0, eff_v - base_v)
             active = _wf_active_day(d)
-            # 1) Forecast + Backlog: scale by effective/raw volume (BO only;
-            #    voice/chat/ob keep ratio == 1 since volF is uncarried there).
-            if base_v > 0 and eff_v != base_v:
-                base_f *= (eff_v / base_v)
-            # 2) what-if volume delta on active days (forecast portion)
-            if active and vol_delta:
-                base_f *= (1.0 + vol_delta / 100.0)
+            # 1+2) Effective workload = forecast (scaled by the what-if volume dial
+            #      on active days) + carried backlog. The carried backlog is a fixed
+            #      prior-period item count and must NOT be amplified by vol_delta.
+            fc_v = base_v * (1.0 + vol_delta / 100.0) if (active and vol_delta) else base_v
+            eff_total = fc_v + backlog_v
+            if base_v > 0 and eff_total != base_v:
+                base_f *= (eff_total / base_v)
             # 3) what-if AHT/SUT delta on active days
             if active and aht_delta:
                 base_f *= (1.0 + aht_delta / 100.0)
@@ -918,10 +924,10 @@ def _fill_tables_fixed_daily(ptype, pid, _fw_cols_unused, _tick, whatif=None):
                 prod1 = max(0.01, prod0 - shrink_delta / 100.0)
                 base_f *= prod0 / prod1
             m_fte_f[d] = base_f
-            # Reflect the volume dial in the displayed Forecast row too, so the
-            # grid and the required FTE stay consistent.
+            # Reflect the volume dial in the displayed Forecast row too (scaled
+            # forecast + unscaled backlog), so the grid and required FTE stay consistent.
             if active and vol_delta:
-                volF[d] = eff_v * (1.0 + vol_delta / 100.0)
+                volF[d] = eff_total
 
     # FTE Over/Under = Projected Supply - Required @ scenario (positive => surplus).
     # Required @ scenario uses the effective (post backlog + what-if) FTE.

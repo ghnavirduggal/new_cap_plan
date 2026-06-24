@@ -1713,9 +1713,16 @@ def _fill_tables_fixed(ptype, pid, fw_cols, _tick, whatif=None, grain: str = 'we
         backlog_w = backlog_w_local
 
     # ---- Apply Backlog carryover (Back Office only): add previous week's backlog to next week's BO forecast ----
+    # Only carry into the current/future weeks. Stacking a past week's backlog
+    # onto an already-completed next week would double-count against that week's
+    # actuals and distort its (now historical) Projected SL / Handling Capacity,
+    # since weekly_demand_bo already holds actual demand for past weeks.
+    _bk_today_w = _monday(dt.date.today()).isoformat()
     if backlog_carryover and str(ch_first).strip().lower() in ("back office", "bo") and backlog_w and backlog_enabled:
         for i in range(len(week_ids) - 1):
             cur_w = week_ids[i]; nxt_w = week_ids[i+1]
+            if str(nxt_w) < _bk_today_w:
+                continue  # destination week already completed; do not stack backlog
             add = float(backlog_w.get(cur_w, 0.0) or 0.0)
             if add:
                 weekly_demand_bo[nxt_w] = float(weekly_demand_bo.get(nxt_w, 0.0)) + add
