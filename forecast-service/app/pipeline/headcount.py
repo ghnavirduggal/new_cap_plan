@@ -11,7 +11,7 @@ from typing import Any, Optional
 
 import numpy as np
 import pandas as pd
-from psycopg2.extras import Json
+from psycopg2.extras import Json, execute_values
 
 from app.pipeline.postgres import db_conn, has_dsn, ensure_headcount_schema
 
@@ -121,30 +121,53 @@ def save_headcount(df: pd.DataFrame) -> dict:
                         "DELETE FROM headcount_entries WHERE brid = ANY(%s)",
                         (brid_vals.drop_duplicates().tolist(),),
                     )
-            for _, row in df.iterrows():
-                payload = row.where(pd.notna(row), None).to_dict()
+            # Build all rows in Python, then bulk-insert in one batched
+            # statement. Per-row cur.execute() meant one network round-trip per
+            # row — ~14k round-trips took minutes; execute_values collapses them
+            # into a handful of multi-row INSERTs (seconds).
+            ba_c, sba_c, lob_c, site_c, loc_c = (
+                cols.get("ba"), cols.get("sba"), cols.get("lob"), cols.get("site"), cols.get("loc"),
+            )
+
+            def _s(payload: dict, key: Optional[str]):
+                if not key:
+                    return None
+                val = payload.get(key)
+                return str(val).strip() if val is not None else None
+
+            records = []
+            # Replace NaN -> None once over the whole frame (vectorized) and
+            # iterate dict records — far cheaper than per-row iterrows + a
+            # per-row .where(pd.notna(...)) mask.
+            clean_rows = df.astype(object).where(pd.notna(df), None).to_dict("records")
+            for payload in clean_rows:
                 row_hash = _row_hash(payload)
                 brid_val = None
                 if brid_col:
                     brid_val = str(payload.get(brid_col) or "").strip() or None
-                cur.execute(
+                records.append((
+                    row_hash,
+                    _s(payload, ba_c),
+                    _s(payload, sba_c),
+                    _s(payload, lob_c),
+                    _s(payload, site_c),
+                    _s(payload, loc_c),
+                    brid_val or str(payload.get("BRID") or payload.get("brid") or "").strip() or None,
+                    Json(payload),
+                ))
+
+            if records:
+                execute_values(
+                    cur,
                     """
                     INSERT INTO headcount_entries (
                         row_hash, business_area, sub_business_area, channel, site, location, brid, payload
                     )
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                    VALUES %s
                     ON CONFLICT (row_hash) DO NOTHING
                     """,
-                    (
-                        row_hash,
-                        str(payload.get(cols.get("ba"))).strip() if cols.get("ba") else None,
-                        str(payload.get(cols.get("sba"))).strip() if cols.get("sba") else None,
-                        str(payload.get(cols.get("lob"))).strip() if cols.get("lob") else None,
-                        str(payload.get(cols.get("site"))).strip() if cols.get("site") else None,
-                        str(payload.get(cols.get("loc"))).strip() if cols.get("loc") else None,
-                        brid_val or str(payload.get("BRID") or payload.get("brid") or "").strip() or None,
-                        Json(payload),
-                    ),
+                    records,
+                    page_size=1000,
                 )
     # Keep CSV in sync for legacy reads
     path = _headcount_path()
