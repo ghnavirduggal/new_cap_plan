@@ -1395,6 +1395,31 @@ summary:focus-visible,
   background: linear-gradient(90deg, #bbf7d0, #16a34a);
 }
 
+/* The KPI spark is now an embedded SVG trend line, not a gradient bar. This
+   override (same specificity as the per-tone rules above, but later in source)
+   turns the slot into a container the Sparkline fills. */
+.kpi-card .kpi-spark {
+  height: 44px;
+  margin-top: 4px;
+  border-radius: 8px;
+  background: none;
+  display: flex;
+  align-items: flex-end;
+  overflow: hidden;
+}
+
+.kpi-spark svg {
+  width: 100%;
+  height: 40px;
+  display: block;
+}
+
+.kpi-spark-empty {
+  margin: auto;
+  font-size: 11px;
+  color: #94a3b8;
+}
+
 .home-ops {
   display: flex;
   flex-direction: column;
@@ -4411,4 +4436,159 @@ summary:focus-visible,
   color: var(--ops-muted);
   border: 1px dashed var(--ops-border);
   border-radius: 14px;
+}
+
+/* ---- Topbar user menu + profile panel ---- */
+.topbar-user-wrap {
+  position: relative;
+}
+
+.user-caret {
+  color: var(--muted);
+  flex: 0 0 auto;
+}
+
+.user-menu-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 40;
+}
+
+.user-menu {
+  position: absolute;
+  right: 0;
+  top: calc(100% + 8px);
+  min-width: 190px;
+  background: #fff;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  box-shadow: var(--shadow-lg);
+  padding: 6px;
+  z-index: 50;
+  animation: ws-modal-in 150ms var(--ease);
+}
+
+.user-menu-item {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 9px 10px;
+  border: none;
+  background: transparent;
+  border-radius: 8px;
+  font-size: 14px;
+  font-weight: 500;
+  color: var(--text);
+  cursor: pointer;
+  text-align: left;
+  transition: background 150ms var(--ease), color 150ms var(--ease);
+}
+
+.user-menu-item:hover {
+  background: #f1f5f9;
+}
+
+.user-menu-item--danger {
+  color: #dc2626;
+}
+
+.user-menu-item--danger:hover {
+  background: #fef2f2;
+}
+
+.user-menu-icon {
+  width: 18px;
+  text-align: center;
+}
+
+.profile-photo-row {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  margin-bottom: 16px;
+}
+
+.profile-photo {
+  width: 72px;
+  height: 72px;
+  border-radius: 50%;
+  object-fit: cover;
+  border: 2px solid var(--border);
+  flex: 0 0 auto;
+}
+
+.profile-photo--fallback {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: #eaf1fd;
+  color: var(--primary);
+  font-size: 26px;
+  font-weight: 700;
+}
+
+.profile-photo-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.profile-photo-actions .btn {
+  position: relative;
+  overflow: hidden;
+  cursor: pointer;
+}
+
+.profile-field {
+  display: block;
+  font-size: 12px;
+  color: var(--muted);
+  margin-bottom: 12px;
+}
+
+.profile-field .input {
+  margin-top: 4px;
+}
+
+.profile-org {
+  margin-top: 4px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 12px;
+  background: #f8fafc;
+}
+
+.profile-org-title {
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+  color: var(--muted);
+  margin-bottom: 8px;
+}
+
+.profile-org-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 4px 0;
+  font-size: 13px;
+}
+
+.profile-org-label {
+  color: var(--muted);
+}
+
+.profile-org-value {
+  font-weight: 600;
+  color: var(--text);
+  text-align: right;
+}
+
+.profile-org-empty {
+  font-size: 12px;
+  color: var(--muted);
+  padding: 10px 0 2px;
 }

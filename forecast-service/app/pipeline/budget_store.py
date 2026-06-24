@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import Optional
 
 import pandas as pd
+from psycopg2.extras import execute_values
 
 from app.pipeline.postgres import db_conn, ensure_budget_schema
 
@@ -130,23 +131,23 @@ def upsert_budget_rows(
     df = normalize_budget_rows(canon, rows)
     if df.empty:
         return 0
-    records = []
-    for _, row in df.iterrows():
-        records.append(
-            (
-                ba,
-                subba,
-                canon,
-                site,
-                pd.to_datetime(row["week"]).date(),
-                row.get("budget_headcount"),
-                row.get("budget_aht_sec"),
-                row.get("budget_sut_sec"),
-            )
+    records = [
+        (
+            ba,
+            subba,
+            canon,
+            site,
+            pd.to_datetime(row["week"]).date(),
+            row.get("budget_headcount"),
+            row.get("budget_aht_sec"),
+            row.get("budget_sut_sec"),
         )
+        for row in df.to_dict("records")
+    ]
     with db_conn() as conn:
         cur = conn.cursor()
-        cur.executemany(
+        execute_values(
+            cur,
             """
             INSERT INTO budget_entries (
                 business_area,
@@ -158,7 +159,7 @@ def upsert_budget_rows(
                 budget_aht_sec,
                 budget_sut_sec
             )
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+            VALUES %s
             ON CONFLICT (business_area, sub_business_area, channel, site, week)
             DO UPDATE SET
                 budget_headcount = EXCLUDED.budget_headcount,
@@ -167,5 +168,6 @@ def upsert_budget_rows(
                 updated_at = NOW()
             """,
             records,
+            page_size=1000,
         )
     return len(records)

@@ -5,6 +5,7 @@ import re
 from typing import Optional
 
 import pandas as pd
+from psycopg2.extras import execute_values
 
 from app.pipeline.postgres import db_conn, ensure_newhire_schema, has_dsn
 
@@ -182,7 +183,9 @@ def save_new_hires(rows: list[dict]) -> int:
 
     with db_conn() as conn:
         conn.execute("DELETE FROM new_hire_entries")
-        conn.executemany(
+        cur = conn.cursor()
+        execute_values(
+            cur,
             """
             INSERT INTO new_hire_entries (
                 business_area,
@@ -205,9 +208,14 @@ def save_new_hires(rows: list[dict]) -> int:
                 created_by,
                 created_ts
             )
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            VALUES %s
             """,
-            df[NH_COLS].itertuples(index=False, name=None),
+            # NaT/NaN -> None so missing dates don't reach Postgres as the
+            # literal string "NaT"/"NaN" (invalid for timestamp/numeric cols).
+            list(
+                df[NH_COLS].astype(object).where(pd.notna(df[NH_COLS]), None).itertuples(index=False, name=None)
+            ),
+            page_size=1000,
         )
     return len(df.index)
 

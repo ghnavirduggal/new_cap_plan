@@ -1,11 +1,12 @@
 from __future__ import annotations
 
 import datetime as dt
+import math
 import re
 from typing import Optional
 
 import pandas as pd
-from psycopg2.extras import Json
+from psycopg2.extras import Json, execute_values
 
 from app.pipeline.headcount import load_headcount
 from app.pipeline.postgres import db_conn, ensure_roster_schema, has_dsn
@@ -14,6 +15,24 @@ from app.pipeline.postgres import db_conn, ensure_roster_schema, has_dsn
 def _json_safe_value(value):
     if isinstance(value, (dt.date, dt.datetime, pd.Timestamp)):
         return pd.to_datetime(value, errors="coerce").date().isoformat()
+    # Null out NaN/NaT/inf so json.dumps doesn't emit bare NaN/Infinity tokens,
+    # which Postgres rejects as invalid JSON (e.g. an unmatched "Team Manager").
+    if isinstance(value, float):
+        return value if math.isfinite(value) else None
+    if value is None or isinstance(value, (str, bool, int)):
+        return value
+    try:
+        if pd.isna(value):
+            return None
+    except (TypeError, ValueError):
+        pass
+    # Coerce numpy scalars to native Python so json.dumps can serialize them.
+    item = getattr(value, "item", None)
+    if callable(item):
+        try:
+            return item()
+        except Exception:
+            return value
     return value
 
 
@@ -243,10 +262,13 @@ def save_roster(wide_rows: list[dict], long_rows: Optional[list[dict]] = None) -
         conn.execute("DELETE FROM roster_wide_entries")
         conn.execute("DELETE FROM roster_long_entries")
 
+        cur = conn.cursor()
         if not df_wide.empty:
-            conn.executemany(
-                "INSERT INTO roster_wide_entries (payload) VALUES (%s)",
+            execute_values(
+                cur,
+                "INSERT INTO roster_wide_entries (payload) VALUES %s",
                 [(Json(_json_safe_row(row)),) for row in df_wide.to_dict("records")],
+                page_size=1000,
             )
 
         if not df_long.empty:
@@ -257,8 +279,8 @@ def save_roster(wide_rows: list[dict], long_rows: Optional[list[dict]] = None) -
                     break
             entry_col = "entry" if "entry" in df_long.columns else None
             records = []
-            for _, row in df_long.iterrows():
-                payload = _json_safe_row(row.to_dict())
+            for row in df_long.to_dict("records"):
+                payload = _json_safe_row(row)
                 records.append(
                     (
                         str(row.get(brid_col)).strip() if brid_col else None,
@@ -268,12 +290,14 @@ def save_roster(wide_rows: list[dict], long_rows: Optional[list[dict]] = None) -
                         Json(payload),
                     )
                 )
-            conn.executemany(
+            execute_values(
+                cur,
                 """
                 INSERT INTO roster_long_entries (brid, date, entry, is_leave, payload)
-                VALUES (%s, %s, %s, %s, %s)
+                VALUES %s
                 """,
                 records,
+                page_size=1000,
             )
 
     return {

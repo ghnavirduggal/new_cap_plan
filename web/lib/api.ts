@@ -14,15 +14,13 @@ function isForecastScoped(path: string) {
     path.startsWith("/api/forecast") ||
     path.startsWith("/api/planning") ||
     path.startsWith("/api/uploads") ||
+    path === "/api/user" ||
     path === "/api/auth/token"
   );
 }
 
 function resolveBase(path: string) {
   if (typeof window !== "undefined") {
-    if (path === "/api/user") {
-      return "";
-    }
     if (isForecastScoped(path)) {
       return BROWSER_FORECAST_BASE;
     }
@@ -122,6 +120,19 @@ export async function apiPostRaw(path: string, body: any): Promise<Response> {
     throw new Error(text || `POST ${path} failed (${res.status})`);
   }
   return res;
+}
+
+export async function apiPatch<T>(path: string, body: any): Promise<T> {
+  const res = await fetchWithAuth(`${resolveBase(path)}${path}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body)
+  });
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error(`PATCH ${path} failed (${res.status}): ${text}`);
+  }
+  return res.json();
 }
 
 export async function apiPostForm<T>(path: string, formData: FormData): Promise<T> {
