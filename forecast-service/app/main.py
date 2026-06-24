@@ -290,6 +290,20 @@ def patch_user(payload: dict, request: Request):
         raise HTTPException(status_code=500, detail="Could not update profile.")
 
 
+@app.post("/api/users/display")
+def users_display(payload: dict):
+    """Resolve a batch of user identifiers (BRID/email/name keys) to display
+    name + photo so owners/actors render as names instead of opaque IDs."""
+    keys = payload.get("keys") if isinstance(payload, dict) else None
+    if not isinstance(keys, list):
+        return {}
+    try:
+        return sanitize_for_json(user_store.get_user_display_map([str(k) for k in keys]))
+    except Exception:
+        logger.exception("users_display failed")
+        return {}
+
+
 def _authorize_plan_access(plan_id, request: Request) -> dict:
     """Load a plan and enforce per-plan authorization (no-op unless AUTHZ_ENABLED)."""
     plan = load_plan(int(plan_id))

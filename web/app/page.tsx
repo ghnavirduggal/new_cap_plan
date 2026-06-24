@@ -110,6 +110,8 @@ type UserInfo = {
   name?: string;
   email?: string;
   photo_url?: string;
+  key?: string;
+  brid?: string;
 };
 
 
@@ -371,6 +373,9 @@ export default function HomePage() {
   const [insightSummary, setInsightSummary] = useState("");
   const [activities, setActivities] = useState<ActivityItem[]>([]);
   const [currentUser, setCurrentUser] = useState<UserInfo | null>(null);
+  // Resolve user identifiers (BRID/email/name as stamped on owner / created_by /
+  // activity actor) to display name + photo so they render as people, not IDs.
+  const [userDisplay, setUserDisplay] = useState<Record<string, { name?: string; photo?: string }>>({});
   const [selectedBa, setSelectedBa] = useState("");
   const [selectedSba, setSelectedSba] = useState("");
   const [selectedChannel, setSelectedChannel] = useState("");
@@ -468,29 +473,56 @@ export default function HomePage() {
     };
   }, []);
 
-  // Resolve an activity's actor against the signed-in user so rows authored by
-  // the current user show the same display name and photo as the Profile panel
-  // (sourced from /api/user), instead of the raw actor string + generated avatar.
-  const activityIdentity = useCallback(
-    (actor: string): { name: string; photo: string } => {
-      const a = String(actor || "").trim();
-      const meKeys = [currentUser?.name, currentUser?.email, currentUser?.email?.split("@")[0]]
+  // Resolve user identifiers shown as owner / created_by / activity actor to a
+  // display name + photo. The signed-in user's live profile (from /api/user)
+  // wins so their own rows update immediately when they edit their Profile;
+  // everyone else is resolved server-side via /api/users/display (which reads
+  // persisted profiles + the headcount directory). Falls back to the raw id.
+  const resolveUser = useCallback(
+    (id?: string): { name: string; photo: string } => {
+      const k = String(id || "").trim();
+      const meKeys = [currentUser?.key, currentUser?.brid, currentUser?.name, currentUser?.email]
         .map((s) => String(s || "").trim().toLowerCase())
         .filter(Boolean);
-      const isMe = a !== "" && meKeys.includes(a.toLowerCase());
+      const isMe = k !== "" && meKeys.includes(k.toLowerCase());
+      let name = "";
+      let photo = "";
       if (isMe) {
-        const name = String(currentUser?.name || currentUser?.email || a || "You").trim();
-        const photo = String(currentUser?.photo_url || "").trim();
-        return {
-          name,
-          photo: photo || `https://ui-avatars.com/api/?name=${encodeURIComponent(name)}`
-        };
+        name = String(currentUser?.name || currentUser?.email || k).trim();
+        photo = String(currentUser?.photo_url || "").trim();
       }
-      const name = a || "system";
-      return { name, photo: `https://ui-avatars.com/api/?name=${encodeURIComponent(name)}` };
+      if (!name) name = String(userDisplay[k]?.name || k || "system").trim();
+      if (!photo) photo = String(userDisplay[k]?.photo || "").trim();
+      if (!photo) photo = `https://ui-avatars.com/api/?name=${encodeURIComponent(name || "User")}`;
+      return { name, photo };
     },
-    [currentUser]
+    [currentUser, userDisplay]
   );
+  const activityIdentity = resolveUser;
+
+  // Batch-resolve every owner / actor id surfaced on the page.
+  useEffect(() => {
+    const keys = new Set<string>();
+    plans.forEach((p) => {
+      const o = String(p.owner || p.created_by || "").trim();
+      if (o) keys.add(o);
+    });
+    activities.forEach((a) => {
+      const u = String(a.user || "").trim();
+      if (u) keys.add(u);
+    });
+    const list = Array.from(keys);
+    if (!list.length) return;
+    let active = true;
+    apiPost<Record<string, { name?: string; photo?: string }>>("/api/users/display", { keys: list })
+      .then((map) => {
+        if (active && map && typeof map === "object") setUserDisplay((prev) => ({ ...prev, ...map }));
+      })
+      .catch(() => {});
+    return () => {
+      active = false;
+    };
+  }, [plans, activities]);
 
   useEffect(() => {
     let active = true;
@@ -1208,7 +1240,7 @@ export default function HomePage() {
                           <td>{timeAgo(plan.updated_at)}</td>
                           <td>{formatRange(plan.start_week, plan.end_week)}</td>
                           <td>{plan.plan_type || plan.status || "Forecast"}</td>
-                          <td>{plan.owner || plan.created_by || "-"}</td>
+                          <td>{plan.owner || plan.created_by ? resolveUser(plan.owner || plan.created_by).name : "-"}</td>
                           <td>
                             {plan.id ? (
                               <Link className="btn btn-primary" href={`/plan/${plan.id}`}>
