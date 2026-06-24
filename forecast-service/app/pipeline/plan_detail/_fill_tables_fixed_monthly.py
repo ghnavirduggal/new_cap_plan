@@ -1021,9 +1021,65 @@ def _fill_tables_fixed_monthly(ptype, pid, fw_cols, _tick, whatif=None):
         pass
     occ_frac_m = {m: min(0.99, max(0.01, float(occ_m[m]) / 100.0)) for m in month_ids}
     # ---- requirements: Interval/Daily ? Monthly (true monthly, no weekly roll-up) ----
-    req_daily_actual   = required_fte_daily(use_voice_for_req, use_bo_for_req, oA, settings)
-    req_daily_forecast = required_fte_daily(vF, bF, oF, settings)
-    req_daily_tactical = required_fte_daily(vT, bT, oT, settings) if (isinstance(vT, pd.DataFrame) and not vT.empty) or (isinstance(bT, pd.DataFrame) and not bT.empty) or (isinstance(oT, pd.DataFrame) and not oT.empty) else pd.DataFrame()
+    # --- Effective-dated settings (monthly) --------------------------------------
+    # Compute required FTE per settings period so a mid-plan Settings change applies
+    # from its effective week onward and earlier periods keep their settings. Settings
+    # are resolved per week (cached); single-period plans take the unchanged fast path.
+    import json as _json
+    _scope_args = dict(
+        ba=p.get("vertical"), subba=p.get("sub_ba"), lob=ch_first,
+        site=(p.get("site") or p.get("location") or p.get("country")),
+    )
+    _settings_cache: dict = {}
+    def _settings_for_date(dval):
+        d = pd.to_datetime(dval, errors="coerce")
+        if pd.isna(d):
+            return settings
+        wk = str((d - pd.to_timedelta(int(d.weekday()), unit="D")).date())
+        if wk not in _settings_cache:
+            try:
+                _settings_cache[wk] = resolve_settings(for_date=wk, **_scope_args)
+            except Exception:
+                _settings_cache[wk] = settings
+        return _settings_cache[wk]
+    _FTE_SETTING_KEYS = (
+        "shrinkage_pct", "voice_shrinkage_pct", "bo_shrinkage_pct", "chat_shrinkage_pct", "ob_shrinkage_pct",
+        "util_bo", "util_chat", "util_ob", "occupancy_cap_voice", "occupancy_cap_chat", "occupancy_cap_ob", "occupancy_cap",
+        "target_sl", "sl_seconds", "bo_capacity_model", "hours_per_fte", "bo_hours_per_day", "interval_minutes",
+        "chat_concurrency", "ob_target_sl", "ob_sl_seconds", "chat_target_sl", "chat_sl_seconds", "target_sut", "target_aht",
+    )
+    def _stg_sig(s):
+        try:
+            return _json.dumps({k: s.get(k) for k in _FTE_SETTING_KEYS}, sort_keys=True, default=str)
+        except Exception:
+            return "default"
+    def _req_by_period(dfs, compute):
+        sigs: dict = {}
+        for d in dfs:
+            if isinstance(d, pd.DataFrame) and not d.empty and "date" in d.columns:
+                for x in pd.Series(d["date"]).dropna().unique():
+                    sw = _settings_for_date(x)
+                    sigs.setdefault(_stg_sig(sw), sw)
+        sigs.setdefault(_stg_sig(settings), settings)
+        if len(sigs) <= 1:
+            return compute(list(dfs), settings)
+        out = []
+        for _sig, _sw in sigs.items():
+            sliced = []
+            for d in dfs:
+                if isinstance(d, pd.DataFrame) and not d.empty and "date" in d.columns:
+                    mask = d["date"].map(lambda x, _s=_sig: _stg_sig(_settings_for_date(x)) == _s)
+                    sliced.append(d[mask].copy())
+                else:
+                    sliced.append(d)
+            res = compute(sliced, _sw)
+            if isinstance(res, pd.DataFrame) and not res.empty:
+                out.append(res)
+        return pd.concat(out, ignore_index=True) if out else compute(list(dfs), settings)
+
+    req_daily_actual   = _req_by_period([use_voice_for_req, use_bo_for_req, oA], lambda dl, s: required_fte_daily(dl[0], dl[1], dl[2], s))
+    req_daily_forecast = _req_by_period([vF, bF, oF], lambda dl, s: required_fte_daily(dl[0], dl[1], dl[2], s))
+    req_daily_tactical = _req_by_period([vT, bT, oT], lambda dl, s: required_fte_daily(dl[0], dl[1], dl[2], s)) if (isinstance(vT, pd.DataFrame) and not vT.empty) or (isinstance(bT, pd.DataFrame) and not bT.empty) or (isinstance(oT, pd.DataFrame) and not oT.empty) else pd.DataFrame()
     # Prefer interval→daily sumproduct rollups for Erlang channels
     try:
         ch_low = str(ch_first or "").strip().lower()
@@ -1064,7 +1120,7 @@ def _fill_tables_fixed_monthly(ptype, pid, fw_cols, _tick, whatif=None):
     for _df, chat_df in ((req_daily_actual, cA), (req_daily_forecast, cF), (req_daily_tactical, cT)):
         if isinstance(_df, pd.DataFrame) and not _df.empty and isinstance(chat_df, pd.DataFrame) and not chat_df.empty:
             try:
-                ch = _chat_fd(chat_df, settings)
+                ch = _req_by_period([chat_df], lambda dl, s: _chat_fd(dl[0], s))
                 m = _df.merge(ch, on=["date","program"], how="left")
                 m["chat_fte"] = pd.to_numeric(m.get("chat_fte"), errors="coerce").fillna(0.0)
                 m["total_req_fte"] = pd.to_numeric(m.get("total_req_fte"), errors="coerce").fillna(0.0) + m["chat_fte"]
@@ -1087,10 +1143,10 @@ def _fill_tables_fixed_monthly(ptype, pid, fw_cols, _tick, whatif=None):
         oB["month_id"] = _mid(oB["date"])
         oB["aht_sec"]  = oB["month_id"].map(lambda m: planned_aht_m.get(m, None)).fillna(float(s_budget_aht))
         oB.drop(columns=["month_id"], inplace=True)
-    req_daily_budgeted = required_fte_daily(vB, bB, oB, settings)
+    req_daily_budgeted = _req_by_period([vB, bB, oB], lambda dl, s: required_fte_daily(dl[0], dl[1], dl[2], s))
     if isinstance(req_daily_budgeted, pd.DataFrame) and not req_daily_budgeted.empty and isinstance(cB, pd.DataFrame) and not cB.empty:
         try:
-            chb = _chat_fd(cB, settings)
+            chb = _req_by_period([cB], lambda dl, s: _chat_fd(dl[0], s))
             m = req_daily_budgeted.merge(chb, on=["date","program"], how="left")
             m["chat_fte"] = pd.to_numeric(m.get("chat_fte"), errors="coerce").fillna(0.0)
             m["total_req_fte"] = pd.to_numeric(m.get("total_req_fte"), errors="coerce").fillna(0.0) + m["chat_fte"]
@@ -1942,6 +1998,37 @@ def _fill_tables_fixed_monthly(ptype, pid, fw_cols, _tick, whatif=None):
         planned_shrink_fraction = _planned_shr(settings.get('chat_shrinkage_pct'), planned_shrink_fraction)
     elif ch_key in ('outbound', 'out bound', 'ob'):
         planned_shrink_fraction = _planned_shr(settings.get('ob_shrinkage_pct'), planned_shrink_fraction)
+
+    # Per-month effective planned shrink: a month reflects any Settings change that
+    # became effective during it (resolved at month-end), so effective-dated changes
+    # flow into the monthly Planned Shrinkage % and the BO required-FTE denominator
+    # instead of a flat as-of-today value. Falls back to the flat value.
+    _month_settings_cache: dict = {}
+    def _settings_for_month(mm):
+        key = str(mm)
+        if key not in _month_settings_cache:
+            d = pd.to_datetime(mm, errors="coerce")
+            if pd.isna(d):
+                _month_settings_cache[key] = settings
+            else:
+                try:
+                    month_end = (d + pd.offsets.MonthEnd(0)).date().isoformat()
+                    _month_settings_cache[key] = resolve_settings(for_date=month_end, **_scope_args)
+                except Exception:
+                    _month_settings_cache[key] = settings
+        return _month_settings_cache[key]
+    def _planned_shr_for_month(mm):
+        sw = _settings_for_month(mm)
+        psf = _planned_shr(sw.get('shrinkage_pct'), planned_shrink_fraction)
+        if ch_key == 'voice':
+            psf = _planned_shr(sw.get('voice_shrinkage_pct'), psf)
+        elif ch_key in ('back office', 'bo'):
+            psf = _planned_shr(sw.get('bo_shrinkage_pct'), psf)
+        elif 'chat' in ch_key:
+            psf = _planned_shr(sw.get('chat_shrinkage_pct'), psf)
+        elif ch_key in ('outbound', 'out bound', 'ob'):
+            psf = _planned_shr(sw.get('ob_shrinkage_pct'), psf)
+        return psf
     ooo_hours_m, io_hours_m, base_hours_m = {}, {}, {}
     # Extra denominators for BO-style shrinkage
     sc_hours_m, tt_worked_hours_m = {}, {}
@@ -2336,7 +2423,7 @@ def _fill_tables_fixed_monthly(ptype, pid, fw_cols, _tick, whatif=None):
             ov_pct  = _overall_pct_from_parts(ooo_pct, ino_pct)
         if _wf_active_month(m) and shrink_delta:
             ov_pct = min(100.0, max(0.0, ov_pct + shrink_delta))
-        planned_pct = float(saved_plan_pct.get(m, 100.0 * planned_shrink_fraction))
+        planned_pct = float(saved_plan_pct.get(m, 100.0 * _planned_shr_for_month(m)))
         # What-If: reflect shrink delta onto Planned Shrinkage % for display
         try:
             if _wf_active_month(m) and shrink_delta:
@@ -3116,7 +3203,7 @@ def _fill_tables_fixed_monthly(ptype, pid, fw_cols, _tick, whatif=None):
             except Exception:
                 pass
             sh_pct = float(shr_planned_pct_m.get(mm, np.nan))
-            sh_frac = (sh_pct/100.0) if (not pd.isna(sh_pct)) else float(planned_shrink_fraction)
+            sh_frac = (sh_pct/100.0) if (not pd.isna(sh_pct)) else float(_planned_shr_for_month(mm))
             denom = max(1e-6, monthly_hours * float(util_bo) * max(0.01, 1.0 - sh_frac))
             fte = ((vol * sut) / 3600.0) / denom
             try:
