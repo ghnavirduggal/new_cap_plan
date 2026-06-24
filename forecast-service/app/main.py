@@ -101,6 +101,8 @@ from app.pipeline.plan_detail_engine import (
 )
 from app.pipeline.plan_detail.calc_engine import mark_plan_dirty as mark_plan_detail_dirty, mark_plan_dirty_deps as mark_plan_detail_dirty_deps, dep_snapshot_all
 from app.pipeline import scenario_store
+from app.pipeline import risk_band as risk_band_mod
+from app.pipeline import accuracy_store
 from app.pipeline import hiring_solver
 from app.pipeline.ba_rollup_plan import compute_ba_rollup_tables, invalidate_rollup_cache, month_cols_for_ba, week_cols_for_ba
 from app.pipeline.plan_detail._common import (
@@ -2708,6 +2710,88 @@ def confirm_plan_new_hire_classes(payload: dict, request: Request):
             except Exception:
                 pass
     return {"status": "saved", "rows": df_to_records(df)}
+
+
+# --- Risk-based staffing (demand percentiles) ------------------------------
+# Required FTE at P50/P75/P90 demand. The demand band comes from the forecast's
+# historical error (a coefficient of variation); each percentile re-runs the
+# capacity engine with volume scaled by 1 + z·CV (reusing the what-if path).
+
+@app.post("/api/planning/plan/risk-band")
+def plan_risk_band(payload: dict, request: Request):
+    if not isinstance(payload, dict):
+        raise HTTPException(status_code=400, detail="Risk-band payload must be a JSON object.")
+    plan_id = payload.get("plan_id")
+    if not plan_id:
+        raise HTTPException(status_code=400, detail="plan_id is required.")
+    plan = _authorize_plan_access(plan_id, request)
+
+    # Resolve CV: explicit param > estimate from this scope's forecast MAPE > default.
+    cv = None
+    cv_source = "default"
+    try:
+        cv = float(payload.get("cv")) if payload.get("cv") is not None else None
+    except (TypeError, ValueError):
+        cv = None
+    if cv is not None:
+        cv_source = "manual"
+    else:
+        scope = str(plan.get("business_area") or plan.get("vertical") or "global")
+        for sc in (scope, "global"):
+            try:
+                lb = accuracy_store.leaderboard(sc)
+            except Exception:
+                lb = {}
+            models = lb.get("models") or []
+            if models:
+                top = models[0]
+                mape = (top.get("metrics") or {}).get("mape")
+                if mape is None and top.get("primary_metric") == "mape":
+                    mape = top.get("primary_value")
+                est = risk_band_mod.cv_from_mape(mape)
+                if est is not None:
+                    cv = est
+                    cv_source = f"forecast accuracy MAPE (scope={sc})"
+                    break
+    if cv is None:
+        cv = risk_band_mod.DEFAULT_CV
+
+    requested = payload.get("percentiles")
+    pcts = [str(p).lower() for p in requested] if isinstance(requested, list) else list(risk_band_mod.DEFAULT_PERCENTILES)
+    pcts = [p for p in pcts if p in risk_band_mod.Z_SCORES]
+    if not pcts:
+        pcts = list(risk_band_mod.DEFAULT_PERCENTILES)
+    if "p50" not in pcts:
+        pcts = ["p50"] + pcts
+
+    out = []
+    for pct in pcts:
+        mult = risk_band_mod.demand_multiplier(cv, pct)
+        vol_delta = (mult - 1.0) * 100.0
+        upper = _scenario_upper_rows(int(plan_id), {"vol_delta": vol_delta})
+        req = risk_band_mod.required_from_upper(upper)
+        summ = risk_band_mod.summarize(req["required"])
+        out.append(
+            {
+                "percentile": pct,
+                "demand_multiplier": round(mult, 4),
+                "vol_delta_pct": round(vol_delta, 2),
+                "weeks": req["weeks"],
+                "required": [None if r is None else round(r, 1) for r in req["required"]],
+                "avg": summ["avg"],
+                "peak": summ["peak"],
+            }
+        )
+    base = next((p for p in out if p["percentile"] == "p50"), out[0] if out else None)
+    return sanitize_for_json(
+        {
+            "cv": round(float(cv), 4),
+            "cv_source": cv_source,
+            "percentiles": out,
+            "baseline_avg": base["avg"] if base else None,
+            "baseline_peak": base["peak"] if base else None,
+        }
+    )
 
 
 # --- Hiring-plan solver ----------------------------------------------------
