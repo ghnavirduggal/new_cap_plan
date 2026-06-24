@@ -4930,3 +4930,51 @@ summary:focus-visible,
   background: rgba(16, 185, 129, 0.07);
   font-weight: 600;
 }
+
+/* Hiring Plan solver panel */
+.plan-options-hiring {
+  margin-top: 16px;
+  padding-top: 14px;
+  border-top: 1px solid var(--border);
+}
+.plan-options-hiring h5 {
+  margin: 0 0 4px;
+  font-size: 13px;
+  font-weight: 700;
+  color: #1f2937;
+}
+.plan-hiring-params {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+  margin-bottom: 10px;
+}
+.plan-hiring-params label {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  font-size: 12px;
+  color: #475569;
+}
+.plan-hiring-result {
+  margin-top: 10px;
+}
+.plan-hiring-summary {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  font-size: 12px;
+  color: #475569;
+  margin-bottom: 8px;
+}
+.plan-hiring-summary strong {
+  color: #1f2937;
+}
+.plan-hiring-warn {
+  color: #b45309;
+  font-weight: 600;
+}
+.plan-hiring-table .num {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}

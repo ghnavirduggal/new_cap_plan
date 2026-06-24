@@ -309,6 +309,32 @@ type SavedScenario = {
   updated_ts?: string;
 };
 
+type HiringClass = {
+  start_week: string;
+  production_week: string;
+  grads_needed: number;
+  addresses_week?: string;
+  uncoverable_in_time?: boolean;
+};
+
+type HiringPlan = {
+  status: string;
+  reason?: string;
+  weeks?: string[];
+  shortfall_before?: number[];
+  residual_after?: number[];
+  classes?: HiringClass[];
+  summary?: {
+    total_grads?: number;
+    num_classes?: number;
+    weeks_short_before?: number;
+    weeks_short_after?: number;
+    peak_shortfall_before?: number;
+    peak_shortfall_after?: number;
+    first_uncoverable_week?: string | null;
+  };
+};
+
 type ScenarioColumn = {
   scenario_id: string;
   name: string;
@@ -865,6 +891,9 @@ export default function PlanDetailClient({ planId, rollupBa }: PlanDetailClientP
   const [scenarioName, setScenarioName] = useState("");
   const [scenarioCompare, setScenarioCompare] = useState<ScenarioColumn[] | null>(null);
   const [scenarioBusy, setScenarioBusy] = useState(false);
+  const [hiringPlan, setHiringPlan] = useState<HiringPlan | null>(null);
+  const [hiringBusy, setHiringBusy] = useState(false);
+  const [hiringParams, setHiringParams] = useState({ trainingWeeks: 4, nestingWeeks: 2, bufferPct: 0, attritionPct: 0 });
   const [xskillPreview, setXskillPreview] = useState<WorkforcePreview | null>(null);
   const [xskillLoading, setXskillLoading] = useState(false);
   const [criticalTeamOptions, setCriticalTeamOptions] = useState<SelectOption[]>([]);
@@ -2014,6 +2043,61 @@ export default function PlanDetailClient({ planId, rollupBa }: PlanDetailClientP
       notify("error", error?.message || "Could not compare scenarios.");
     } finally {
       setScenarioBusy(false);
+    }
+  };
+
+  // --- Hiring-plan solver -------------------------------------------------
+  const handleRecommendHiring = async () => {
+    if (!planId || isRollup) return;
+    setHiringBusy(true);
+    try {
+      const res = await apiPost<HiringPlan>("/api/planning/plan/hiring-plan", {
+        plan_id: planId,
+        params: {
+          training_weeks: Number(hiringParams.trainingWeeks) || 0,
+          nesting_weeks: Number(hiringParams.nestingWeeks) || 0,
+          buffer_pct: Number(hiringParams.bufferPct) || 0,
+          attrition_weekly_pct: Number(hiringParams.attritionPct) || 0
+        }
+      });
+      setHiringPlan(res);
+      if (res?.status !== "ok") {
+        notify("warning", res?.reason || "No hiring recommendation available for this plan.");
+      } else if (!res.classes?.length) {
+        setMessage("No shortfall — no hiring needed for this plan.");
+      }
+    } catch (error: any) {
+      notify("error", error?.message || "Could not compute hiring plan.");
+    } finally {
+      setHiringBusy(false);
+    }
+  };
+
+  const handleApplyHiring = async () => {
+    if (!planId || isRollup || isLocked) {
+      if (isLocked) notify("warning", "Plan is locked (history).");
+      return;
+    }
+    if (!hiringPlan?.classes?.length) {
+      notify("warning", "Recommend a hiring plan first.");
+      return;
+    }
+    setHiringBusy(true);
+    setLoading(true);
+    try {
+      await apiPost("/api/planning/plan/hiring-plan/apply", {
+        plan_id: planId,
+        classes: hiringPlan.classes,
+        training_weeks: Number(hiringParams.trainingWeeks) || 0,
+        nesting_weeks: Number(hiringParams.nestingWeeks) || 0
+      });
+      await refreshAll();
+      setMessage(`Applied ${hiringPlan.classes.length} recommended new-hire classes.`);
+    } catch (error: any) {
+      notify("error", error?.message || "Could not apply hiring plan.");
+    } finally {
+      setHiringBusy(false);
+      setLoading(false);
     }
   };
 
@@ -3234,6 +3318,116 @@ export default function PlanDetailClient({ planId, rollupBa }: PlanDetailClientP
                           ))}
                       </tbody>
                     </table>
+                  </div>
+                ) : null}
+              </div>
+            ) : null}
+
+            {!isRollup ? (
+              <div className="plan-options-hiring">
+                <h5>Hiring Plan Solver</h5>
+                <p className="plan-scenarios-hint">
+                  Recommends new-hire class start weeks and sizes to close the projected FTE shortfall, accounting for
+                  the training + nesting lead time.
+                </p>
+                <div className="plan-hiring-params">
+                  <label>
+                    Training wks
+                    <input
+                      className="input"
+                      type="number"
+                      min={0}
+                      value={hiringParams.trainingWeeks}
+                      onChange={(e) => setHiringParams((p) => ({ ...p, trainingWeeks: Number(e.target.value) }))}
+                    />
+                  </label>
+                  <label>
+                    Nesting wks
+                    <input
+                      className="input"
+                      type="number"
+                      min={0}
+                      value={hiringParams.nestingWeeks}
+                      onChange={(e) => setHiringParams((p) => ({ ...p, nestingWeeks: Number(e.target.value) }))}
+                    />
+                  </label>
+                  <label>
+                    Buffer %
+                    <input
+                      className="input"
+                      type="number"
+                      min={0}
+                      value={hiringParams.bufferPct}
+                      onChange={(e) => setHiringParams((p) => ({ ...p, bufferPct: Number(e.target.value) }))}
+                    />
+                  </label>
+                  <label>
+                    Weekly attrition %
+                    <input
+                      className="input"
+                      type="number"
+                      min={0}
+                      value={hiringParams.attritionPct}
+                      onChange={(e) => setHiringParams((p) => ({ ...p, attritionPct: Number(e.target.value) }))}
+                    />
+                  </label>
+                </div>
+                <div className="plan-whatif-actions">
+                  <button type="button" className="btn btn-primary" onClick={handleRecommendHiring} disabled={hiringBusy}>
+                    Recommend hiring plan
+                  </button>
+                  {hiringPlan?.classes?.length ? (
+                    <button type="button" className="btn btn-light" onClick={handleApplyHiring} disabled={hiringBusy || isLocked}>
+                      Apply as classes
+                    </button>
+                  ) : null}
+                </div>
+                {hiringPlan?.status === "ok" ? (
+                  <div className="plan-hiring-result">
+                    <div className="plan-hiring-summary">
+                      <span>
+                        Weeks short: <strong>{hiringPlan.summary?.weeks_short_before ?? 0}</strong> →{" "}
+                        <strong>{hiringPlan.summary?.weeks_short_after ?? 0}</strong>
+                      </span>
+                      <span>
+                        Total grads: <strong>{hiringPlan.summary?.total_grads ?? 0}</strong>
+                      </span>
+                      <span>
+                        Peak gap: <strong>{hiringPlan.summary?.peak_shortfall_before ?? 0}</strong> →{" "}
+                        <strong>{hiringPlan.summary?.peak_shortfall_after ?? 0}</strong>
+                      </span>
+                      {hiringPlan.summary?.first_uncoverable_week ? (
+                        <span className="plan-hiring-warn">
+                          ⚠ Shortfall from {hiringPlan.summary.first_uncoverable_week} can&apos;t be fully covered in time.
+                        </span>
+                      ) : null}
+                    </div>
+                    {hiringPlan.classes?.length ? (
+                      <div className="table-wrap">
+                        <table className="table plan-hiring-table">
+                          <thead>
+                            <tr>
+                              <th>Start week</th>
+                              <th>Production week</th>
+                              <th className="num">Grads</th>
+                              <th>Notes</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {hiringPlan.classes.map((c) => (
+                              <tr key={`${c.start_week}-${c.production_week}`}>
+                                <td>{c.start_week}</td>
+                                <td>{c.production_week}</td>
+                                <td className="num">{c.grads_needed}</td>
+                                <td>{c.uncoverable_in_time ? "late (best effort)" : ""}</td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+                    ) : (
+                      <div className="plan-scenarios-empty">No shortfall — no hiring needed.</div>
+                    )}
                   </div>
                 ) : null}
               </div>

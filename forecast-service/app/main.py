@@ -101,6 +101,7 @@ from app.pipeline.plan_detail_engine import (
 )
 from app.pipeline.plan_detail.calc_engine import mark_plan_dirty as mark_plan_detail_dirty, mark_plan_dirty_deps as mark_plan_detail_dirty_deps, dep_snapshot_all
 from app.pipeline import scenario_store
+from app.pipeline import hiring_solver
 from app.pipeline.ba_rollup_plan import compute_ba_rollup_tables, invalidate_rollup_cache, month_cols_for_ba, week_cols_for_ba
 from app.pipeline.plan_detail._common import (
     clone_plan,
@@ -2707,6 +2708,118 @@ def confirm_plan_new_hire_classes(payload: dict, request: Request):
             except Exception:
                 pass
     return {"status": "saved", "rows": df_to_records(df)}
+
+
+# --- Hiring-plan solver ----------------------------------------------------
+# Turns new-hire classes from an input into a recommended output: given the
+# weekly required-vs-supply curve and the training+nesting lead time, suggest
+# class start weeks and sizes that close the projected shortfall.
+
+def _plan_upper_weekly(plan_id: int) -> list[dict]:
+    data, status, _meta = compute_plan_detail_tables(int(plan_id), grain="week")
+    if status == "ready" and data and data.get("upper"):
+        return data.get("upper") or []
+    cached = load_plan_detail_tables(int(plan_id), grain="week")
+    return cached.get("upper") or []
+
+
+@app.post("/api/planning/plan/hiring-plan")
+def recommend_hiring_plan(payload: dict, request: Request):
+    if not isinstance(payload, dict):
+        raise HTTPException(status_code=400, detail="Hiring-plan payload must be a JSON object.")
+    plan_id = payload.get("plan_id")
+    if not plan_id:
+        raise HTTPException(status_code=400, detail="plan_id is required.")
+    _authorize_plan_access(plan_id, request)
+    params = payload.get("params") if isinstance(payload.get("params"), dict) else {}
+    # Default the ramp lead time to training_weeks + nesting_weeks when not given.
+    if "ramp_weeks" not in params:
+        tw = int(params.get("training_weeks", 4) or 0)
+        nw = int(params.get("nesting_weeks", 2) or 0)
+        params = {**params, "ramp_weeks": tw + nw}
+    upper = _plan_upper_weekly(int(plan_id))
+    result = hiring_solver.solve_hiring_plan(upper, params)
+    return sanitize_for_json(result)
+
+
+@app.post("/api/planning/plan/hiring-plan/apply")
+def apply_hiring_plan(payload: dict, request: Request):
+    """Write recommended classes into the plan's new-hire classes so the
+    recommendation becomes an actual, editable hiring plan."""
+    if not isinstance(payload, dict):
+        raise HTTPException(status_code=400, detail="Hiring-plan payload must be a JSON object.")
+    plan_id = payload.get("plan_id")
+    classes = payload.get("classes")
+    if not plan_id or not isinstance(classes, list) or not classes:
+        raise HTTPException(status_code=400, detail="plan_id and a non-empty 'classes' list are required.")
+    _authorize_plan_access(plan_id, request)
+    training_weeks = int(payload.get("training_weeks", 4) or 0)
+    nesting_weeks = int(payload.get("nesting_weeks", 2) or 0)
+
+    def _add_weeks(iso: str, weeks: int) -> str:
+        try:
+            d = pd.Timestamp(str(iso)[:10])
+            return (d + pd.Timedelta(weeks=weeks)).date().isoformat()
+        except Exception:
+            return str(iso or "")
+
+    df = load_nh_classes(int(plan_id))
+    now = pd.Timestamp.utcnow().isoformat(timespec="seconds")
+    new_rows = []
+    for c in classes:
+        if not isinstance(c, dict):
+            continue
+        try:
+            grads = int(round(float(c.get("grads_needed") or 0)))
+        except Exception:
+            grads = 0
+        if grads <= 0:
+            continue
+        start = str(c.get("start_week") or "")
+        training_end = _add_weeks(start, training_weeks)
+        nesting_end = _add_weeks(training_end, nesting_weeks)
+        production = str(c.get("production_week") or _add_weeks(start, training_weeks + nesting_weeks))
+        class_ref = next_class_reference(str(plan_id), df)
+        row = {
+            "class_reference": class_ref,
+            "source_system_id": class_ref,
+            "emp_type": "full-time",
+            "status": "tentative",
+            "class_type": "ramp-up",
+            "class_level": "new-agent",
+            "grads_needed": grads,
+            "billable_hc": 0,
+            "training_weeks": training_weeks,
+            "nesting_weeks": nesting_weeks,
+            "induction_start": start,
+            "training_start": start,
+            "training_end": training_end,
+            "nesting_start": training_end,
+            "nesting_end": nesting_end,
+            "production_start": production,
+            "created_by": current_user_fallback(),
+            "created_ts": now,
+        }
+        df = pd.concat([df, pd.DataFrame([row])], ignore_index=True)
+        new_rows.append(class_ref)
+    if not new_rows:
+        raise HTTPException(status_code=400, detail="No valid classes to apply.")
+    save_nh_classes(int(plan_id), df)
+    try:
+        mark_plan_detail_dirty_deps(int(plan_id), "newhire")
+        _PRECOMPUTE_EXECUTOR.submit(_precompute_plan_detail, int(plan_id))
+    except Exception:
+        pass
+    try:
+        record_activity(
+            plan_id=int(plan_id),
+            action=f"applied hiring plan ({len(new_rows)} classes)",
+            actor=current_user_fallback(),
+            entity_type="newhire",
+        )
+    except Exception:
+        pass
+    return {"status": "applied", "added": len(new_rows), "rows": df_to_records(load_nh_classes(int(plan_id)))}
 
 
 @app.post("/api/planning/plan/compare")

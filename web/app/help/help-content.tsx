@@ -98,6 +98,7 @@ const sections: Section[] = [
     bullets: [
       "Create or duplicate plans, then open Plan Detail.",
       "Plan Detail includes weekly tables, notes, and validation views.",
+      "Hiring Plan Solver (Plan Detail options): recommends new-hire class start weeks and sizes to close the projected FTE shortfall, accounting for the training + nesting lead time (and optional weekly attrition erosion). Weeks that can't be covered in time are flagged; 'Apply as classes' writes the recommendation into the plan's new-hire classes for review.",
       "BA rollups provide summarized capacity views."
     ]
   },
