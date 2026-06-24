@@ -2803,7 +2803,7 @@ def get_original_data():
 
 
 @app.post("/api/forecast/smoothing")
-async def smoothing(payload: dict):
+def smoothing(payload: dict):
     data = payload.get("data")
     window = payload.get("window", 6)
     threshold = payload.get("threshold", 2.5)
@@ -2840,7 +2840,7 @@ async def smoothing(payload: dict):
 
 
 @app.post("/api/forecast/smoothing/auto")
-async def smoothing_auto(payload: dict):
+def smoothing_auto(payload: dict):
     data = payload.get("data")
     windows = payload.get("windows")
     thresholds = payload.get("thresholds")
@@ -2856,7 +2856,7 @@ async def smoothing_auto(payload: dict):
 
 
 @app.post("/api/forecast/phase1")
-async def phase1(payload: dict):
+def phase1(payload: dict):
     data = payload.get("data")
     config = payload.get("config")
     holidays = payload.get("holidays")
@@ -2878,7 +2878,7 @@ async def phase1(payload: dict):
 
 
 @app.post("/api/forecast/phase2")
-async def phase2(payload: dict):
+def phase2(payload: dict):
     data = payload.get("data")
     start_date = payload.get("start_date")
     end_date = payload.get("end_date")
@@ -2919,7 +2919,7 @@ async def phase2(payload: dict):
 
 
 @app.post("/api/forecast/transformations/apply")
-async def transformations_apply(payload: dict):
+def transformations_apply(payload: dict):
     data = payload.get("data")
     result = apply_transformations(data)
     if not result.get("results"):
@@ -2938,7 +2938,7 @@ async def transformations_apply(payload: dict):
 
 
 @app.post("/api/forecast/seasonality/build")
-async def build_seasonality_endpoint(payload: dict):
+def build_seasonality_endpoint(payload: dict):
     ratio_table = payload.get("ratio_table")
     result = build_seasonality(ratio_table)
     if not result.get("results"):
@@ -2956,7 +2956,7 @@ async def build_seasonality_endpoint(payload: dict):
 
 
 @app.post("/api/forecast/seasonality/apply")
-async def apply_seasonality_endpoint(payload: dict):
+def apply_seasonality_endpoint(payload: dict):
     capped_rows = payload.get("capped_rows")
     lower_cap = payload.get("lower_cap")
     upper_cap = payload.get("upper_cap")
@@ -2977,7 +2977,7 @@ async def apply_seasonality_endpoint(payload: dict):
 
 
 @app.post("/api/forecast/volume-summary/prophet-smoothing")
-async def volume_summary_prophet(payload: dict):
+def volume_summary_prophet(payload: dict):
     normalized_ratio = payload.get("normalized_ratio")
     ratio_table = payload.get("ratio_table")
     iq_table = payload.get("iq_table")
@@ -2998,7 +2998,7 @@ async def volume_summary_prophet(payload: dict):
 
 
 @app.post("/api/forecast/volume-summary/prophet-save")
-async def volume_summary_prophet_save(payload: dict):
+def volume_summary_prophet_save(payload: dict):
     if not isinstance(payload, dict):
         raise HTTPException(status_code=400, detail="Prophet save payload must be a JSON object.")
     edited = payload.get("edited")
@@ -3010,7 +3010,7 @@ async def volume_summary_prophet_save(payload: dict):
 
 
 @app.post("/api/forecast/phase2/volume-split")
-async def phase2_volume_split(payload: dict):
+def phase2_volume_split(payload: dict):
     base_df = payload.get("base_df")
     split_rows = payload.get("split_rows")
     fg_monthly = payload.get("forecast_group_monthly")
@@ -3021,7 +3021,7 @@ async def phase2_volume_split(payload: dict):
 
 
 @app.post("/api/forecast/daily-interval")
-async def daily_interval(payload: dict):
+def daily_interval(payload: dict):
     transform_df = payload.get("transform_df")
     interval_df = payload.get("interval_df")
     forecast_month = payload.get("forecast_month")
@@ -3325,7 +3325,7 @@ def push_forecast_to_plan(payload: dict):
 
 
 @app.post("/api/forecast/save/smoothing")
-async def save_smoothing_results(payload: dict):
+def save_smoothing_results(payload: dict):
     results = payload.get("results") if isinstance(payload, dict) else None
     if isinstance(results, dict):
         payload = results
@@ -3337,7 +3337,7 @@ async def save_smoothing_results(payload: dict):
 
 
 @app.post("/api/forecast/save/forecast-results")
-async def save_forecast(payload: dict):
+def save_forecast(payload: dict):
     results = payload.get("results") if isinstance(payload, dict) else None
     if isinstance(results, dict):
         payload = results
@@ -3360,7 +3360,7 @@ async def save_forecast(payload: dict):
 
 
 @app.post("/api/forecast/save/adjusted-forecast")
-async def save_adjusted(payload: dict):
+def save_adjusted(payload: dict):
     if not isinstance(payload, dict):
         raise HTTPException(status_code=400, detail="Invalid adjusted forecast payload.")
     rows = (
@@ -3377,7 +3377,7 @@ async def save_adjusted(payload: dict):
 
 
 @app.post("/api/forecast/save/transformations")
-async def save_transformations_results(payload: dict):
+def save_transformations_results(payload: dict):
     if not isinstance(payload, dict):
         raise HTTPException(status_code=400, detail="Invalid transformations payload.")
     rows = payload.get("data") or payload.get("rows") or payload.get("final")
@@ -3399,7 +3399,7 @@ async def save_transformations_results(payload: dict):
 
 
 @app.post("/api/forecast/save/daily-interval")
-async def save_daily_interval_results(payload: dict):
+def save_daily_interval_results(payload: dict):
     if not isinstance(payload, dict):
         raise HTTPException(status_code=400, detail="Invalid daily/interval payload.")
     results = payload.get("results") if isinstance(payload.get("results"), dict) else {}
