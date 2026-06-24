@@ -937,7 +937,9 @@ def _fill_tables_fixed_monthly(ptype, pid, fw_cols, _tick, whatif=None):
             cur_m = month_ids[i]; nxt_m = month_ids[i+1]
             add = float(backlog_m.get(cur_m, 0.0) or 0.0)
             if add:
-                fw.loc[fw["metric"] == "Forecast", nxt_m] = float(fw.loc[fw["metric"] == "Forecast", nxt_m]) + add
+                cur_series = pd.to_numeric(fw.loc[fw["metric"] == "Forecast", nxt_m], errors="coerce").fillna(0.0)
+                cur_val = float(cur_series.iloc[0]) if len(cur_series) else 0.0
+                fw.loc[fw["metric"] == "Forecast", nxt_m] = cur_val + add
 
     # ---- Occupancy/Utilization by channel (% in FW grid) ----
     ch_key = str(ch_first or "").strip().lower()
@@ -3036,17 +3038,22 @@ def _fill_tables_fixed_monthly(ptype, pid, fw_cols, _tick, whatif=None):
 
     if ("FTE Required @ Forecast Volume" in spec["upper"]) and is_bo_monthly and (bo_model != "erlang"):
         for mm in month_ids:
-            vol = float(bF_itm.get(mm, 0.0))
-            sut = float(bF_sut.get(mm, s_target_sut))
-            # What-If: apply volume/AHT/SUT deltas to the requirement calc too
-            # (previously only AHT was applied, so a volume what-if had no effect
-            # on BO required FTE).
+            # Size required FTE on the EFFECTIVE forecast shown in the Forecast
+            # row. That row already includes the carried-over backlog when the
+            # plan opted into backlog (Forecast + Backlog), so reading it keeps
+            # capacity consistent with the displayed workload. Falls back to raw
+            # items if the row/cell is missing.
             try:
-                if _wf_active_month(mm):
-                    if vol_delta:
-                        vol = vol * (1.0 + vol_delta / 100.0)
-                    if aht_delta:
-                        sut = max(1.0, sut * (1.0 + aht_delta / 100.0))
+                vol = float(pd.to_numeric(fw.loc[fw["metric"] == "Forecast", mm], errors="coerce").fillna(0.0).iloc[0]) if mm in fw.columns else float(bF_itm.get(mm, 0.0))
+            except Exception:
+                vol = float(bF_itm.get(mm, 0.0))
+            sut = float(bF_sut.get(mm, s_target_sut))
+            # The Forecast row already carries the what-if volume delta, so do
+            # NOT re-apply vol_delta to `vol` (that would double-count). AHT and
+            # shrink deltas are not in the volume row, so apply them here.
+            try:
+                if _wf_active_month(mm) and aht_delta:
+                    sut = max(1.0, sut * (1.0 + aht_delta / 100.0))
             except Exception:
                 pass
             sh_pct = float(shr_planned_pct_m.get(mm, np.nan))
