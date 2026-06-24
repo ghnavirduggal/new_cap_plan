@@ -746,6 +746,64 @@ def _fill_tables_fixed_interval(
     T_sec = int(float(settings.get("sl_seconds", 20) or 20.0))
     target_sl = float(settings.get("target_sl", 0.8) or 0.8)
 
+    # ---- What-If dials at the interval grain (voice is Erlang at interval) ----
+    # Load persisted what-if (start/end week + overrides) like the weekly module,
+    # then decide whether the rendered day falls in the active window. Voice FTE
+    # is Erlang-based, so the deltas are applied to the volume/AHT INPUTS and the
+    # Erlang solve is re-run (correct, non-linear), and shrink grows the divisor.
+    _wf_start = ""
+    _wf_end = ""
+    try:
+        _wf_df = load_df(f"plan_{pid}_whatif")
+        if isinstance(_wf_df, pd.DataFrame) and not _wf_df.empty:
+            _last = _wf_df.tail(1).iloc[0]
+            _wf_start = str(_last.get("start_week") or "").strip()
+            _wf_end = str(_last.get("end_week") or "").strip()
+            _raw = _last.get("overrides")
+            _ovr = {}
+            if isinstance(_raw, dict):
+                _ovr = _raw
+            elif isinstance(_raw, str) and _raw.strip():
+                import json as _json, ast as _ast
+                try:
+                    _ovr = _json.loads(_raw)
+                except Exception:
+                    try:
+                        _ovr = _ast.literal_eval(_raw)
+                    except Exception:
+                        _ovr = {}
+            if isinstance(_ovr, dict):
+                whatif = dict(whatif or {})
+                whatif.update(_ovr)
+    except Exception:
+        pass
+    whatif = dict(whatif or {})
+
+    def _wf_f(x, d=0.0):
+        try:
+            return float(x)
+        except Exception:
+            return d
+    wf_vol_delta = _wf_f(whatif.get("vol_delta"), 0.0)      # %
+    wf_aht_delta = _wf_f(whatif.get("aht_delta"), 0.0)      # %
+    wf_shrink_delta = _wf_f(whatif.get("shrink_delta"), 0.0)  # %
+    try:
+        _ref_week = _week_start(pd.to_datetime(ref_day).date()).isoformat()
+    except Exception:
+        _ref_week = ""
+    _today_week = _week_start(dt.date.today()).isoformat()
+    if not _wf_start and not _wf_end:
+        _wf_active_today = bool(_ref_week) and _ref_week > _today_week
+    else:
+        _wf_active_today = True
+        if _wf_start and _ref_week < str(_wf_start):
+            _wf_active_today = False
+        if _wf_end and _ref_week > str(_wf_end):
+            _wf_active_today = False
+    # Volume/AHT multipliers for the rendered day (1.0 when inactive).
+    _wf_vol_mult = (1.0 + wf_vol_delta / 100.0) if (_wf_active_today and wf_vol_delta) else 1.0
+    _wf_aht_mult = (1.0 + wf_aht_delta / 100.0) if (_wf_active_today and wf_aht_delta) else 1.0
+
     # Precompute metric masks to avoid repeated astype/eq inside loops
     fw_metric_str = fw_i["metric"].astype(str)
     fw_has_occ = "Occupancy" in fw_metric_str.values
@@ -824,13 +882,14 @@ def _fill_tables_fixed_interval(
 
         for lab in ivl_ids:
             if has_forecast and lab in volF:
-                fw_i.loc[mser == "Forecast", lab] = float(volF[lab])
+                # Reflect the what-if volume dial in the displayed Forecast row.
+                fw_i.loc[mser == "Forecast", lab] = float(volF[lab]) * _wf_vol_mult
             if has_tactical and lab in volT:
                 fw_i.loc[mser == "Tactical Forecast", lab] = float(volT[lab])
             if has_actual_vol and lab in volA:
                 fw_i.loc[mser == "Actual Volume", lab] = float(volA[lab])
             if has_forecast_aht and lab in ahtF:
-                fw_i.loc[mser == "Forecast AHT/SUT", lab] = float(ahtF[lab])
+                fw_i.loc[mser == "Forecast AHT/SUT", lab] = float(ahtF[lab]) * _wf_aht_mult
             if has_actual_aht and lab in ahtA:
                 fw_i.loc[mser == "Actual AHT/SUT", lab] = float(ahtA[lab])
             if has_budget_aht and ahtB_val is not None:
@@ -851,14 +910,18 @@ def _fill_tables_fixed_interval(
             if s_act is not None:
                 shrink = s_act
         adj_div = max(1e-6, (1.0 - shrink))
+        # What-If shrink delta grows the required FTE (matches weekly: FTE /= (1 - delta)).
+        if _wf_active_today and wf_shrink_delta:
+            adj_div = max(1e-6, adj_div * max(0.1, 1.0 - wf_shrink_delta / 100.0))
         occ_cap_scaled = int(round(occ_cap * 1000))
 
         for lab in ivl_ids:
             ag = float(staff.get(lab, 0.0) or 0.0)
-            calls = float(volF.get(lab, 0.0))
+            # Apply the what-if volume dial to the forecast inputs before Erlang.
+            calls = float(volF.get(lab, 0.0)) * _wf_vol_mult
             # use any AHT value, fallback to 300
             default_ahtF_val = ahtF.get(next(iter(ahtF), lab), 300.0) if ahtF else 300.0
-            aht = float(ahtF.get(lab, default_ahtF_val) or default_ahtF_val)
+            aht = float(ahtF.get(lab, default_ahtF_val) or default_ahtF_val) * _wf_aht_mult
 
             calls_round = int(round(calls))
             aht_round = int(round(aht))
@@ -1041,13 +1104,13 @@ def _fill_tables_fixed_interval(
 
         for lab in ivl_ids:
             if has_forecast and lab in volF_map:
-                fw_i.loc[mser == "Forecast", lab] = float(volF_map[lab])
+                fw_i.loc[mser == "Forecast", lab] = float(volF_map[lab]) * _wf_vol_mult
             if has_tactical and lab in volT_map:
                 fw_i.loc[mser == "Tactical Forecast", lab] = float(volT_map[lab])
             if has_actual_vol and lab in volA_map:
                 fw_i.loc[mser == "Actual Volume", lab] = float(volA_map[lab])
             if has_forecast_aht and lab in aht_map:
-                fw_i.loc[mser == "Forecast AHT/SUT", lab] = float(aht_map[lab])
+                fw_i.loc[mser == "Forecast AHT/SUT", lab] = float(aht_map[lab]) * _wf_aht_mult
 
         staff = _staff_by_slot_for_day(plan, ref_day, ivl_ids, start_hhmm, ivl_min)
         ivl_sec = max(60, int(ivl_min) * 60)
@@ -1069,9 +1132,9 @@ def _fill_tables_fixed_interval(
 
         for lab in ivl_ids:
             ag = float(staff.get(lab, 0.0) or 0.0)
-            items = float(volF_map.get(lab, 0.0))
+            items = float(volF_map.get(lab, 0.0)) * _wf_vol_mult
             default_aht = aht_map.get(next(iter(aht_map), lab), 240.0) if aht_map else 240.0
-            aht_eff = float(aht_map.get(lab, default_aht) or default_aht) / max(0.1, conc)
+            aht_eff = float(aht_map.get(lab, default_aht) or default_aht) * _wf_aht_mult / max(0.1, conc)
             items_round = int(round(items))
             aht_round = int(round(aht_eff)) if aht_eff > 0 else 0
 
@@ -1235,13 +1298,13 @@ def _fill_tables_fixed_interval(
 
         for lab in ivl_ids:
             if has_forecast and lab in volF:
-                fw_i.loc[mser == "Forecast", lab] = float(volF[lab])
+                fw_i.loc[mser == "Forecast", lab] = float(volF[lab]) * _wf_vol_mult
             if has_tactical and lab in volT:
                 fw_i.loc[mser == "Tactical Forecast", lab] = float(volT[lab])
             if has_actual_vol and lab in volA:
                 fw_i.loc[mser == "Actual Volume", lab] = float(volA[lab])
             if has_forecast_aht and lab in aht_map:
-                fw_i.loc[mser == "Forecast AHT/SUT", lab] = float(aht_map[lab])
+                fw_i.loc[mser == "Forecast AHT/SUT", lab] = float(aht_map[lab]) * _wf_aht_mult
 
         staff = _staff_by_slot_for_day(plan, ref_day, ivl_ids, start_hhmm, ivl_min)
         ivl_sec = max(60, int(ivl_min) * 60)
@@ -1262,9 +1325,9 @@ def _fill_tables_fixed_interval(
 
         for lab in ivl_ids:
             ag = float(staff.get(lab, 0.0) or 0.0)
-            calls = float(volF.get(lab, 0.0))
+            calls = float(volF.get(lab, 0.0)) * _wf_vol_mult
             default_aht = aht_map.get(next(iter(aht_map), lab), 240.0) if aht_map else 240.0
-            aht = float(aht_map.get(lab, default_aht) or default_aht)
+            aht = float(aht_map.get(lab, default_aht) or default_aht) * _wf_aht_mult
             calls_round = int(round(calls))
             aht_round = int(round(aht)) if aht > 0 else 0
 
