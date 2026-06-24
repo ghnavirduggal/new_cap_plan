@@ -126,13 +126,18 @@ summary:focus-visible,
   align-items: center;
   gap: 16px;
   border-right: 1px solid var(--border);
-  transition: width 0.2s ease;
+  /* Same duration/easing as .main's margin so the panel and the content edge
+     move together; overflow:hidden clips the labels cleanly while they slide
+     rather than letting them wrap during the transition. */
+  transition: width 0.24s var(--ease);
   box-shadow: var(--shadow);
   z-index: 30;
   position: fixed;
   top: 0;
   left: 0;
-  height: 110vh;
+  height: 100vh;
+  overflow-x: hidden;
+  overflow-y: auto;
 }
 
 .sidebar.expanded {
@@ -251,11 +256,35 @@ summary:focus-visible,
 .nav-text {
   font-size: 13px;
   font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  max-width: 160px;
+  opacity: 1;
+  transition: max-width 0.24s var(--ease), opacity 0.18s var(--ease);
+}
+
+/* Collapse the label in sync with the slide: it shrinks to zero width and
+   fades, so the icons end up centered with no abrupt pop. */
+.sidebar.collapsed .nav-text {
+  max-width: 0;
+  opacity: 0;
+}
+
+.sidebar.collapsed .nav-item {
+  justify-content: center;
+  gap: 0;
+}
+
+.sidebar.collapsed .nav-list {
+  align-items: center;
 }
 
 .main {
   padding: 0px 0px 40px;
-  transition: width 0.2s ease;
+  /* margin-left is what actually changes when the sidebar toggles (it tracks
+     --sidebar-width), so transition THAT — not width — otherwise the content
+     edge snapped while the sidebar animated, which looked broken. */
+  transition: margin-left 0.24s var(--ease);
   margin-left: var(--sidebar-width, 72px);
 }
 
