@@ -316,6 +316,22 @@ type ScenarioColumn = {
   upper: Array<Record<string, any>>;
 };
 
+type MonteCarloResult = {
+  status: string;
+  reason?: string;
+  draws?: number;
+  cv?: number;
+  cv_source?: string;
+  supply?: number | null;
+  required_p10?: number;
+  required_p50?: number;
+  required_p90?: number;
+  required_p95?: number;
+  required_mean?: number;
+  coverage_prob?: number | null;
+  shortfall_prob?: number | null;
+};
+
 // Build the what-if overrides payload from the live dial state. Shared by
 // Apply What-If and Save-as-scenario so the two never drift.
 function whatIfToOverrides(w: WhatIfState): Record<string, any> {
@@ -865,6 +881,9 @@ export default function PlanDetailClient({ planId, rollupBa }: PlanDetailClientP
   const [scenarioName, setScenarioName] = useState("");
   const [scenarioCompare, setScenarioCompare] = useState<ScenarioColumn[] | null>(null);
   const [scenarioBusy, setScenarioBusy] = useState(false);
+  const [mcResult, setMcResult] = useState<MonteCarloResult | null>(null);
+  const [mcBusy, setMcBusy] = useState(false);
+  const [mcCv, setMcCv] = useState("");
   const [xskillPreview, setXskillPreview] = useState<WorkforcePreview | null>(null);
   const [xskillLoading, setXskillLoading] = useState(false);
   const [criticalTeamOptions, setCriticalTeamOptions] = useState<SelectOption[]>([]);
@@ -2014,6 +2033,24 @@ export default function PlanDetailClient({ planId, rollupBa }: PlanDetailClientP
       notify("error", error?.message || "Could not compare scenarios.");
     } finally {
       setScenarioBusy(false);
+    }
+  };
+
+  // --- Monte Carlo demand simulation --------------------------------------
+  const handleMonteCarlo = async () => {
+    if (!planId || isRollup) return;
+    setMcBusy(true);
+    try {
+      const body: Record<string, any> = { plan_id: planId, draws: 2000 };
+      const cvNum = Number(mcCv);
+      if (mcCv.trim() && Number.isFinite(cvNum) && cvNum > 0) body.cv = cvNum;
+      const res = await apiPost<MonteCarloResult>("/api/planning/plan/monte-carlo", body);
+      setMcResult(res);
+      if (res?.status !== "ok") notify("warning", res?.reason || "No data to simulate for this plan.");
+    } catch (error: any) {
+      notify("error", error?.message || "Could not run Monte Carlo.");
+    } finally {
+      setMcBusy(false);
     }
   };
 
@@ -3234,6 +3271,78 @@ export default function PlanDetailClient({ planId, rollupBa }: PlanDetailClientP
                           ))}
                       </tbody>
                     </table>
+                  </div>
+                ) : null}
+              </div>
+            ) : null}
+
+            {!isRollup ? (
+              <div className="plan-options-mc">
+                <h5>Monte Carlo (Demand Risk)</h5>
+                <p className="plan-scenarios-hint">
+                  Simulates uncertain demand to show the distribution of required FTE and the probability that supply
+                  covers demand. The demand spread uses this scope&apos;s forecast error (or a manual CV).
+                </p>
+                <div className="plan-risk-controls">
+                  <label>
+                    Demand CV (blank = from forecast accuracy)
+                    <input
+                      className="input"
+                      type="number"
+                      step="0.01"
+                      min={0}
+                      placeholder="e.g. 0.12"
+                      value={mcCv}
+                      onChange={(e) => setMcCv(e.target.value)}
+                    />
+                  </label>
+                  <button type="button" className="btn btn-primary" onClick={handleMonteCarlo} disabled={mcBusy}>
+                    {mcBusy ? "Simulating…" : "Run simulation"}
+                  </button>
+                </div>
+                {mcResult?.status === "ok" ? (
+                  <div className="plan-mc-result">
+                    <div className="plan-scenarios-hint">
+                      {mcResult.draws} draws · CV {mcResult.cv} ({mcResult.cv_source})
+                    </div>
+                    <div className="plan-mc-grid">
+                      <div className="plan-mc-stat">
+                        <span className="plan-mc-stat__label">Required P50</span>
+                        <span className="plan-mc-stat__value">{mcResult.required_p50}</span>
+                      </div>
+                      <div className="plan-mc-stat">
+                        <span className="plan-mc-stat__label">Required P90</span>
+                        <span className="plan-mc-stat__value">{mcResult.required_p90}</span>
+                      </div>
+                      <div className="plan-mc-stat">
+                        <span className="plan-mc-stat__label">Required P95</span>
+                        <span className="plan-mc-stat__value">{mcResult.required_p95}</span>
+                      </div>
+                      <div className="plan-mc-stat">
+                        <span className="plan-mc-stat__label">Supply</span>
+                        <span className="plan-mc-stat__value">{mcResult.supply ?? "—"}</span>
+                      </div>
+                      <div
+                        className={`plan-mc-stat ${
+                          (mcResult.shortfall_prob ?? 0) > 0.25 ? "plan-mc-stat--risk" : ""
+                        }`}
+                      >
+                        <span className="plan-mc-stat__label">P(shortfall)</span>
+                        <span className="plan-mc-stat__value">
+                          {mcResult.shortfall_prob === null || mcResult.shortfall_prob === undefined
+                            ? "—"
+                            : `${Math.round(mcResult.shortfall_prob * 100)}%`}
+                        </span>
+                      </div>
+                      <div className="plan-mc-stat">
+                        <span className="plan-mc-stat__label">P(covered)</span>
+                        <span className="plan-mc-stat__value">
+                          {mcResult.coverage_prob === null || mcResult.coverage_prob === undefined
+                            ? "—"
+                            : `${Math.round(mcResult.coverage_prob * 100)}%`}
+                        </span>
+                      </div>
+                    </div>
                   </div>
                 ) : null}
               </div>

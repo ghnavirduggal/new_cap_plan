@@ -97,6 +97,7 @@ const sections: Section[] = [
     bullets: [
       "Create or duplicate plans, then open Plan Detail.",
       "Plan Detail includes weekly tables, notes, and validation views.",
+      "Monte Carlo (Plan Detail options): simulates uncertain demand (lognormal around the forecast, spread from the scope's forecast error) to show the distribution of required FTE (P50/P90/P95) and the probability that supply covers demand.",
       "BA rollups provide summarized capacity views."
     ]
   },

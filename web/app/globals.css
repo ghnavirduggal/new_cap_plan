@@ -4930,3 +4930,48 @@ summary:focus-visible,
   background: rgba(16, 185, 129, 0.07);
   font-weight: 600;
 }
+
+/* Monte Carlo panel */
+.plan-options-mc {
+  margin-top: 16px;
+  padding-top: 14px;
+  border-top: 1px solid var(--border);
+}
+.plan-options-mc h5 {
+  margin: 0 0 4px;
+  font-size: 13px;
+  font-weight: 700;
+  color: #1f2937;
+}
+.plan-mc-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+  margin-top: 8px;
+}
+.plan-mc-stat {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: #f8fafc;
+}
+.plan-mc-stat__label {
+  font-size: 11px;
+  color: #64748b;
+}
+.plan-mc-stat__value {
+  font-size: 16px;
+  font-weight: 700;
+  color: #1f2937;
+  font-variant-numeric: tabular-nums;
+}
+.plan-mc-stat--risk {
+  border-color: #fecaca;
+  background: rgba(239, 68, 68, 0.07);
+}
+.plan-mc-stat--risk .plan-mc-stat__value {
+  color: #b91c1c;
+}
