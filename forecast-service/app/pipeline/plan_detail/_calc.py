@@ -633,23 +633,39 @@ def _bo_daily_calc(bo_df: pd.DataFrame, settings: dict, channel: str | None = No
     df["date"] = pd.to_datetime(df["date"]).dt.date
     ch = str(channel or "").strip().lower()
     is_bo = ch in ("back office", "bo", "backoffice")
+    is_chat = ch.startswith("chat") or ch in ("messageus", "message us")
+    is_ob   = ch.startswith("outbound") or ch in ("ob", "out bound")
     hrs = _safe_float(
         settings.get("bo_hours_per_day", settings.get("hours_per_fte", 8.0)) if is_bo else settings.get("hours_per_fte", 8.0),
         8.0,
     )
-    shrink = _to_frac(settings.get("bo_shrinkage_pct", settings.get("shrinkage_pct", 0.30)))
     util   = _safe_float(settings.get("util_bo", 0.85), 0.85)
-    # BO linear FTE formula includes utilization in denominator.
-    if is_bo:
-        denom_tat = max(1e-6, hrs * 3600.0 * (1.0 - shrink) * util)
+    # Channel-appropriate Erlang inputs (SL target, SL seconds, occupancy cap,
+    # shrinkage, and chat concurrency). Outbound and Chat ALWAYS use Erlang;
+    # Back Office honours the bo_capacity_model setting (tat/linear vs erlang).
+    conc = 1.0
+    if is_chat:
+        shrink  = _to_frac(settings.get("chat_shrinkage_pct", settings.get("shrinkage_pct", 0.30)))
+        target  = _safe_float(settings.get("chat_target_sl", settings.get("target_sl", 0.80)), 0.80)
+        T_sec   = _safe_float(settings.get("chat_sl_seconds", settings.get("sl_seconds", 20)), 20.0)
+        occ_cap = settings.get("occupancy_cap_chat", settings.get("util_chat", settings.get("occupancy_cap_voice", settings.get("occupancy_cap", 0.85))))
+        conc    = max(0.1, _safe_float(settings.get("chat_concurrency", 1.5), 1.5))
+    elif is_ob:
+        shrink  = _to_frac(settings.get("ob_shrinkage_pct", settings.get("shrinkage_pct", 0.30)))
+        target  = _safe_float(settings.get("ob_target_sl", settings.get("target_sl", 0.80)), 0.80)
+        T_sec   = _safe_float(settings.get("ob_sl_seconds", settings.get("sl_seconds", 20)), 20.0)
+        occ_cap = settings.get("occupancy_cap_ob", settings.get("util_ob", settings.get("occupancy_cap_voice", settings.get("occupancy_cap", 0.85))))
     else:
-        denom_tat = max(1e-6, hrs * 3600.0 * (1.0 - shrink) * util)
+        shrink  = _to_frac(settings.get("bo_shrinkage_pct", settings.get("shrinkage_pct", 0.30)))
+        target  = _safe_float(settings.get("target_sl", 0.80), 0.80)
+        T_sec   = _safe_float(settings.get("sl_seconds", 20), 20.0)
+        occ_cap = settings.get("occupancy_cap_voice", settings.get("occupancy_cap", 0.85))
+    denom_tat = max(1e-6, hrs * 3600.0 * (1.0 - shrink) * util)
 
     model = str(settings.get("bo_capacity_model", "tat")).lower()
-    target = _safe_float(settings.get("target_sl", 0.80), 0.80)
-    T_sec  = _safe_float(settings.get("sl_seconds", 20), 20.0)
-    cov_min = int(round(_safe_float(settings.get("bo_hours_per_day", hrs), hrs) * 60.0))
-    occ_cap = settings.get("occupancy_cap_voice", settings.get("occupancy_cap", 0.85))
+    if is_chat or is_ob:
+        model = "erlang"  # contact channels are SL-driven, never TAT-linear
+    cov_min = int(round(hrs * 60.0))
 
     rows = []
     for _, r in df.iterrows():
@@ -660,13 +676,11 @@ def _bo_daily_calc(bo_df: pd.DataFrame, settings: dict, channel: str | None = No
             phc = None  # optional with roster; handled in views if needed
             slp = None  # proxy handled in views if needed
         else:
-            N, sl, occ, _asa = min_agents(items, aht, cov_min, target, T_sec, occ_cap)
-            erlang_shrink = _to_frac(
-                settings.get("bo_shrinkage_pct", settings.get("shrinkage_pct", 0.30)) if is_bo else settings.get("shrinkage_pct", 0.30)
-            )
-            denom_erlang = max(1e-6, hrs * 3600.0 * (1.0 - erlang_shrink))
+            aht_eff = (aht / conc) if (is_chat and conc > 0) else aht
+            N, sl, occ, _asa = min_agents(items, aht_eff, cov_min, target, T_sec, occ_cap)
+            denom_erlang = max(1e-6, hrs * 3600.0 * (1.0 - shrink))
             fte = (N * cov_min * 60.0) / denom_erlang
-            phc = (N * cov_min * 60.0) / max(1e-6, aht) if aht > 0 else 0.0
+            phc = (N * cov_min * 60.0) / max(1e-6, aht_eff) if aht_eff > 0 else 0.0
             slp = sl*100.0
         rows.append({
             "date": r["date"], "program": r.get("program","Back Office"),
