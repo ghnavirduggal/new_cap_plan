@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import datetime as dt
+import json
 import math
 import re
 from functools import lru_cache
@@ -18,6 +19,22 @@ def _cacheable(value):
     if isinstance(value, (np.floating, np.integer, np.bool_)):
         return value.item()
     return value
+
+
+def _quantize(value, ndigits: int):
+    """Round a numeric arg before it becomes an lru_cache key.
+
+    Forecast volumes/AHT are high-precision floats, so without rounding nearly
+    every interval produces a unique cache key and the Erlang caches never hit.
+    Rounding collapses float noise well within forecast tolerance so identical
+    workloads share a cached Erlang solve.
+    """
+    if value is None:
+        return None
+    try:
+        return round(float(value), ndigits)
+    except (TypeError, ValueError):
+        return value
 
 
 def _to_frac(value) -> float:
@@ -167,8 +184,8 @@ def fractional_agents(target_sl: float, target_sec: float, calls_per_hour: float
         return _fractional_agents_cached(
             _cacheable(target_sl),
             _cacheable(target_sec),
-            _cacheable(calls_per_hour),
-            _cacheable(aht_sec),
+            _cacheable(_quantize(calls_per_hour, 2)),
+            _cacheable(_quantize(aht_sec, 1)),
         )
     except Exception:
         return _fractional_agents_impl(target_sl, target_sec, calls_per_hour, aht_sec)
@@ -222,8 +239,8 @@ def min_agents(
 ) -> Tuple[int, float, float, float]:
     try:
         return _min_agents_cached(
-            _cacheable(calls),
-            _cacheable(aht_sec),
+            _cacheable(_quantize(calls, 2)),
+            _cacheable(_quantize(aht_sec, 1)),
             _cacheable(ivl_min),
             _cacheable(target_sl),
             _cacheable(target_sec),
@@ -238,6 +255,7 @@ def min_agents(
 def clear_capacity_cache() -> None:
     _min_agents_cached.cache_clear()
     _fractional_agents_cached.cache_clear()
+    _REQ_FTE_CACHE.clear()
 
 
 def voice_requirements_interval(voice_df: pd.DataFrame, settings: dict) -> pd.DataFrame:
@@ -606,7 +624,68 @@ def bo_erlang_rollups(bo_df: pd.DataFrame, settings: dict, week_start: str = "Mo
     return {"daily": daily, "weekly": weekly, "monthly": monthly}
 
 
+def _df_fingerprint(df) -> object:
+    """Content fingerprint for a DataFrame input, or None if it can't be hashed."""
+    if not isinstance(df, pd.DataFrame) or df.empty:
+        return ("empty",)
+    try:
+        h = pd.util.hash_pandas_object(df, index=True).to_numpy()
+        return (df.shape, tuple(str(c) for c in df.columns), int(h.sum()))
+    except Exception:
+        return None
+
+
+def _settings_fingerprint(settings: dict) -> object:
+    try:
+        return json.dumps(settings, sort_keys=True, default=str)
+    except Exception:
+        return None
+
+
+# Bounded, content-addressed cache for required_fte_daily. The daily required FTE
+# is grain-independent, so the week/month/day prefetch passes (and repeated
+# scenario calls with identical inputs) all map to the same key instead of
+# re-running the Erlang stack.
+_REQ_FTE_CACHE: dict = {}
+_REQ_FTE_CACHE_MAX = 256
+
+
+def clear_required_fte_cache() -> None:
+    _REQ_FTE_CACHE.clear()
+
+
 def required_fte_daily(voice_df: pd.DataFrame, bo_df: pd.DataFrame, ob_df: pd.DataFrame, settings: dict) -> pd.DataFrame:
+    key = None
+    try:
+        fps = (
+            _df_fingerprint(voice_df),
+            _df_fingerprint(bo_df),
+            _df_fingerprint(ob_df),
+            _settings_fingerprint(settings),
+        )
+        if all(fp is not None for fp in fps):
+            key = fps
+    except Exception:
+        key = None
+
+    if key is not None:
+        cached = _REQ_FTE_CACHE.get(key)
+        if cached is not None:
+            # Callers mutate the result in place; hand back a fresh copy and keep
+            # the cached frame pristine.
+            return cached.copy()
+
+    out = _required_fte_daily_impl(voice_df, bo_df, ob_df, settings)
+
+    if key is not None and isinstance(out, pd.DataFrame):
+        if len(_REQ_FTE_CACHE) >= _REQ_FTE_CACHE_MAX:
+            _REQ_FTE_CACHE.pop(next(iter(_REQ_FTE_CACHE)), None)
+        _REQ_FTE_CACHE[key] = out
+        return out.copy()
+    return out
+
+
+def _required_fte_daily_impl(voice_df: pd.DataFrame, bo_df: pd.DataFrame, ob_df: pd.DataFrame, settings: dict) -> pd.DataFrame:
     frames = []
 
     try:
@@ -848,6 +927,73 @@ def _row_is_active(row: pd.Series) -> bool:
     return True
 
 
+def _resolve_col(norm_cols: dict, names: list[str]):
+    """Resolve the first matching column from a normalized-name map."""
+    for name in names:
+        col = norm_cols.get(_norm_col_key(name))
+        if col is not None:
+            return col
+    return None
+
+
+def _active_mask_vec(df: pd.DataFrame, norm_cols: dict) -> pd.Series:
+    """Vectorized equivalent of _row_is_active over a whole frame."""
+    mask = pd.Series(True, index=df.index)
+
+    status_col = _resolve_col(norm_cols, ["status", "current_status"])
+    if status_col is not None:
+        s = df[status_col].astype(str).str.strip().str.lower()
+        mask &= (s == "") | s.isin({"active", "a"})
+
+    leave_col = _resolve_col(norm_cols, ["is_leave", "leave", "on_leave"])
+    if leave_col is not None:
+        lv = df[leave_col].astype(str).str.strip().str.lower()
+        mask &= ~lv.isin({"true", "1", "yes", "y"})
+
+    entry_col = _resolve_col(norm_cols, ["entry", "shift", "schedule"])
+    if entry_col is not None:
+        e = df[entry_col].astype(str).str.strip().str.lower()
+        mask &= ~e.isin({"leave", "l", "off", "pto"})
+
+    return mask
+
+
+def _fte_series_vec(df: pd.DataFrame, norm_cols: dict, default: float) -> pd.Series:
+    """Vectorized equivalent of _row_fte: prefer FTE, fall back to HC, else default."""
+    result = pd.Series(float(default), index=df.index, dtype=float)
+
+    hc_col = _resolve_col(
+        norm_cols,
+        ["projected_supply_hc", "projected_hc", "supply_hc", "hc", "headcount"],
+    )
+    if hc_col is not None:
+        hc = pd.to_numeric(df[hc_col], errors="coerce")
+        ok = hc.notna() & np.isfinite(hc) & (hc >= 0)
+        result = result.mask(ok, hc)
+
+    fte_col = _resolve_col(
+        norm_cols,
+        ["fte", "supply_fte", "projected_supply_fte", "projected_fte"],
+    )
+    if fte_col is not None:
+        fte = pd.to_numeric(df[fte_col], errors="coerce")
+        ok = fte.notna() & np.isfinite(fte) & (fte >= 0)
+        result = result.mask(ok, fte)
+
+    return result
+
+
+def _program_series_vec(df: pd.DataFrame, norm_cols: dict) -> pd.Series:
+    """Vectorized equivalent of _row_program."""
+    prog_col = _resolve_col(
+        norm_cols, ["program", "lob", "channel", "line of business", "queue", "work_type"]
+    )
+    if prog_col is None:
+        return pd.Series("WFM", index=df.index)
+    prog = df[prog_col].astype(str).str.strip()
+    return prog.where(prog != "", "WFM")
+
+
 def supply_fte_daily(roster: pd.DataFrame, hiring: pd.DataFrame) -> pd.DataFrame:
     rows: list[dict[str, object]] = []
     today = dt.date.today()
@@ -861,16 +1007,20 @@ def supply_fte_daily(roster: pd.DataFrame, hiring: pd.DataFrame) -> pd.DataFrame
 
         if date_col:
             roster_df[date_col] = pd.to_datetime(roster_df[date_col], errors="coerce").dt.date
-            for _, row in roster_df.iterrows():
-                day = row.get(date_col)
-                if not isinstance(day, dt.date):
-                    continue
-                if not _row_is_active(row):
-                    continue
-                fte = _row_fte(row, default=1.0)
-                if fte <= 0:
-                    continue
-                rows.append({"date": day, "program": _row_program(row), "supply_fte": fte})
+            active = _active_mask_vec(roster_df, norm_cols)
+            fte = _fte_series_vec(roster_df, norm_cols, default=1.0)
+            program = _program_series_vec(roster_df, norm_cols)
+            day_is_date = roster_df[date_col].apply(lambda d: isinstance(d, dt.date))
+            keep = active & day_is_date & (fte > 0)
+            if keep.any():
+                sub = pd.DataFrame(
+                    {
+                        "date": roster_df.loc[keep, date_col],
+                        "program": program[keep],
+                        "supply_fte": fte[keep],
+                    }
+                )
+                rows.extend(sub.to_dict("records"))
         else:
             for _, row in roster_df.iterrows():
                 if not _row_is_active(row):
@@ -900,32 +1050,35 @@ def supply_fte_daily(roster: pd.DataFrame, hiring: pd.DataFrame) -> pd.DataFrame
                         rows.append({"date": day, "program": _row_program(row), "supply_fte": fte})
 
     if isinstance(hiring, pd.DataFrame) and not hiring.empty:
-        for _, row in hiring.iterrows():
-            if not _row_is_active(row):
-                continue
-            raw = str(_row_pick(row, ["start_week", "week", "date", "start_date"]) or "").strip()
-            if not raw:
-                continue
-            try:
-                if re.match(r"^\d{1,2}-\d{1,2}-\d{4}$", raw):
-                    week_start = pd.to_datetime(raw, dayfirst=True).date()
-                else:
-                    week_start = pd.to_datetime(raw, errors="coerce").date()
-            except Exception:
-                continue
-            if not isinstance(week_start, dt.date):
-                continue
-            fte = _row_fte(row, default=0.0)
-            if fte <= 0:
-                continue
-            for offset in range(7):
-                rows.append(
-                    {
-                        "date": week_start + dt.timedelta(days=offset),
-                        "program": _row_program(row),
-                        "supply_fte": fte,
-                    }
-                )
+        hire_norm = {_norm_col_key(c): c for c in hiring.columns}
+        start_col = _resolve_col(hire_norm, ["start_week", "week", "date", "start_date"])
+        if start_col is not None:
+            active = _active_mask_vec(hiring, hire_norm)
+            fte_series = _fte_series_vec(hiring, hire_norm, default=0.0)
+            program_series = _program_series_vec(hiring, hire_norm)
+            raw_series = hiring[start_col].astype(str).str.strip()
+            keep = active & (fte_series > 0) & (raw_series != "")
+            for idx in hiring.index[keep]:
+                raw = raw_series.at[idx]
+                try:
+                    if re.match(r"^\d{1,2}-\d{1,2}-\d{4}$", raw):
+                        week_start = pd.to_datetime(raw, dayfirst=True).date()
+                    else:
+                        week_start = pd.to_datetime(raw, errors="coerce").date()
+                except Exception:
+                    continue
+                if not isinstance(week_start, dt.date):
+                    continue
+                fte = float(fte_series.at[idx])
+                program = program_series.at[idx]
+                for offset in range(7):
+                    rows.append(
+                        {
+                            "date": week_start + dt.timedelta(days=offset),
+                            "program": program,
+                            "supply_fte": fte,
+                        }
+                    )
 
     if not rows:
         return pd.DataFrame(columns=["date", "program", "supply_fte"])

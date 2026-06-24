@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import datetime as dt
+import os
+import threading
 from typing import Any, Optional
 from concurrent.futures import ThreadPoolExecutor
 
@@ -35,7 +37,18 @@ _TABLE_KEYS = [
     "notes",
 ]
 
-_PREFETCH_EXECUTOR = ThreadPoolExecutor(max_workers=2, thread_name_prefix="plan-prefetch")
+# Grain prefetch warms the other grains' caches in the background. The Erlang
+# FTE math is pure-Python and GIL-bound, so running many prefetch threads at
+# once steals CPU from the foreground request rather than helping it. Default to
+# a single worker and make the whole thing toggleable via env.
+_PREFETCH_ENABLED = os.getenv("PLAN_PREFETCH_ENABLED", "1").strip().lower() not in {"0", "false", "no", ""}
+_PREFETCH_WORKERS = max(1, int(os.getenv("PLAN_PREFETCH_WORKERS", "1") or "1"))
+_PREFETCH_EXECUTOR = ThreadPoolExecutor(max_workers=_PREFETCH_WORKERS, thread_name_prefix="plan-prefetch")
+
+# Coalesce duplicate prefetch jobs so overlapping page loads don't pile identical
+# recomputes onto the executor.
+_PREFETCH_LOCK = threading.Lock()
+_PREFETCH_INFLIGHT: set[tuple] = set()
 
 
 def _normalize_grain(grain: Optional[str]) -> str:
@@ -229,8 +242,10 @@ def prefetch_plan_detail_grains(
         return
     if whatif:
         return
+    if not _PREFETCH_ENABLED:
+        return
 
-    def _run(target_grain: str):
+    def _run(target_grain: str, job_key: tuple):
         try:
             compute_plan_detail_tables(
                 int(plan_id),
@@ -241,12 +256,25 @@ def prefetch_plan_detail_grains(
             )
         except Exception:
             return
+        finally:
+            with _PREFETCH_LOCK:
+                _PREFETCH_INFLIGHT.discard(job_key)
 
     for grain in grains:
         g = _normalize_grain(grain)
         if g == "interval":
             continue
-        _PREFETCH_EXECUTOR.submit(_run, g)
+        job_key = (int(plan_id), g, str(version_token))
+        with _PREFETCH_LOCK:
+            if job_key in _PREFETCH_INFLIGHT:
+                # An identical recompute is already queued/running.
+                continue
+            _PREFETCH_INFLIGHT.add(job_key)
+        try:
+            _PREFETCH_EXECUTOR.submit(_run, g, job_key)
+        except Exception:
+            with _PREFETCH_LOCK:
+                _PREFETCH_INFLIGHT.discard(job_key)
 
 
 def persist_plan_detail_tables(
