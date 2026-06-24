@@ -1471,6 +1471,14 @@ def _fill_tables_fixed_monthly(ptype, pid, fw_cols, _tick, whatif=None):
                     for i, mm in enumerate(mlist, start=1): sda[mm][i] += n
         return nest, sda
     nest_buckets, sda_buckets = _monthly_buckets_from_classes(classes_df, month_ids)
+
+    # SDA agents already appear at full (1.0) headcount in projected_supply from
+    # their production month, so their ramp term must be the shortfall vs a full
+    # head, not an extra partial head: net = sda_eff - sda_heads -> each SDA agent
+    # nets to (effective - 1.0), i.e. effective overall. Nesting precedes
+    # production and is NOT in supply, so it stays additive.
+    def _sda_heads_in_month(m) -> float:
+        return float(sum((sda_buckets.get(m, {}) or {}).values()))
     # in-phase counters (peak within month)
     m_train_in_phase = {m: sum(nest_buckets[m].values()) for m in month_ids}  # training ~= nesting buckets prior to prod
     m_nest_in_phase  = {m: sum(nest_buckets[m].values()) for m in month_ids}
@@ -2668,7 +2676,7 @@ def _fill_tables_fixed_monthly(ptype, pid, fw_cols, _tick, whatif=None):
                 return total
             
             nest_eff = eff_from_buckets(nest_buckets, lc["nesting_prod_pct"], lc["nesting_aht_uplift_pct"])
-            sda_eff  = eff_from_buckets(sda_buckets,  lc["sda_prod_pct"],     lc["sda_aht_uplift_pct"])
+            sda_eff  = eff_from_buckets(sda_buckets,  lc["sda_prod_pct"],     lc["sda_aht_uplift_pct"]) - _sda_heads_in_month(m)
             v_shr_add = (shrink_delta / 100.0) if (_wf_active_month(m) and shrink_delta) else 0.0
             v_eff_shr = min(0.99, max(0.0, voice_shr_base + v_shr_add))
             eff_agents = max(1.0, (agents_prod + nest_eff + sda_eff) * (1.0 - v_eff_shr))
@@ -2739,7 +2747,7 @@ def _fill_tables_fixed_monthly(ptype, pid, fw_cols, _tick, whatif=None):
                     if aht_m is not None:   denom *= aht_m
                     total += float(cnt) * (p / max(1.0, denom))
                 return total
-            agents_eff = max(1.0, float(projected_supply.get(m, 0.0)) + eff(nest_buckets, lc["nesting_prod_pct"], lc["nesting_aht_uplift_pct"]) + eff(sda_buckets, lc["sda_prod_pct"], lc["sda_aht_uplift_pct"]))
+            agents_eff = max(1.0, float(projected_supply.get(m, 0.0)) + eff(nest_buckets, lc["nesting_prod_pct"], lc["nesting_aht_uplift_pct"]) + (eff(sda_buckets, lc["sda_prod_pct"], lc["sda_aht_uplift_pct"]) - _sda_heads_in_month(m)))
             wd = _workdays_in_month(m, is_bo=True)
             if bo_model == "tat":
                 shr_add = (shrink_delta / 100.0) if (_wf_active_month(m) and shrink_delta) else 0.0
@@ -2817,7 +2825,7 @@ def _fill_tables_fixed_monthly(ptype, pid, fw_cols, _tick, whatif=None):
                     total += float(cnt) * (p / max(1.0, denom))
                 return total
             nest_eff = eff_from_buckets(nest_buckets, lc["nesting_prod_pct"], lc["nesting_aht_uplift_pct"])
-            sda_eff  = eff_from_buckets(sda_buckets,  lc["sda_prod_pct"],     lc["sda_aht_uplift_pct"])
+            sda_eff  = eff_from_buckets(sda_buckets,  lc["sda_prod_pct"],     lc["sda_aht_uplift_pct"]) - _sda_heads_in_month(m)
             v_shr_add = (shrink_delta / 100.0) if (_wf_active_month(m) and shrink_delta) else 0.0
             v_eff_shr = min(0.99, max(0.0, voice_shr_base + v_shr_add))
             agents_prod = schedule_supply_avg_m.get(m, None)

@@ -2280,6 +2280,15 @@ def _fill_tables_fixed(ptype, pid, fw_cols, _tick, whatif=None, grain: str = 'we
     classes_df = load_df(f"plan_{pid}_nh_classes")
     nest_buckets, sda_buckets = _weekly_buckets_from_classes(classes_df, week_ids)
 
+    # SDA agents already appear at full (1.0) headcount in projected_supply from
+    # their production_start week, so their ramp contribution must be the SHORTFALL
+    # vs a full head, not an additional partial head. Subtract the SDA head count
+    # for the week from the SDA effective-agents term: net = sda_eff - sda_heads
+    # makes each SDA agent count as (effective - 1.0), i.e. effective overall.
+    # (Nesting precedes production_start and is NOT in supply, so it stays additive.)
+    def _sda_heads_in_week(w) -> float:
+        return float(sum((sda_buckets.get(w, {}) or {}).values()))
+
     wk_train_in_phase = {w: 0 for w in week_ids}
     wk_nest_in_phase  = {w: 0 for w in week_ids}
     if isinstance(classes_df, pd.DataFrame) and not classes_df.empty:
@@ -3308,6 +3317,7 @@ def _fill_tables_fixed(ptype, pid, fw_cols, _tick, whatif=None, grain: str = 'we
             nest_eff = eff_from_buckets(nest_buckets, lc["nesting_prod_pct"], lc["nesting_aht_uplift_pct"])
             sda_eff  = eff_from_buckets(sda_buckets,  lc["sda_prod_pct"],     lc["sda_aht_uplift_pct"])
             # Use base agents (pre-shrink) for CallCapacity
+            sda_eff = sda_eff - _sda_heads_in_week(w)  # SDA already full in supply
             eff_agents = max(1.0, (agents_prod + nest_eff + sda_eff))
             # Overtime: treat as equivalent agents based on hours per FTE and workdays/week
             try:
@@ -3367,7 +3377,7 @@ def _fill_tables_fixed(ptype, pid, fw_cols, _tick, whatif=None, grain: str = 'we
                     total += float(cnt) * (p / max(1.0, denom))
                 return total
 
-            agents_eff = max(1.0, float(projected_supply.get(w, 0.0)) + eff(nest_buckets, lc["nesting_prod_pct"], lc["nesting_aht_uplift_pct"]) + eff(sda_buckets, lc["sda_prod_pct"], lc["sda_aht_uplift_pct"]))
+            agents_eff = max(1.0, float(projected_supply.get(w, 0.0)) + eff(nest_buckets, lc["nesting_prod_pct"], lc["nesting_aht_uplift_pct"]) + (eff(sda_buckets, lc["sda_prod_pct"], lc["sda_aht_uplift_pct"]) - _sda_heads_in_week(w)))
             if bo_model == "tat":
                 shr_add = (shrink_delta / 100.0) if (_wf_active(w) and shrink_delta) else 0.0
                 eff_shr = min(0.99, max(0.0, bo_shr_base + shr_add))
@@ -3412,7 +3422,7 @@ def _fill_tables_fixed(ptype, pid, fw_cols, _tick, whatif=None, grain: str = 'we
                     if aht_m is not None:   denom *= aht_m
                     total += float(cnt) * (p / max(1.0, denom))
                 return total
-            agents_eff = max(1.0, (float(projected_supply.get(w, 0.0)) + eff_ob(nest_buckets, lc["nesting_prod_pct"], lc["nesting_aht_uplift_pct"]) + eff_ob(sda_buckets, lc["sda_prod_pct"], lc["sda_aht_uplift_pct"])) * ob_util)
+            agents_eff = max(1.0, (float(projected_supply.get(w, 0.0)) + eff_ob(nest_buckets, lc["nesting_prod_pct"], lc["nesting_aht_uplift_pct"]) + (eff_ob(sda_buckets, lc["sda_prod_pct"], lc["sda_aht_uplift_pct"]) - _sda_heads_in_week(w))) * ob_util)
             ivl_min_ob = int(float(sw.get("ob_interval_minutes", sw.get("interval_minutes", 30)) or 30))
             ivl_sec_ob = max(60, ivl_min_ob * 60)
             base_aht = _metric_for_capacity(wk_aht_sut_actual, wk_aht_sut_forecast, w)
@@ -3445,7 +3455,7 @@ def _fill_tables_fixed(ptype, pid, fw_cols, _tick, whatif=None, grain: str = 'we
                     if aht_m is not None:   denom *= aht_m
                     total += float(cnt) * (p / max(1.0, denom))
                 return total
-            agents_eff = max(1.0, (float(projected_supply.get(w, 0.0)) + eff_ch(nest_buckets, lc["nesting_prod_pct"], lc["nesting_aht_uplift_pct"]) + eff_ch(sda_buckets, lc["sda_prod_pct"], lc["sda_aht_uplift_pct"])) * chat_util)
+            agents_eff = max(1.0, (float(projected_supply.get(w, 0.0)) + eff_ch(nest_buckets, lc["nesting_prod_pct"], lc["nesting_aht_uplift_pct"]) + (eff_ch(sda_buckets, lc["sda_prod_pct"], lc["sda_aht_uplift_pct"]) - _sda_heads_in_week(w))) * chat_util)
             ivl_min_ch = int(float(sw.get("chat_interval_minutes", sw.get("interval_minutes", 30)) or 30))
             ivl_sec_ch = max(60, ivl_min_ch * 60)
             base_aht = _metric_for_capacity(wk_aht_sut_actual, wk_aht_sut_forecast, w)
@@ -3494,7 +3504,7 @@ def _fill_tables_fixed(ptype, pid, fw_cols, _tick, whatif=None, grain: str = 'we
                 return total
 
             nest_eff = eff_from_buckets(nest_buckets, lc["nesting_prod_pct"], lc["nesting_aht_uplift_pct"])
-            sda_eff  = eff_from_buckets(sda_buckets,  lc["sda_prod_pct"],     lc["sda_aht_uplift_pct"])
+            sda_eff  = eff_from_buckets(sda_buckets,  lc["sda_prod_pct"],     lc["sda_aht_uplift_pct"]) - _sda_heads_in_week(w)
             agents_prod = schedule_supply_avg.get(w, None)
             if agents_prod is None or agents_prod <= 0:
                 agents_prod = float(projected_supply.get(w, 0.0))
@@ -3700,7 +3710,7 @@ def _fill_tables_fixed(ptype, pid, fw_cols, _tick, whatif=None, grain: str = 'we
                         if aht_m is not None:   denom *= aht_m
                         total += float(cnt) * (p / max(1.0, denom))
                     return total
-                agents_eff = max(1.0, (float(projected_supply.get(w, 0.0)) + eff(nest_buckets, lc["nesting_prod_pct"], lc["nesting_aht_uplift_pct"]) + eff(sda_buckets, lc["sda_prod_pct"], lc["sda_aht_uplift_pct"])) * util_bo)
+                agents_eff = max(1.0, (float(projected_supply.get(w, 0.0)) + eff(nest_buckets, lc["nesting_prod_pct"], lc["nesting_aht_uplift_pct"]) + (eff(sda_buckets, lc["sda_prod_pct"], lc["sda_aht_uplift_pct"]) - _sda_heads_in_week(w))) * util_bo)
                 sl_frac = _erlang_sl(items_per_ivl, max(1.0, float(sut)), agents_eff, sl_seconds, ivl_sec)
                 proj_sl[w] = 100.0 * sl_frac
         elif ch_low in ("outbound", "ob", "out bound"):
