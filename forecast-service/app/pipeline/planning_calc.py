@@ -1,10 +1,13 @@
 from __future__ import annotations
 
 import datetime as dt
+import logging
 from typing import Any, Optional
 
 import numpy as np
 import pandas as pd
+
+_LOG = logging.getLogger(__name__)
 
 from app.pipeline.capacity_core import (
     add_week_month_keys,
@@ -528,60 +531,86 @@ def consolidated_calcs(
 
     res: dict[str, pd.DataFrame] = {}
 
-    voice_ivl_f = _voice_interval_calc(voice_f if _has_intervals(voice_f) else pd.DataFrame(), settings, ivl_min)
-    voice_ivl_a = _voice_interval_calc(voice_a if _has_intervals(voice_a) else pd.DataFrame(), settings, ivl_min)
-    voice_ivl_t = _voice_interval_calc(voice_t if _has_intervals(voice_t) else pd.DataFrame(), settings, ivl_min)
-    res["voice_ivl_f"], res["voice_ivl_a"], res["voice_ivl_t"] = voice_ivl_f, voice_ivl_a, voice_ivl_t
-    res["voice_day_f"] = _daily_from_intervals(voice_ivl_f, settings, "volume") if not voice_ivl_f.empty else pd.DataFrame()
-    res["voice_day_a"] = _daily_from_intervals(voice_ivl_a, settings, "volume") if not voice_ivl_a.empty else pd.DataFrame()
-    res["voice_day_t"] = _daily_from_intervals(voice_ivl_t, settings, "volume") if not voice_ivl_t.empty else pd.DataFrame()
-    res["voice_ivl"] = voice_ivl_f
-    res["voice_day"] = res["voice_day_f"]
-    res["voice_week"] = _weekly_from_daily(res["voice_day"]) if not res["voice_day"].empty else pd.DataFrame()
-    res["voice_month"] = _monthly_from_daily(res["voice_day"]) if not res["voice_day"].empty else pd.DataFrame()
+    def _empty_day() -> pd.DataFrame:
+        return pd.DataFrame(columns=["date", "program", "fte_req", "phc", "service_level"])
 
-    chat_ivl_f = pd.DataFrame()
-    chat_ivl_a = pd.DataFrame()
-    chat_ivl_t = pd.DataFrame()
-    res["chat_ivl_f"], res["chat_ivl_a"], res["chat_ivl_t"] = chat_ivl_f, chat_ivl_a, chat_ivl_t
-    res["chat_day_f"] = _chat_daily_calc(chat_f, settings)
-    res["chat_day_a"] = _chat_daily_calc(chat_a, settings)
-    res["chat_day_t"] = _chat_daily_calc(chat_t, settings)
-    res["chat_ivl"] = chat_ivl_f
-    res["chat_day"] = res["chat_day_f"]
-    res["chat_week"] = _weekly_from_daily(res["chat_day"]) if not res["chat_day"].empty else pd.DataFrame()
-    res["chat_month"] = _monthly_from_daily(res["chat_day"]) if not res["chat_day"].empty else pd.DataFrame()
+    def _fill_empty(prefix: str) -> None:
+        # Guarantee the bundle always exposes every key for a channel so a
+        # single channel's failure can never drop required keys downstream.
+        for suffix in ("ivl_f", "ivl_a", "ivl_t", "ivl", "day_f", "day_a",
+                       "day_t", "day", "week", "month"):
+            res[f"{prefix}_{suffix}"] = _empty_day()
 
-    ob_ivl_f = pd.DataFrame()
-    ob_ivl_a = pd.DataFrame()
-    ob_ivl_t = pd.DataFrame()
-    res["ob_ivl_f"], res["ob_ivl_a"], res["ob_ivl_t"] = ob_ivl_f, ob_ivl_a, ob_ivl_t
-    res["ob_day_f"] = _ob_daily_calc(ob_f, settings)
-    res["ob_day_a"] = _ob_daily_calc(ob_a, settings)
-    res["ob_day_t"] = _ob_daily_calc(ob_t, settings)
-    res["ob_ivl"] = ob_ivl_f
-    res["ob_day"] = res["ob_day_f"]
-    res["ob_week"] = _weekly_from_daily(res["ob_day"]) if not res["ob_day"].empty else pd.DataFrame()
-    res["ob_month"] = _monthly_from_daily(res["ob_day"]) if not res["ob_day"].empty else pd.DataFrame()
+    # ---- Voice ---- (isolated: a malformed upload must not fail the rollup)
+    try:
+        voice_ivl_f = _voice_interval_calc(voice_f if _has_intervals(voice_f) else pd.DataFrame(), settings, ivl_min)
+        voice_ivl_a = _voice_interval_calc(voice_a if _has_intervals(voice_a) else pd.DataFrame(), settings, ivl_min)
+        voice_ivl_t = _voice_interval_calc(voice_t if _has_intervals(voice_t) else pd.DataFrame(), settings, ivl_min)
+        res["voice_ivl_f"], res["voice_ivl_a"], res["voice_ivl_t"] = voice_ivl_f, voice_ivl_a, voice_ivl_t
+        res["voice_day_f"] = _daily_from_intervals(voice_ivl_f, settings, "volume") if not voice_ivl_f.empty else pd.DataFrame()
+        res["voice_day_a"] = _daily_from_intervals(voice_ivl_a, settings, "volume") if not voice_ivl_a.empty else pd.DataFrame()
+        res["voice_day_t"] = _daily_from_intervals(voice_ivl_t, settings, "volume") if not voice_ivl_t.empty else pd.DataFrame()
+        res["voice_ivl"] = voice_ivl_f
+        res["voice_day"] = res["voice_day_f"]
+        res["voice_week"] = _weekly_from_daily(res["voice_day"]) if not res["voice_day"].empty else pd.DataFrame()
+        res["voice_month"] = _monthly_from_daily(res["voice_day"]) if not res["voice_day"].empty else pd.DataFrame()
+    except Exception:
+        _LOG.exception("consolidated_calcs: Voice rollup failed (scope_key=%s); returning empty Voice frames", scope_key)
+        _fill_empty("voice")
 
-    model = str(settings.get("bo_capacity_model", "tat")).lower()
-    def _bo_day(df: pd.DataFrame) -> pd.DataFrame:
-        if df is None or df.empty:
-            return pd.DataFrame(columns=["date", "program", "fte_req", "phc", "service_level"])
-        roll = bo_erlang_rollups(df, settings)["daily"] if model == "erlang" else bo_rollups(df, settings)["daily"]
-        if roll is None or roll.empty:
-            return pd.DataFrame(columns=["date", "program", "fte_req", "phc", "service_level"])
-        out = roll.rename(columns={"fte_req": "fte_req"}).copy()
-        out["phc"] = 0.0
-        out["service_level"] = 0.0
-        return out[["date", "program", "fte_req", "phc", "service_level"]]
+    # ---- Chat ----
+    try:
+        chat_ivl_f = pd.DataFrame()
+        res["chat_ivl_f"], res["chat_ivl_a"], res["chat_ivl_t"] = chat_ivl_f, pd.DataFrame(), pd.DataFrame()
+        res["chat_day_f"] = _chat_daily_calc(chat_f, settings)
+        res["chat_day_a"] = _chat_daily_calc(chat_a, settings)
+        res["chat_day_t"] = _chat_daily_calc(chat_t, settings)
+        res["chat_ivl"] = chat_ivl_f
+        res["chat_day"] = res["chat_day_f"]
+        res["chat_week"] = _weekly_from_daily(res["chat_day"]) if not res["chat_day"].empty else pd.DataFrame()
+        res["chat_month"] = _monthly_from_daily(res["chat_day"]) if not res["chat_day"].empty else pd.DataFrame()
+    except Exception:
+        _LOG.exception("consolidated_calcs: Chat rollup failed (scope_key=%s); returning empty Chat frames", scope_key)
+        _fill_empty("chat")
 
-    res["bo_day_f"] = _bo_day(bo_f)
-    res["bo_day_a"] = _bo_day(bo_a)
-    res["bo_day_t"] = _bo_day(bo_t)
-    res["bo_day"] = res["bo_day_f"]
-    res["bo_week"] = _weekly_from_daily(res["bo_day"]) if not res["bo_day"].empty else pd.DataFrame()
-    res["bo_month"] = _monthly_from_daily(res["bo_day"]) if not res["bo_day"].empty else pd.DataFrame()
+    # ---- Outbound ----
+    try:
+        ob_ivl_f = pd.DataFrame()
+        res["ob_ivl_f"], res["ob_ivl_a"], res["ob_ivl_t"] = ob_ivl_f, pd.DataFrame(), pd.DataFrame()
+        res["ob_day_f"] = _ob_daily_calc(ob_f, settings)
+        res["ob_day_a"] = _ob_daily_calc(ob_a, settings)
+        res["ob_day_t"] = _ob_daily_calc(ob_t, settings)
+        res["ob_ivl"] = ob_ivl_f
+        res["ob_day"] = res["ob_day_f"]
+        res["ob_week"] = _weekly_from_daily(res["ob_day"]) if not res["ob_day"].empty else pd.DataFrame()
+        res["ob_month"] = _monthly_from_daily(res["ob_day"]) if not res["ob_day"].empty else pd.DataFrame()
+    except Exception:
+        _LOG.exception("consolidated_calcs: Outbound rollup failed (scope_key=%s); returning empty Outbound frames", scope_key)
+        _fill_empty("ob")
+
+    # ---- Back Office ----
+    try:
+        model = str(settings.get("bo_capacity_model", "tat")).lower()
+        def _bo_day(df: pd.DataFrame) -> pd.DataFrame:
+            if df is None or df.empty:
+                return _empty_day()
+            roll = bo_erlang_rollups(df, settings)["daily"] if model == "erlang" else bo_rollups(df, settings)["daily"]
+            if roll is None or roll.empty:
+                return _empty_day()
+            out = roll.rename(columns={"fte_req": "fte_req"}).copy()
+            out["phc"] = 0.0
+            out["service_level"] = 0.0
+            return out[["date", "program", "fte_req", "phc", "service_level"]]
+
+        res["bo_day_f"] = _bo_day(bo_f)
+        res["bo_day_a"] = _bo_day(bo_a)
+        res["bo_day_t"] = _bo_day(bo_t)
+        res["bo_day"] = res["bo_day_f"]
+        res["bo_week"] = _weekly_from_daily(res["bo_day"]) if not res["bo_day"].empty else pd.DataFrame()
+        res["bo_month"] = _monthly_from_daily(res["bo_day"]) if not res["bo_day"].empty else pd.DataFrame()
+    except Exception:
+        _LOG.exception("consolidated_calcs: Back Office rollup failed (scope_key=%s); returning empty BO frames", scope_key)
+        _fill_empty("bo")
 
     return res
 

@@ -1379,7 +1379,8 @@ export default function PlanDetailClient({ planId, rollupBa }: PlanDetailClientP
             return;
           }
           if (res.status !== "ready" || !res.data) {
-            notify("error", "Capacity rollup calculations failed.");
+            const detail = (res as any)?.job?.error ? ` (${(res as any).job.error})` : "";
+            notify("error", `Capacity rollup calculations failed.${detail}`);
             return;
           }
 

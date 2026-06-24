@@ -2,11 +2,14 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import os
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any, Callable, Dict, Iterable, Tuple
+
+_LOG = logging.getLogger(__name__)
 
 _MAX_WORKERS = max(1, int(os.getenv("PLAN_CALC_WORKERS", "4")))
 _REALTIME = os.getenv("PLAN_CALC_REALTIME", "1").strip().lower() not in {"0", "false", "no"}
@@ -126,6 +129,7 @@ def ensure_plan_calc(
         try:
             result = builder()
         except Exception as exc:
+            _LOG.exception("plan calc builder failed: plan_key=%s grain=%s", plan_key, grain)
             finished = time.time()
             with _LOCK:
                 meta = _record_job(
@@ -171,6 +175,7 @@ def _run_job(plan_key: str, key: str, builder: Callable[[], Tuple], started: flo
     try:
         result = builder()
     except Exception as exc:
+        _LOG.exception("plan calc builder failed (threaded): plan_key=%s", plan_key)
         finished = time.time()
         with _LOCK:
             _record_job(
