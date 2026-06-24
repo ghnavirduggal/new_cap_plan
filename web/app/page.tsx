@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import React from "react";
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import AppShell from "./_components/AppShell";
 import Sparkline from "./_components/Sparkline";
 import { apiGet, apiPost } from "../lib/api";
@@ -467,6 +467,30 @@ export default function HomePage() {
       active = false;
     };
   }, []);
+
+  // Resolve an activity's actor against the signed-in user so rows authored by
+  // the current user show the same display name and photo as the Profile panel
+  // (sourced from /api/user), instead of the raw actor string + generated avatar.
+  const activityIdentity = useCallback(
+    (actor: string): { name: string; photo: string } => {
+      const a = String(actor || "").trim();
+      const meKeys = [currentUser?.name, currentUser?.email, currentUser?.email?.split("@")[0]]
+        .map((s) => String(s || "").trim().toLowerCase())
+        .filter(Boolean);
+      const isMe = a !== "" && meKeys.includes(a.toLowerCase());
+      if (isMe) {
+        const name = String(currentUser?.name || currentUser?.email || a || "You").trim();
+        const photo = String(currentUser?.photo_url || "").trim();
+        return {
+          name,
+          photo: photo || `https://ui-avatars.com/api/?name=${encodeURIComponent(name)}`
+        };
+      }
+      const name = a || "system";
+      return { name, photo: `https://ui-avatars.com/api/?name=${encodeURIComponent(name)}` };
+    },
+    [currentUser]
+  );
 
   useEffect(() => {
     let active = true;
@@ -1259,7 +1283,9 @@ export default function HomePage() {
                   marginTop: "0.5rem"
                 }}
               >
-                {activities.map((act) => (
+                {activities.map((act) => {
+                  const who = activityIdentity(act.user);
+                  return (
                   <div
                     key={act.id}
                     style={{
@@ -1274,8 +1300,9 @@ export default function HomePage() {
                     <div style={{ display: "flex", alignItems: "center", gap: "0.5rem" }}>
                       {/* User photo */}
                       <img
-                        src={act.photoUrl}
-                        alt={act.user}
+                        src={who.photo}
+                        alt={who.name}
+                        referrerPolicy="no-referrer"
                         style={{
                           width: "32px",
                           height: "32px",
@@ -1285,7 +1312,7 @@ export default function HomePage() {
                       />
                       <div>
                         <div style={{ fontWeight: 600 }}>
-                          {act.user} <span style={{ fontWeight: 400 }}>{act.action}</span>
+                          {who.name} <span style={{ fontWeight: 400 }}>{act.action}</span>
                         </div>
                         <div style={{ fontSize: "0.75rem", color: "#666" }}>{act.time}</div>
                       </div>
@@ -1309,7 +1336,8 @@ export default function HomePage() {
                       {act.plan} · {act.range}
                     </div>
                   </div>
-                ))}
+                  );
+                })}
                 {!activities.length ? (
                   <div className="home-empty">No recent activity yet.</div>
                 ) : null}
