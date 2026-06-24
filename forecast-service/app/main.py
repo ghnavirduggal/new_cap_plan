@@ -145,6 +145,34 @@ if not logging.getLogger().handlers:
     logging.basicConfig(level=logging.INFO)
 logger.setLevel(logging.INFO)
 
+# Diagnostic/debug endpoints leak filesystem paths and config; keep them off
+# unless explicitly enabled.
+_DEBUG_ENDPOINTS_ENABLED = os.getenv("ENABLE_DEBUG_ENDPOINTS", "0").strip().lower() in {"1", "true", "yes"}
+
+
+def _require_debug_enabled() -> None:
+    if not _DEBUG_ENDPOINTS_ENABLED:
+        raise HTTPException(status_code=404, detail="Not found.")
+
+
+def _max_request_bytes() -> int:
+    try:
+        return int(os.getenv("MAX_REQUEST_BYTES", str(50 * 1024 * 1024)))
+    except (TypeError, ValueError):
+        return 50 * 1024 * 1024
+
+
+@app.middleware("http")
+async def _limit_request_size(request, call_next):
+    # Reject oversized bodies up front (by Content-Length) so huge uploads can't
+    # exhaust memory before they're even parsed.
+    from fastapi.responses import JSONResponse
+
+    cl = request.headers.get("content-length")
+    if cl and cl.isdigit() and int(cl) > _max_request_bytes():
+        return JSONResponse(status_code=413, content={"detail": "Request body too large."})
+    return await call_next(request)
+
 _COMBINED_TIMESERIES_KINDS = {
     "voice_forecast",
     "voice_actual",
@@ -1632,6 +1660,7 @@ def get_plans(
 
 @app.get("/api/planning/plan/debug")
 def plan_debug(plan_id: int = Query(...)):
+    _require_debug_enabled()
     plan = load_plan(int(plan_id))
     if not plan:
         raise HTTPException(status_code=404, detail="Plan not found.")
@@ -1697,6 +1726,7 @@ def plan_debug_voice_weekly(
     plan_id: int = Query(...),
     week: Optional[str] = Query(None),
 ):
+    _require_debug_enabled()
     plan = load_plan(int(plan_id))
     if not plan:
         raise HTTPException(status_code=404, detail="Plan not found.")
@@ -1770,6 +1800,7 @@ def plan_debug_voice_weekly(
 
 @app.get("/api/planning/plan/debug/upper")
 def plan_debug_upper(plan_id: int = Query(...)):
+    _require_debug_enabled()
     plan = load_plan(int(plan_id))
     if not plan:
         raise HTTPException(status_code=404, detail="Plan not found.")
@@ -1918,7 +1949,8 @@ def save_plan_as(payload: dict):
     try:
         new_id = clone_plan(int(plan_id), name)
     except Exception as exc:
-        raise HTTPException(status_code=500, detail=str(exc)) from exc
+        logger.exception("clone_plan failed: plan_id=%s", plan_id)
+        raise HTTPException(status_code=500, detail="Failed to save plan.") from exc
     return {"status": "created", "id": new_id}
 
 
@@ -1953,13 +1985,15 @@ def export_plan(payload: dict):
         upper_rows = data.get("upper") if status == "ready" and data else []
     except Exception:
         upper_rows = []
+    from app.pipeline.save import sanitize_export
+
     with pd.ExcelWriter(buf, engine="xlsxwriter") as xw:
         if upper_rows:
-            pd.DataFrame(upper_rows).to_excel(xw, sheet_name="upper", index=False)
+            sanitize_export(pd.DataFrame(upper_rows)).to_excel(xw, sheet_name="upper", index=False)
         for key in keys:
             rows = load_plan_table(int(plan_id), key)
             df = pd.DataFrame(rows or [])
-            df.to_excel(xw, sheet_name=key[:31], index=False)
+            sanitize_export(df).to_excel(xw, sheet_name=key[:31], index=False)
     buf.seek(0)
     return StreamingResponse(
         buf,

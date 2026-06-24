@@ -9,6 +9,7 @@ import (
   "log"
   "net/http"
   "os"
+  "strconv"
   "strings"
   "time"
 
@@ -80,6 +81,7 @@ func main() {
     AllowCredentials: true,
     MaxAge:           300,
   }))
+  r.Use(limitBody(maxBodyBytes()))
 
   r.Get("/health", func(w http.ResponseWriter, r *http.Request) {
     respondJSON(w, http.StatusOK, map[string]any{"status": "ok"})
@@ -104,7 +106,15 @@ func main() {
 
   addr := envOrDefault("API_ADDR", ":8080")
   log.Printf("api listening on %s", addr)
-  log.Fatal(http.ListenAndServe(addr, r))
+  httpSrv := &http.Server{
+    Addr:              addr,
+    Handler:           r,
+    ReadHeaderTimeout: 10 * time.Second,
+    ReadTimeout:       60 * time.Second,
+    WriteTimeout:      120 * time.Second,
+    IdleTimeout:       120 * time.Second,
+  }
+  log.Fatal(httpSrv.ListenAndServe())
 }
 
 func (s *server) handleUser(w http.ResponseWriter, r *http.Request) {
@@ -436,7 +446,29 @@ func splitCSV(value string) []string {
     }
   }
   if len(out) == 0 {
-    return []string{"*"}
+    // Fail closed: never fall back to a wildcard origin (especially with
+    // AllowCredentials enabled). Default to the local dev frontend only.
+    return []string{"http://localhost:3000"}
   }
   return out
+}
+
+// maxBodyBytes caps the request body to mitigate memory-exhaustion DoS from
+// unbounded uploads. Overridable via MAX_BODY_BYTES.
+func maxBodyBytes() int64 {
+  if raw := os.Getenv("MAX_BODY_BYTES"); raw != "" {
+    if n, err := strconv.ParseInt(raw, 10, 64); err == nil && n > 0 {
+      return n
+    }
+  }
+  return 50 << 20 // 50 MiB
+}
+
+func limitBody(n int64) func(http.Handler) http.Handler {
+  return func(next http.Handler) http.Handler {
+    return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+      r.Body = http.MaxBytesReader(w, r.Body, n)
+      next.ServeHTTP(w, r)
+    })
+  }
 }

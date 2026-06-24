@@ -108,15 +108,20 @@ export default function DataTable({
   wrapperRef
 }: DataTableProps) {
   const rows = data ?? [];
-  if (!rows.length) {
-    return <div className="forecast-muted">{emptyLabel}</div>;
-  }
-
+  // Hooks must run unconditionally and in the same order every render, so they
+  // come before any early return (React Rules of Hooks). A conditional return
+  // placed above these caused the hook count to change on empty<->data
+  // transitions and crashed the table.
   const [showAll, setShowAll] = useState(false);
   const defaultMax = 500;
   const effectiveMax = maxRows === 0 ? undefined : maxRows ?? defaultMax;
   const visibleRows = !showAll && effectiveMax ? rows.slice(0, effectiveMax) : rows;
   const columns = useMemo(() => buildColumns(visibleRows), [visibleRows]);
+
+  if (!rows.length) {
+    return <div className="forecast-muted">{emptyLabel}</div>;
+  }
+
   const rawNumberCols = new Set<string>();
   columns.forEach((col) => {
     if (col.trim().toLowerCase() === "year") rawNumberCols.add(col);
