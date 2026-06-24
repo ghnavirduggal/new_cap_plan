@@ -12,6 +12,7 @@ import numpy as np
 import pandas as pd
 
 from app.pipeline.postgres import db_conn, has_dsn, ensure_ops_schema
+from psycopg2.extras import execute_values
 from app.pipeline.timeseries_store import load_timeseries_csv
 
 
@@ -577,32 +578,33 @@ def save_timeseries_rows(kind: str, scope_key: str, rows: list[dict], mode: str 
                 to_delete = df["row_hash"].dropna().unique().tolist()
                 if to_delete:
                     with db_conn() as conn:
-                        conn.executemany(
+                        conn.execute(
                             """
                             DELETE FROM timeseries_entries
-                            WHERE kind = %s AND scope_key_norm = %s AND row_hash = %s
+                            WHERE kind = %s AND scope_key_norm = %s AND row_hash = ANY(%s)
                             """,
-                            [(kind, scope_norm, h) for h in to_delete],
+                            (kind, scope_norm, to_delete),
                         )
 
-    records = []
-    for _, row in df.iterrows():
-        records.append(
-            (
-                kind,
-                scope_key or "global",
-                scope_norm,
-                row.get("date"),
-                row.get("interval"),
-                row.get("volume"),
-                row.get("aht_sec"),
-                row.get("sut_sec"),
-                row.get("items"),
-                row.get("row_hash"),
-            )
+    records = [
+        (
+            kind,
+            scope_key or "global",
+            scope_norm,
+            rec.get("date"),
+            rec.get("interval"),
+            rec.get("volume"),
+            rec.get("aht_sec"),
+            rec.get("sut_sec"),
+            rec.get("items"),
+            rec.get("row_hash"),
         )
+        for rec in df.to_dict("records")
+    ]
     with db_conn() as conn:
-        conn.executemany(
+        cur = conn.cursor()
+        execute_values(
+            cur,
             """
             INSERT INTO timeseries_entries (
                 kind,
@@ -616,9 +618,10 @@ def save_timeseries_rows(kind: str, scope_key: str, rows: list[dict], mode: str 
                 items,
                 row_hash
             )
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            VALUES %s
             """,
             records,
+            page_size=1000,
         )
     return len(records)
 

@@ -6,7 +6,7 @@ from typing import Optional
 
 import numpy as np
 import pandas as pd
-from psycopg2.extras import Json
+from psycopg2.extras import Json, execute_values
 
 from app.pipeline.headcount import load_headcount
 from app.pipeline.ops_store import load_roster as load_roster_supply
@@ -819,12 +819,13 @@ def save_shrinkage_weekly(df: pd.DataFrame) -> int:
     with db_conn() as conn:
         with conn.cursor() as cur:
             cur.execute("DELETE FROM shrinkage_weekly_entries")
-            cur.executemany(
+            execute_values(
+                cur,
                 """
                 INSERT INTO shrinkage_weekly_entries (
                     week, program, ooo_hours, ino_hours, base_hours, ooo_pct, ino_pct, overall_pct
                 )
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                VALUES %s
                 """,
                 [
                     (
@@ -837,8 +838,9 @@ def save_shrinkage_weekly(df: pd.DataFrame) -> int:
                         row.get("ino_pct"),
                         row.get("overall_pct"),
                     )
-                    for _, row in data.iterrows()
+                    for row in data.to_dict("records")
                 ],
+                page_size=1000,
             )
     return int(len(data.index))
 
@@ -867,9 +869,11 @@ def save_shrinkage_raw(kind: str, df: pd.DataFrame) -> int:
         with conn.cursor() as cur:
             cur.execute("DELETE FROM shrinkage_raw_entries WHERE kind = %s", (kind,))
             if rows:
-                cur.executemany(
-                    "INSERT INTO shrinkage_raw_entries (kind, payload) VALUES (%s, %s)",
+                execute_values(
+                    cur,
+                    "INSERT INTO shrinkage_raw_entries (kind, payload) VALUES %s",
                     [(kind, Json(_json_safe_row(row))) for row in rows],
+                    page_size=1000,
                 )
     return int(len(rows))
 
@@ -1084,12 +1088,12 @@ def save_attrition_weekly(df: pd.DataFrame, mode: str = "replace", scope: Option
                 data[field] = (scope_norm or {}).get(field)
         delete_where_sql, delete_params = _scope_filter_sql(scope_norm, fields=scope_fields)
         insert_cols = ["week", "program", *scope_fields, "leavers_fte", "avg_active_fte", "attrition_pct"]
-        placeholders = ", ".join(["%s"] * len(insert_cols))
         columns_sql = ", ".join(insert_cols)
         with conn.cursor() as cur:
             cur.execute(f"DELETE FROM attrition_weekly_entries WHERE {delete_where_sql}", delete_params)
-            cur.executemany(
-                f"INSERT INTO attrition_weekly_entries ({columns_sql}) VALUES ({placeholders})",
+            execute_values(
+                cur,
+                f"INSERT INTO attrition_weekly_entries ({columns_sql}) VALUES %s",
                 [
                     tuple(
                         _pg_float(row.get(col))
@@ -1097,8 +1101,9 @@ def save_attrition_weekly(df: pd.DataFrame, mode: str = "replace", scope: Option
                         else row.get(col)
                         for col in insert_cols
                     )
-                    for _, row in data.iterrows()
+                    for row in data.to_dict("records")
                 ],
+                page_size=1000,
             )
     return int(len(data.index))
 
@@ -1129,16 +1134,17 @@ def save_attrition_raw(df: pd.DataFrame, scope: Optional[dict] = None) -> int:
         scope_fields = _scope_fields_present(conn, "attrition_raw_entries")
         delete_where_sql, delete_params = _scope_filter_sql(scope_norm, fields=scope_fields)
         insert_cols = [*scope_fields, "payload"]
-        placeholders = ", ".join(["%s"] * len(insert_cols))
         columns_sql = ", ".join(insert_cols)
         with conn.cursor() as cur:
             cur.execute(f"DELETE FROM attrition_raw_entries WHERE {delete_where_sql}", delete_params)
             if rows:
-                cur.executemany(
-                    f"INSERT INTO attrition_raw_entries ({columns_sql}) VALUES ({placeholders})",
+                execute_values(
+                    cur,
+                    f"INSERT INTO attrition_raw_entries ({columns_sql}) VALUES %s",
                     [
                         tuple((scope_norm or {}).get(col) for col in scope_fields) + (Json(_json_safe_row(row)),)
                         for row in rows
                     ],
+                    page_size=1000,
                 )
     return int(len(rows))
