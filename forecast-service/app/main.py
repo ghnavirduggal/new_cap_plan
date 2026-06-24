@@ -197,11 +197,19 @@ def issue_token(request: Request):
     """Mint a short-lived session token from trusted proxy identity.
 
     Only works when AUTH_JWT_SECRET is configured and the upstream proxy is
-    trusted (TRUST_PROXY_AUTH=1); otherwise returns 404 so it isn't an open
-    token oracle.
+    trusted (TRUST_PROXY_AUTH=1).
+
+    When auth is disabled entirely (no AUTH_JWT_SECRET — the default/dev case)
+    we return 200 with a null token instead of 404: there is nothing to mint
+    and nothing to protect, so the frontend's one-time token probe gets a clean
+    "no token needed" answer rather than a 404 logged on every page load. When
+    a secret IS configured but the proxy isn't trusted, we still 404 so the
+    endpoint can't be used as an open token oracle.
     """
     secret = os.getenv("AUTH_JWT_SECRET", "")
-    if not secret or not security.trust_proxy_auth():
+    if not secret:
+        return {"token": None, "auth": "disabled"}
+    if not security.trust_proxy_auth():
         raise HTTPException(status_code=404, detail="Not found.")
     email = (
         request.headers.get("x-forwarded-email")
