@@ -66,7 +66,8 @@ const sections: Section[] = [
       "Volume upload: CSV/Excel with date and volume; optional category and forecast_group.",
       "IQ_Data sheet: required for IQ summary and contact ratio calculations.",
       "Holidays sheet: optional, used for Prophet regressors and seasonality.",
-      "Interval history: date, interval, volume (AHT optional) for daily/interval split."
+      "Interval history: date, interval, volume (AHT optional) for daily/interval split.",
+      "Programmatic ingest (REST API): instead of manual uploads, automated systems can push volume/AHT actuals and forecasts to POST /api/ingest/v1/timeseries (X-API-Key auth). See docs/INGEST_API.md for the contract and a curl example."
     ]
   },
   {
@@ -97,6 +98,8 @@ const sections: Section[] = [
     bullets: [
       "Create or duplicate plans, then open Plan Detail.",
       "Plan Detail includes weekly tables, notes, and validation views.",
+      "Hiring Plan Solver (Plan Detail options): recommends new-hire class start weeks and sizes to close the projected FTE shortfall, accounting for the training + nesting lead time (and optional weekly attrition erosion). Weeks that can't be covered in time are flagged; 'Apply as classes' writes the recommendation into the plan's new-hire classes for review.",
+      "Risk-Based Staffing (Plan Detail options): required FTE if you staffed to a higher percentile of demand (P50/P75/P90). The demand band comes from the scope's forecast error (a coefficient of variation, estimated from tracked forecast MAPE or set manually); each percentile re-runs the capacity engine with volume scaled by 1 + z·CV.",
       "Monte Carlo (Plan Detail options): simulates uncertain demand (lognormal around the forecast, spread from the scope's forecast error) to show the distribution of required FTE (P50/P90/P95) and the probability that supply covers demand.",
       "BA rollups provide summarized capacity views."
     ]
@@ -117,6 +120,7 @@ const sections: Section[] = [
       "Operating days: weekly/monthly conversions use the Business-Area operating days from Settings (e.g. bo_workdays_per_week); a month is 52 ÷ 12 ≈ 4.333 weeks.",
       "Shrinkage: overall shrink compounds its two parts — overall = 1 − (1 − OOO) × (1 − INO) — never a simple sum. Productive fraction = 1 − overall_shrink; all values are clamped to 0–100%.",
       "Attrition: annualized = (weekly leavers ÷ average active FTE) × 52, scoped to the plan's Business Area → Sub Business Area → Modality (Voice/Back Office/etc.) → Site.",
+      "Projected attrition (Upload Shrinkage → Attrition): the weekly attrition rate can be projected forward (Holt level + trend) with a P10/P90 band, so you can see whether attrition is trending up or down and feed a forward view into planning.",
       "Learning curve (new hires): during Nesting and SDA, agents are partially productive (productivity %) and may handle slower (AHT uplift). Effective agents = headcount × productivity ÷ (1 + uplift). Nesting precedes production; SDA agents are already in supply, so only their shortfall vs a full head is applied.",
       "Backlog (Back Office, opt-in per plan): backlog = max(0, Actual − Forecast) per period, carried once into the next OPEN period (never stacked onto a completed period). Carried backlog is not amplified by the what-if volume dial.",
       "What-if dials: volume and AHT deltas are multiplicative (× (1 + delta/100)); shrink delta is additive percentage points (30% + 5 → 35%). Dials apply only to the active/future window, never to past/locked periods.",

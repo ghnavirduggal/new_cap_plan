@@ -227,6 +227,8 @@ export default function ShrinkageClient() {
   const [attrRows, setAttrRows] = useState<Array<Record<string, any>>>([]);
   const [attrRawRows, setAttrRawRows] = useState<Array<Record<string, any>>>([]);
   const [attrMessage, setAttrMessage] = useState("");
+  const [attrForecast, setAttrForecast] = useState<any | null>(null);
+  const [attrForecastBusy, setAttrForecastBusy] = useState(false);
   const [saveAttritionModalOpen, setSaveAttritionModalOpen] = useState(false);
   const [attrScope, setAttrScope] = useState<AttritionScopeState>(DEFAULT_ATTRITION_SCOPE);
   const [attrScopeOptions, setAttrScopeOptions] = useState<AttritionScopeOptions>(DEFAULT_ATTRITION_SCOPE_OPTIONS);
@@ -329,6 +331,51 @@ export default function ShrinkageClient() {
 
   const weeklyChart = useMemo(() => lineFromRows(weeklyRows, "week", "overall_pct", "Overall Shrink %"), [weeklyRows]);
   const attrChart = useMemo(() => lineFromRows(attrRows, "week", "attrition_pct", "Attrition %"), [attrRows]);
+
+  const loadAttritionForecast = async () => {
+    setAttrForecastBusy(true);
+    try {
+      const query = new URLSearchParams();
+      if (attrScope.businessArea.trim()) query.set("ba", attrScope.businessArea.trim());
+      if (attrScope.subBusinessArea.trim()) query.set("sba", attrScope.subBusinessArea.trim());
+      if (attrScope.channel.trim()) query.set("channel", attrScope.channel.trim());
+      if (attrScope.site.trim()) query.set("site", attrScope.site.trim());
+      query.set("horizon", "12");
+      const res = await apiGet<any>(`/api/forecast/attrition/forecast?${query.toString()}`);
+      setAttrForecast(res);
+      if (res?.status !== "ok") notify("warning", "Not enough attrition history to project.");
+    } catch (error: any) {
+      notify("error", error?.message || "Could not project attrition.");
+    } finally {
+      setAttrForecastBusy(false);
+    }
+  };
+
+  const attrForecastChart = useMemo(() => {
+    if (!attrForecast || attrForecast.status !== "ok") return null;
+    const hist: Array<{ week: string; value: number }> = attrForecast.history || [];
+    const fc: Array<{ week: string; value: number; low: number; high: number }> = attrForecast.forecast || [];
+    if (!hist.length || !fc.length) return null;
+    const x = [...hist.map((h) => h.week), ...fc.map((f) => f.week)];
+    const lastActualIdx = hist.length - 1;
+    const actual = x.map((wk, i) => ({ x: wk, y: i < hist.length ? hist[i].value : null }));
+    const projected = x.map((wk, i) => {
+      if (i === lastActualIdx) return { x: wk, y: hist[lastActualIdx].value };
+      if (i >= hist.length) return { x: wk, y: fc[i - hist.length].value };
+      return { x: wk, y: null };
+    });
+    const high = x.map((wk, i) => ({ x: wk, y: i >= hist.length ? fc[i - hist.length].high : null }));
+    const low = x.map((wk, i) => ({ x: wk, y: i >= hist.length ? fc[i - hist.length].low : null }));
+    return {
+      x,
+      series: [
+        { name: "Actual", points: actual, color: "#2563eb" },
+        { name: "Projected", points: projected, color: "#f97316" },
+        { name: "P90", points: high, color: "#fca5a5" },
+        { name: "P10", points: low, color: "#fca5a5" }
+      ]
+    };
+  }, [attrForecast]);
   const attrScopeLabel = useMemo(() => {
     const parts = [
       attrScope.businessArea.trim(),
@@ -695,6 +742,38 @@ export default function ShrinkageClient() {
           {attrMessage ? <div className="forecast-muted" style={{ marginTop: 8 }}>{attrMessage}</div> : null}
           <EditableTable data={attrRows} onChange={setAttrRows} maxRows={10} />
           <LineChart data={attrChart} />
+
+          <div className="attr-forecast">
+            <div className="attr-forecast__head">
+              <h4>Projected Attrition</h4>
+              <button type="button" className="btn btn-light" onClick={loadAttritionForecast} disabled={attrForecastBusy}>
+                {attrForecastBusy ? "Projecting…" : "Project next 12 weeks"}
+              </button>
+            </div>
+            {attrForecast?.status === "ok" ? (
+              <>
+                <div className="attr-forecast__summary">
+                  <span>
+                    Recent weekly: <strong>{attrForecast.summary?.recent_avg_weekly_pct}%</strong> → projected{" "}
+                    <strong>{attrForecast.summary?.projected_avg_weekly_pct}%</strong>{" "}
+                    <em>({attrForecast.summary?.direction})</em>
+                  </span>
+                  <span>
+                    Annualized: <strong>{attrForecast.summary?.recent_avg_annualized_pct}%</strong> →{" "}
+                    <strong>{attrForecast.summary?.projected_avg_annualized_pct}%</strong>
+                  </span>
+                  <span className="forecast-muted">{attrForecast.method}</span>
+                </div>
+                {attrForecastChart ? <LineChart data={attrForecastChart} /> : null}
+              </>
+            ) : attrForecast ? (
+              <div className="forecast-muted">Not enough attrition history to project a trend.</div>
+            ) : (
+              <div className="forecast-muted">
+                Project the weekly attrition rate forward (level + trend) with a P10/P90 band.
+              </div>
+            )}
+          </div>
         </div>
       ) : null}
 
