@@ -69,6 +69,24 @@ def proxy_request_verified(request: Request) -> bool:
     return bool(provided) and hmac.compare_digest(provided, secret)
 
 
+def ingest_api_key_configured() -> bool:
+    """Whether a machine-to-machine ingest API key is set (INGEST_API_KEY)."""
+    return bool(os.getenv("INGEST_API_KEY", "").strip())
+
+
+def ingest_key_ok(request: Request) -> bool:
+    """True when the request carries the matching X-API-Key for the ingest API.
+
+    Lets automated systems push data without the interactive JWT/proxy flow.
+    Returns False if no key is configured (callers fall back to normal auth).
+    """
+    key = os.getenv("INGEST_API_KEY", "").strip()
+    if not key:
+        return False
+    provided = (request.headers.get("x-api-key") or "").strip()
+    return bool(provided) and hmac.compare_digest(provided, key)
+
+
 @dataclass
 class Principal:
     email: str
