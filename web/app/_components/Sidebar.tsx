@@ -38,7 +38,9 @@ export default function Sidebar({ collapsed }: { collapsed: boolean }) {
             <span className="nav-icon" aria-hidden>
               {item.icon}
             </span>
-            {!collapsed && <span className="nav-text">{item.label}</span>}
+            {/* Always rendered so the label fades/clips with the slide instead
+                of popping in and out when the sidebar collapses. */}
+            <span className="nav-text">{item.label}</span>
           </Link>
         ))}
       </nav>

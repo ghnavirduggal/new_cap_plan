@@ -126,13 +126,18 @@ summary:focus-visible,
   align-items: center;
   gap: 16px;
   border-right: 1px solid var(--border);
-  transition: width 0.2s ease;
+  /* Same duration/easing as .main's margin so the panel and the content edge
+     move together; overflow:hidden clips the labels cleanly while they slide
+     rather than letting them wrap during the transition. */
+  transition: width 0.24s var(--ease);
   box-shadow: var(--shadow);
   z-index: 30;
   position: fixed;
   top: 0;
   left: 0;
-  height: 110vh;
+  height: 100vh;
+  overflow-x: hidden;
+  overflow-y: auto;
 }
 
 .sidebar.expanded {
@@ -251,11 +256,35 @@ summary:focus-visible,
 .nav-text {
   font-size: 13px;
   font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  max-width: 160px;
+  opacity: 1;
+  transition: max-width 0.24s var(--ease), opacity 0.18s var(--ease);
+}
+
+/* Collapse the label in sync with the slide: it shrinks to zero width and
+   fades, so the icons end up centered with no abrupt pop. */
+.sidebar.collapsed .nav-text {
+  max-width: 0;
+  opacity: 0;
+}
+
+.sidebar.collapsed .nav-item {
+  justify-content: center;
+  gap: 0;
+}
+
+.sidebar.collapsed .nav-list {
+  align-items: center;
 }
 
 .main {
   padding: 0px 0px 40px;
-  transition: width 0.2s ease;
+  /* margin-left is what actually changes when the sidebar toggles (it tracks
+     --sidebar-width), so transition THAT — not width — otherwise the content
+     edge snapped while the sidebar animated, which looked broken. */
+  transition: margin-left 0.24s var(--ease);
   margin-left: var(--sidebar-width, 72px);
 }
 
@@ -838,13 +867,15 @@ summary:focus-visible,
 .global-loader {
   position: fixed;
   inset: 0;
-  background: rgba(15, 23, 42, 0.3);
+  background: rgba(15, 23, 42, 0.28);
+  -webkit-backdrop-filter: blur(3px);
+  backdrop-filter: blur(3px);
   display: flex;
   align-items: center;
   justify-content: center;
   opacity: 0;
   pointer-events: none;
-  transition: opacity 0.2s ease;
+  transition: opacity 0.2s var(--ease);
   z-index: 1031;
 }
 
@@ -856,21 +887,33 @@ summary:focus-visible,
 .global-loader-card {
   display: flex;
   align-items: center;
-  gap: 12px;
-  padding: 16px 18px;
-  border-radius: 12px;
+  gap: 14px;
+  padding: 16px 20px;
+  border-radius: 14px;
   background: #ffffff;
   border: 1px solid #e2e8f0;
-  box-shadow: var(--shadow);
+  box-shadow: var(--shadow-lg);
+  transform: translateY(8px) scale(0.97);
+  opacity: 0;
+  transition: transform 0.24s var(--ease), opacity 0.24s var(--ease);
 }
 
+.global-loader.active .global-loader-card {
+  transform: translateY(0) scale(1);
+  opacity: 1;
+}
+
+/* Smooth fading ring: a conic gradient (blue tail fading to transparent)
+   masked into a thin ring — far more elegant than a hard border spinner. */
 .global-loader-spinner {
-  width: 24px;
-  height: 24px;
+  --ring: 3px;
+  width: 30px;
+  height: 30px;
   border-radius: 50%;
-  border: 3px solid #e2e8f0;
-  border-top-color: #2563eb;
-  animation: spin 0.9s linear infinite;
+  background: conic-gradient(from 90deg, rgba(37, 99, 235, 0) 0%, var(--primary) 85%, var(--primary) 100%);
+  -webkit-mask: radial-gradient(farthest-side, transparent calc(100% - var(--ring)), #000 calc(100% - var(--ring)));
+  mask: radial-gradient(farthest-side, transparent calc(100% - var(--ring)), #000 calc(100% - var(--ring)));
+  animation: spin 0.75s linear infinite;
 }
 
 .global-loader-title {
@@ -2589,12 +2632,16 @@ summary:focus-visible,
 }
 
 .ops-loading-spinner {
-  width: 12px;
-  height: 12px;
+  --ring: 2px;
+  width: 14px;
+  height: 14px;
   border-radius: 50%;
-  border: 2px solid rgba(15, 23, 42, 0.12);
-  border-top-color: var(--ops-accent);
-  animation: spin 0.8s linear infinite;
+  /* Same fading-ring style as the global loader, scaled down for the inline
+     pill. */
+  background: conic-gradient(from 90deg, rgba(15, 23, 42, 0) 0%, var(--ops-accent) 90%);
+  -webkit-mask: radial-gradient(farthest-side, transparent calc(100% - var(--ring)), #000 calc(100% - var(--ring)));
+  mask: radial-gradient(farthest-side, transparent calc(100% - var(--ring)), #000 calc(100% - var(--ring)));
+  animation: spin 0.7s linear infinite;
 }
 
 .ops-kpi-loading {
