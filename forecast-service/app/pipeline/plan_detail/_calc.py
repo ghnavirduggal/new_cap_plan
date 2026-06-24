@@ -1933,15 +1933,61 @@ def _fill_tables_fixed(ptype, pid, fw_cols, _tick, whatif=None, grain: str = 'we
             wk_aht_sut_actual[w]   = float(aht_act or 0.0)
             wk_aht_sut_forecast[w] = float(aht_for or 0.0)
             wk_aht_sut_budget[w]   = float(planned_aht_w.get(w, s_budget_aht))
-    req_daily_actual   = required_fte_daily(use_voice_for_req, use_bo_for_req, oA, settings)
-    req_daily_forecast = required_fte_daily(vF, bF, oF, settings)
-    req_daily_tactical = required_fte_daily(vT, bT, oT, settings) if (isinstance(vT, pd.DataFrame) and not vT.empty) or (isinstance(bT, pd.DataFrame) and not bT.empty) or (isinstance(oT, pd.DataFrame) and not oT.empty) else pd.DataFrame()
+    # --- Effective-dated settings -------------------------------------------------
+    # Compute required FTE per distinct settings period so a mid-plan Settings change
+    # (e.g. shrinkage effective next week) applies to that week onward while past
+    # weeks keep their earlier settings. Single-period plans take the fast path and
+    # are unchanged.
+    import json as _json
+    _FTE_SETTING_KEYS = (
+        "shrinkage_pct", "voice_shrinkage_pct", "bo_shrinkage_pct", "chat_shrinkage_pct", "ob_shrinkage_pct",
+        "util_bo", "util_chat", "util_ob", "occupancy_cap_voice", "occupancy_cap_chat", "occupancy_cap_ob", "occupancy_cap",
+        "target_sl", "sl_seconds", "bo_capacity_model", "hours_per_fte", "bo_hours_per_day", "interval_minutes",
+        "chat_concurrency", "ob_target_sl", "ob_sl_seconds", "chat_target_sl", "chat_sl_seconds", "target_sut", "target_aht",
+    )
+    def _stg_sig(s):
+        try:
+            return _json.dumps({k: s.get(k) for k in _FTE_SETTING_KEYS}, sort_keys=True, default=str)
+        except Exception:
+            return "default"
+    def _wk_of(dval):
+        d = pd.to_datetime(dval, errors="coerce")
+        if pd.isna(d):
+            return None
+        return str((d - pd.to_timedelta(int(d.weekday()), unit="D")).date())
+    _periods = {}
+    for _w in week_ids:
+        _periods.setdefault(_stg_sig(settings_by_week.get(_w, settings)), settings_by_week.get(_w, settings))
+    _periods.setdefault(_stg_sig(settings), settings)
+
+    def _req_by_period(dfs, compute):
+        # compute(list_of_dfs, period_settings) -> daily df. Splits each input df's
+        # rows by the settings period of the row's week, computes per period, concats.
+        if len(_periods) <= 1:
+            return compute(list(dfs), settings)
+        out = []
+        for _sig, _sw in _periods.items():
+            sliced = []
+            for d in dfs:
+                if isinstance(d, pd.DataFrame) and not d.empty and "date" in d.columns:
+                    mask = d["date"].map(lambda x, _s=_sig: _stg_sig(settings_by_week.get(_wk_of(x), settings)) == _s)
+                    sliced.append(d[mask].copy())
+                else:
+                    sliced.append(d)
+            res = compute(sliced, _sw)
+            if isinstance(res, pd.DataFrame) and not res.empty:
+                out.append(res)
+        return pd.concat(out, ignore_index=True) if out else compute(list(dfs), settings)
+
+    req_daily_actual   = _req_by_period([use_voice_for_req, use_bo_for_req, oA], lambda dl, s: required_fte_daily(dl[0], dl[1], dl[2], s))
+    req_daily_forecast = _req_by_period([vF, bF, oF], lambda dl, s: required_fte_daily(dl[0], dl[1], dl[2], s))
+    req_daily_tactical = _req_by_period([vT, bT, oT], lambda dl, s: required_fte_daily(dl[0], dl[1], dl[2], s)) if (isinstance(vT, pd.DataFrame) and not vT.empty) or (isinstance(bT, pd.DataFrame) and not bT.empty) or (isinstance(oT, pd.DataFrame) and not oT.empty) else pd.DataFrame()
     # Add Chat FTE to daily totals
     from capacity_core import chat_fte_daily
     for _df, chat_df in ((req_daily_actual, cA), (req_daily_forecast, cF), (req_daily_tactical, cT)):
         if isinstance(_df, pd.DataFrame) and not _df.empty and isinstance(chat_df, pd.DataFrame) and not chat_df.empty:
             try:
-                ch = chat_fte_daily(chat_df, settings)
+                ch = _req_by_period([chat_df], lambda dl, s: chat_fte_daily(dl[0], s))
                 m = _df.merge(ch, on=["date","program"], how="left")
                 m["chat_fte"] = pd.to_numeric(m.get("chat_fte"), errors="coerce").fillna(0.0)
                 m["total_req_fte"] = pd.to_numeric(m.get("total_req_fte"), errors="coerce").fillna(0.0) + m["chat_fte"]
@@ -1962,10 +2008,10 @@ def _fill_tables_fixed(ptype, pid, fw_cols, _tick, whatif=None, grain: str = 'we
         oB["_w"] = pd.to_datetime(oB["date"], errors="coerce").dt.date.astype(str)
         oB["aht_sec"] = oB["_w"].map(planned_aht_w).fillna(float(s_budget_aht))
         oB.drop(columns=["_w"], inplace=True)
-    req_daily_budgeted = required_fte_daily(vB, bB, oB, settings)
+    req_daily_budgeted = _req_by_period([vB, bB, oB], lambda dl, s: required_fte_daily(dl[0], dl[1], dl[2], s))
     if isinstance(req_daily_budgeted, pd.DataFrame) and not req_daily_budgeted.empty and isinstance(cB, pd.DataFrame) and not cB.empty:
         try:
-            chb = chat_fte_daily(cB, settings)
+            chb = _req_by_period([cB], lambda dl, s: chat_fte_daily(dl[0], s))
             m = req_daily_budgeted.merge(chb, on=["date","program"], how="left")
             m["chat_fte"] = pd.to_numeric(m.get("chat_fte"), errors="coerce").fillna(0.0)
             m["total_req_fte"] = pd.to_numeric(m.get("total_req_fte"), errors="coerce").fillna(0.0) + m["chat_fte"]
