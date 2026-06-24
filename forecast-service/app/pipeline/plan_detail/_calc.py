@@ -1266,6 +1266,10 @@ def _fill_tables_fixed(ptype, pid, fw_cols, _tick, whatif=None, grain: str = 'we
     intervals_per_week_default = 7 * (24 * 3600 // ivl_sec)
 
     weekly_demand_voice, weekly_demand_bo = {}, {}
+    # Per-week Back Office forecast volume AFTER any what-if vol_delta but
+    # BEFORE backlog carryover. Used to size the Forecast+Backlog effect on the
+    # required FTE via the linear BO volume ratio (FTE ∝ items for TAT model).
+    fcst_bo_eff: dict[str, float] = {}
     voice_ovr = _settings_volume_aht_overrides(sk, "voice")
     bo_ovr    = _settings_volume_aht_overrides(sk, "bo")
 
@@ -1290,6 +1294,7 @@ def _fill_tables_fixed(ptype, pid, fw_cols, _tick, whatif=None, grain: str = 'we
 
         weekly_demand_voice[w] = a_voice if a_voice > 0 else (f_voice if f_voice > 0 else t_voice)
         weekly_demand_bo[w]    = a_bo    if a_bo    > 0 else (f_bo    if f_bo    > 0 else t_bo)
+        fcst_bo_eff[w]         = float(f_bo)
 
         if "Forecast" in fw_rows:
             fw.loc[fw["metric"] == "Forecast", w] = f_voice + f_bo
@@ -1685,8 +1690,10 @@ def _fill_tables_fixed(ptype, pid, fw_cols, _tick, whatif=None, grain: str = 'we
             add = float(backlog_w.get(cur_w, 0.0) or 0.0)
             if add:
                 weekly_demand_bo[nxt_w] = float(weekly_demand_bo.get(nxt_w, 0.0)) + add
-                if "Forecast" in fw_rows:
-                    fw.loc[fw["metric"] == "Forecast", nxt_w] = float(fw.loc[fw["metric"] == "Forecast", nxt_w]) + add
+                if "Forecast" in fw_rows and nxt_w in fw.columns:
+                    _cur = pd.to_numeric(fw.loc[fw["metric"] == "Forecast", nxt_w], errors="coerce").fillna(0.0)
+                    _cur = float(_cur.iloc[0]) if len(_cur) else 0.0
+                    fw.loc[fw["metric"] == "Forecast", nxt_w] = _cur + add
 
     # ---- Occupancy/Utilization by channel (% in FW grid) ----
     ch_key = str(ch_first or "").strip().lower()
@@ -2957,6 +2964,25 @@ def _fill_tables_fixed(ptype, pid, fw_cols, _tick, whatif=None, grain: str = 'we
                 denom = max(0.1, 1.0 - (shrink_delta / 100.0))
                 v /= denom
             req_w_forecast[w] = v
+
+    # ---- Back Office: fold backlog carryover into the required FTE ----
+    # req_w_forecast is derived from the raw BO forecast (no backlog). The
+    # carryover added the previous week's backlog to the displayed Forecast
+    # row; size the required FTE on that effective workload via the linear
+    # volume ratio so Forecast+Backlog actually drives weekly capacity. The
+    # vol_delta is already baked into both fcst_bo_eff and the Forecast row,
+    # so this ratio isolates the backlog contribution (no double-count).
+    if backlog_enabled and str(ch_first).strip().lower() in ("back office", "bo"):
+        for w in week_ids:
+            base_fc = float(fcst_bo_eff.get(w, 0.0) or 0.0)
+            if base_fc <= 0:
+                continue
+            try:
+                eff = float(pd.to_numeric(fw.loc[fw["metric"] == "Forecast", w], errors="coerce").fillna(0.0).iloc[0]) if w in fw.columns else base_fc
+            except Exception:
+                eff = base_fc
+            if eff != base_fc:
+                req_w_forecast[w] = float(req_w_forecast.get(w, 0.0) or 0.0) * (eff / base_fc)
 
     # Write Overtime Hours (#) from shrinkage raw into FW and merged FW (independent of shrinkage logic)
     if "Overtime Hours (#)" in fw_rows:
