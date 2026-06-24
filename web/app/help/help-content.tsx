@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState, type MouseEvent } from "react";
+import { useEffect, useMemo, useRef, useState, type MouseEvent } from "react";
 
 type Section = {
   id: string;
@@ -250,6 +250,8 @@ function smoothScrollTo(id: string) {
 export default function HelpContent() {
   const [query, setQuery] = useState("");
   const [showTop, setShowTop] = useState(false);
+  const [searchOpen, setSearchOpen] = useState(false);
+  const inputRef = useRef<HTMLInputElement | null>(null);
 
   useEffect(() => {
     const onScroll = () => setShowTop(window.scrollY > 400);
@@ -257,6 +259,13 @@ export default function HelpContent() {
     onScroll();
     return () => window.removeEventListener("scroll", onScroll);
   }, []);
+
+  // Focus the search field when the magnifying-glass reveals the bar.
+  useEffect(() => {
+    if (!searchOpen) return;
+    const t = window.setTimeout(() => inputRef.current?.focus(), 120);
+    return () => window.clearTimeout(t);
+  }, [searchOpen]);
 
   const visible = useMemo(() => sections.filter((s) => matches(s, query)), [query]);
   const visibleIds = useMemo(() => new Set(visible.map((s) => s.id)), [visible]);
@@ -271,12 +280,25 @@ export default function HelpContent() {
     <div id="top" className="help-root">
       <div className="help-header">
         <h1>Help &amp; Documentation</h1>
-        <div className="help-search-wrap open">
-          <span className="help-search-btn" aria-hidden>
+        <div className={`help-search-wrap ${searchOpen ? "open" : ""}`}>
+          <button
+            type="button"
+            className="help-search-btn"
+            aria-label={searchOpen ? "Hide search" : "Search help"}
+            aria-expanded={searchOpen}
+            onClick={() =>
+              setSearchOpen((prev) => {
+                const next = !prev;
+                if (!next) setQuery("");
+                return next;
+              })
+            }
+          >
             🔍
-          </span>
+          </button>
           <div className="help-search-panel">
             <input
+              ref={inputRef}
               type="text"
               value={query}
               onChange={(e) => setQuery(e.target.value)}
@@ -325,9 +347,6 @@ export default function HelpContent() {
               ))}
             </ul>
           ) : null}
-          <a className="help-back" href="#top" onClick={(e) => onNav(e, "top")}>
-            Back to top
-          </a>
         </section>
       ))}
 
