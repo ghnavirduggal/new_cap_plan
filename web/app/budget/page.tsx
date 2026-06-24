@@ -265,18 +265,22 @@ export default function BudgetPage() {
   const loadOptions = async (ba?: string) => {
     const params = new URLSearchParams();
     if (ba) params.set("ba", ba);
-    const res = await apiGet<{
-      business_areas?: string[];
-      sub_business_areas?: string[];
-      sites?: string[];
-      channels?: string[];
-    }>(`/api/forecast/headcount/options${params.toString() ? `?${params.toString()}` : ""}`);
-    setOptions((prev) => ({
-      businessAreas: res.business_areas ?? prev.businessAreas,
-      subBusinessAreas: res.sub_business_areas ?? (ba ? [] : prev.subBusinessAreas),
-      sites: res.sites ?? (ba ? [] : prev.sites),
-      channels: res.channels ?? prev.channels
-    }));
+    try {
+      const res = await apiGet<{
+        business_areas?: string[];
+        sub_business_areas?: string[];
+        sites?: string[];
+        channels?: string[];
+      }>(`/api/forecast/headcount/options${params.toString() ? `?${params.toString()}` : ""}`);
+      setOptions((prev) => ({
+        businessAreas: res.business_areas ?? prev.businessAreas,
+        subBusinessAreas: res.sub_business_areas ?? (ba ? [] : prev.subBusinessAreas),
+        sites: res.sites ?? (ba ? [] : prev.sites),
+        channels: res.channels ?? prev.channels
+      }));
+    } catch (error: any) {
+      notify("error", error?.message || "Could not load scope options.");
+    }
   };
 
   useEffect(() => {

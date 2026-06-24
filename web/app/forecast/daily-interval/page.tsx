@@ -907,8 +907,8 @@ export default function DailyIntervalPage() {
           ) : (
             <div className="forecast-section-note">Interval forecast skipped (daily-only data source).</div>
           )}
-          {dailyResult?.interval_summary ? (
-            <div className="forecast-muted">{dailyResult.interval_summary}</div>
+          {dailyResult?.results?.interval_summary ? (
+            <div className="forecast-muted">{dailyResult.results.interval_summary}</div>
           ) : null}
         </section>
         ) : null}

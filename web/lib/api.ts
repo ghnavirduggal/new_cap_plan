@@ -5,17 +5,30 @@ const FORECAST_BASE = process.env.NEXT_PUBLIC_FORECAST_URL || API_BASE;
 const BROWSER_API_BASE = process.env.NEXT_PUBLIC_BROWSER_API_URL || "";
 const BROWSER_FORECAST_BASE = process.env.NEXT_PUBLIC_BROWSER_FORECAST_URL || "";
 
+// The forecast service hosts the bulk of the protected resources, so mint the
+// session token there too — otherwise, in a split-host deployment, the token
+// would be minted against the API host but sent as a bearer to the forecast
+// host (only safe if the two share signing keys).
+function isForecastScoped(path: string) {
+  return (
+    path.startsWith("/api/forecast") ||
+    path.startsWith("/api/planning") ||
+    path.startsWith("/api/uploads") ||
+    path === "/api/auth/token"
+  );
+}
+
 function resolveBase(path: string) {
   if (typeof window !== "undefined") {
     if (path === "/api/user") {
       return "";
     }
-    if (path.startsWith("/api/forecast") || path.startsWith("/api/planning") || path.startsWith("/api/uploads")) {
+    if (isForecastScoped(path)) {
       return BROWSER_FORECAST_BASE;
     }
     return BROWSER_API_BASE;
   }
-  if (path.startsWith("/api/forecast") || path.startsWith("/api/planning") || path.startsWith("/api/uploads")) {
+  if (isForecastScoped(path)) {
     return FORECAST_BASE;
   }
   return API_BASE;

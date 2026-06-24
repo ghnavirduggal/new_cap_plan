@@ -920,9 +920,13 @@ export default function PlanDetailClient({ planId, rollupBa }: PlanDetailClientP
 
   const loadPlan = useCallback(async () => {
     if (!planId) return;
-    const res = await apiGet<{ plan?: PlanRecord }>(`/api/planning/plan?plan_id=${planId}`);
-    setPlanMeta(res.plan ?? null);
-  }, [planId]);
+    try {
+      const res = await apiGet<{ plan?: PlanRecord }>(`/api/planning/plan?plan_id=${planId}`);
+      setPlanMeta(res.plan ?? null);
+    } catch (error: any) {
+      notify("error", error?.message || "Could not load plan details.");
+    }
+  }, [planId, notify]);
 
   const loadTables = useCallback(async () => {
     if (!planId) return;
@@ -1124,7 +1128,9 @@ export default function PlanDetailClient({ planId, rollupBa }: PlanDetailClientP
       const res = await apiPost<{
         data?: { tables?: Record<string, Array<Record<string, any>>>; upper?: Array<Record<string, any>> };
       }>("/api/planning/rollup", { business_area: rollupBa, grain: "week" });
-      setTables(res.data?.tables ?? {});
+      // Merge rather than replace so rebalance-preview tables (xskill/
+      // xskill_balance) written into the same map aren't clobbered.
+      setTables((prev) => ({ ...prev, ...(res.data?.tables ?? {}) }));
       setUpperRows(res.data?.upper ?? []);
     } catch (error: any) {
       notify("error", error?.message || "Could not load rollup data.");
