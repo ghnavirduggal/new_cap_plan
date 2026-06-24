@@ -155,6 +155,70 @@ def _fill_tables_fixed_daily(ptype, pid, _fw_cols_unused, _tick, whatif=None):
         site=(plan.get("site") or plan.get("location") or plan.get("country")),
     )
     ivl_min = int(float(_settings.get("interval_minutes", 30) or 30))
+    # Per-day effective settings: a day uses the settings effective for it, so a
+    # future-effective Settings change (e.g. shrinkage) applies to future days and
+    # past days keep their earlier settings. Settings are resolved per week (cached);
+    # a single-period range takes the unchanged fast path.
+    import json as _json
+    _scope_args = dict(
+        ba=plan.get("vertical"), subba=plan.get("sub_ba"), lob=ch_name,
+        site=(plan.get("site") or plan.get("location") or plan.get("country")),
+    )
+    _stg_cache: dict = {}
+    def _settings_for_date(dval):
+        d = pd.to_datetime(dval, errors="coerce")
+        if pd.isna(d):
+            return _settings
+        wk = str((d - pd.to_timedelta(int(d.weekday()), unit="D")).date())
+        if wk not in _stg_cache:
+            try:
+                _stg_cache[wk] = resolve_settings(for_date=wk, **_scope_args)
+            except Exception:
+                _stg_cache[wk] = _settings
+        return _stg_cache[wk]
+    _FTE_SETTING_KEYS = (
+        "shrinkage_pct", "voice_shrinkage_pct", "bo_shrinkage_pct", "chat_shrinkage_pct", "ob_shrinkage_pct",
+        "util_bo", "util_chat", "util_ob", "occupancy_cap_voice", "occupancy_cap_chat", "occupancy_cap_ob", "occupancy_cap",
+        "target_sl", "sl_seconds", "bo_capacity_model", "hours_per_fte", "bo_hours_per_day", "interval_minutes",
+        "chat_concurrency", "ob_target_sl", "ob_sl_seconds", "chat_target_sl", "chat_sl_seconds", "target_sut", "target_aht",
+    )
+    def _stg_sig(s):
+        try:
+            return _json.dumps({k: s.get(k) for k in _FTE_SETTING_KEYS}, sort_keys=True, default=str)
+        except Exception:
+            return "default"
+    def _by_period(df, compute):
+        # compute(df_slice, period_settings) -> daily df. Splits the df's rows by
+        # the settings period of the row's day and computes per period, then concats.
+        if not isinstance(df, pd.DataFrame) or df.empty or "date" not in df.columns:
+            return compute(df, _settings)
+        sigs: dict = {}
+        for x in pd.Series(df["date"]).dropna().unique():
+            sw = _settings_for_date(x)
+            sigs.setdefault(_stg_sig(sw), sw)
+        if len(sigs) <= 1:
+            return compute(df, _settings)
+        out = []
+        for _sig, _sw in sigs.items():
+            mask = df["date"].map(lambda x, _s=_sig: _stg_sig(_settings_for_date(x)) == _s)
+            sl = df[mask].copy()
+            if not sl.empty:
+                r = compute(sl, _sw)
+                if isinstance(r, pd.DataFrame) and not r.empty:
+                    out.append(r)
+        return pd.concat(out, ignore_index=True) if out else compute(df, _settings)
+    def _multi_period(df) -> bool:
+        # True when the df's days span more than one settings period (so the
+        # daily required FTE must be recomputed per period rather than using the
+        # flat-settings consolidated bundle).
+        if not isinstance(df, pd.DataFrame) or df.empty or "date" not in df.columns:
+            return False
+        seen = set()
+        for x in pd.Series(df["date"]).dropna().unique():
+            seen.add(_stg_sig(_settings_for_date(x)))
+            if len(seen) > 1:
+                return True
+        return False
     # Read per-plan lower FW options (e.g., Backlog toggle)
     try:
         meta = get_plan_meta(pid) or {}
@@ -369,6 +433,15 @@ def _fill_tables_fixed_daily(ptype, pid, _fw_cols_unused, _tick, whatif=None):
         day_calc_f = _from_bundle("bo_day_f")
         day_calc_a = _from_bundle("bo_day_a")
         day_calc_t = _from_bundle("bo_day_t")
+        # Effective dating: the consolidated bundle uses one flat settings snapshot.
+        # When the day range spans a settings change, recompute per period so each
+        # day uses its effective settings (single-period ranges keep the bundle).
+        if _multi_period(dfF):
+            day_calc_f = _by_period(dfF, lambda d, s: _bo_daily_calc(d, s, channel=ch))
+        if _multi_period(dfA):
+            day_calc_a = _by_period(dfA, lambda d, s: _bo_daily_calc(d, s, channel=ch))
+        if _multi_period(dfT):
+            day_calc_t = _by_period(dfT, lambda d, s: _bo_daily_calc(d, s, channel=ch))
     else:
         ivl_calc_f = _from_bundle("ob_ivl_f")
         ivl_calc_a = _from_bundle("ob_ivl_a")
@@ -405,20 +478,24 @@ def _fill_tables_fixed_daily(ptype, pid, _fw_cols_unused, _tick, whatif=None):
     if ivl_calc_t.empty and isinstance(dfT, pd.DataFrame):
         ivl_calc_t = _interval_calc(dfT, ch)
 
-    if day_calc_f.empty:
+    # Recompute on a cache miss (empty) OR when the day range spans a settings
+    # change (multi-period) so each day uses its effective settings instead of the
+    # flat-settings consolidated bundle. Voice/Chat/OB recompute the daily rollup
+    # from their interval calc per period (per-day shrinkage in the denominator).
+    if day_calc_f.empty or _multi_period(ivl_calc_f):
         if isinstance(ivl_calc_f, pd.DataFrame) and not ivl_calc_f.empty:
-            day_calc_f = _daily_from_intervals(ivl_calc_f, _settings, weight_col_ivl)
+            day_calc_f = _by_period(ivl_calc_f, lambda d, s: _daily_from_intervals(d, s, weight_col_ivl))
         elif isinstance(dfF, pd.DataFrame) and not dfF.empty and not ch.startswith("voice"):
-            day_calc_f = _bo_daily_calc(dfF, _settings, channel=ch)
-    if day_calc_a.empty:
+            day_calc_f = _by_period(dfF, lambda d, s: _bo_daily_calc(d, s, channel=ch))
+    if day_calc_a.empty or _multi_period(ivl_calc_a):
         if isinstance(ivl_calc_a, pd.DataFrame) and not ivl_calc_a.empty:
-            day_calc_a = _daily_from_intervals(ivl_calc_a, _settings, weight_col_ivl)
+            day_calc_a = _by_period(ivl_calc_a, lambda d, s: _daily_from_intervals(d, s, weight_col_ivl))
         elif isinstance(dfA, pd.DataFrame) and not dfA.empty and not ch.startswith("voice"):
-            day_calc_a = _bo_daily_calc(dfA, _settings, channel=ch)
-    if day_calc_t.empty:
+            day_calc_a = _by_period(dfA, lambda d, s: _bo_daily_calc(d, s, channel=ch))
+    if day_calc_t.empty or _multi_period(ivl_calc_t):
         if isinstance(ivl_calc_t, pd.DataFrame) and not ivl_calc_t.empty:
-            day_calc_t = _daily_from_intervals(ivl_calc_t, _settings, weight_col_ivl)
-        else:
+            day_calc_t = _by_period(ivl_calc_t, lambda d, s: _daily_from_intervals(d, s, weight_col_ivl))
+        elif day_calc_t.empty:
             day_calc_t = pd.DataFrame()
 
     # Extract metrics into dicts keyed by date

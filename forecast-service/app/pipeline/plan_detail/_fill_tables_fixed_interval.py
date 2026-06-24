@@ -583,6 +583,10 @@ def _fill_tables_fixed_interval(
         subba=plan.get("sub_ba"),
         lob=ch,
         site=(plan.get("site") or plan.get("location") or plan.get("country")),
+        # The interval view is a single day, so use the settings effective for that
+        # day (effective-dated): a future-effective change applies to future days,
+        # past days keep their earlier settings.
+        for_date=str(ref_day),
     )
     calc_bundle = (
         get_cached_consolidated_calcs(
