@@ -1663,6 +1663,83 @@ def _scope_workload_table(base: dict) -> pd.DataFrame:
     return tbl
 
 
+# Column-name variants used by _filter_scope_df, grouped by scope dimension.
+_SCOPE_BA_COLS = ("Business Area", "business_area", "ba")
+_SCOPE_SBA_COLS = ("Sub Business Area", "sub_business_area", "sub_ba")
+_SCOPE_CH_COLS = ("LOB", "Channel", "lob", "channel")
+_SCOPE_SITE_COLS = ("site", "Site", "site_name")
+_SCOPE_LOC_COLS = ("location", "Location", "loc", "country", "Country")
+
+
+def _prep_scope_filter(df: pd.DataFrame) -> Optional[dict]:
+    """Precompute, once, the normalized filter columns used per-scope.
+
+    Mirrors _filter_scope_df exactly but hoists the per-column
+    astype/strip/lower (and channel normalization) out of the per-scope loop so
+    it isn't repeated for every scope row.
+    """
+    if not isinstance(df, pd.DataFrame) or df.empty:
+        return None
+    norms: dict[str, pd.Series] = {}
+    for col in (*_SCOPE_BA_COLS, *_SCOPE_SBA_COLS, *_SCOPE_SITE_COLS, *_SCOPE_LOC_COLS):
+        if col in df.columns:
+            norms[col] = df[col].astype(str).str.strip().str.lower()
+    ch_cols = list(_SCOPE_CH_COLS)
+    has_channel_col = any(c in df.columns for c in ch_cols)
+    if not has_channel_col:
+        ch_cols.append("program")
+    ch_norms: dict[str, pd.Series] = {}
+    for col in ch_cols:
+        if col in df.columns:
+            ch_norms[col] = df[col].astype(str).map(_normalize_channel).str.strip().str.lower()
+    return {
+        "df": df,
+        "norms": norms,
+        "ch_norms": ch_norms,
+        "has_ba": any(c in df.columns for c in _SCOPE_BA_COLS),
+        "has_sba": any(c in df.columns for c in _SCOPE_SBA_COLS),
+    }
+
+
+def _apply_scope_filter(
+    info: Optional[dict],
+    ba: list[str],
+    sba: list[str],
+    ch: list[str],
+    site: list[str],
+    loc: list[str],
+) -> pd.DataFrame:
+    if not info:
+        return pd.DataFrame()
+    df = info["df"]
+    mask = pd.Series(True, index=df.index)
+
+    def _narrow(cols, values, *, channel: bool = False):
+        nonlocal mask
+        if not values:
+            return
+        source = info["ch_norms"] if channel else info["norms"]
+        if channel:
+            sset = {_normalize_channel(v).strip().lower() for v in values if str(v).strip()}
+        else:
+            sset = {str(v).strip().lower() for v in values if str(v).strip()}
+        for col in cols:
+            norm = source.get(col)
+            if norm is not None:
+                mask &= norm.isin(sset)
+
+    if info["has_ba"]:
+        _narrow(_SCOPE_BA_COLS, ba)
+    if info["has_sba"]:
+        _narrow(_SCOPE_SBA_COLS, sba)
+    # Channel filters apply whether or not a channel column exists (program is
+    # only included as a fallback when no channel column is present).
+    _narrow([c for c in (*_SCOPE_CH_COLS, "program") if c in info["ch_norms"]], ch, channel=True)
+    _narrow(_SCOPE_SITE_COLS, site)
+    _narrow(_SCOPE_LOC_COLS, loc)
+    return df[mask]
+
+
 def _scope_avg_supply_fte(base: dict, scope_tbl: pd.DataFrame) -> pd.Series:
     roster = base.get("roster", pd.DataFrame())
     hiring = base.get("hiring", pd.DataFrame())
@@ -1672,6 +1749,9 @@ def _scope_avg_supply_fte(base: dict, scope_tbl: pd.DataFrame) -> pd.Series:
         return pd.Series(dtype="float64")
     if (roster is None or roster.empty) and (hiring is None or hiring.empty):
         return pd.Series([0.0] * int(len(scope_tbl.index)))
+
+    rinfo = _prep_scope_filter(roster)
+    hinfo = _prep_scope_filter(hiring)
 
     vals: list[float] = []
     any_non_zero = False
@@ -1687,11 +1767,11 @@ def _scope_avg_supply_fte(base: dict, scope_tbl: pd.DataFrame) -> pd.Series:
         site_q = [site_v] if site_v else []
         loc_q = [loc_v] if loc_v else []
 
-        roster_f = _filter_scope_df(roster, ba_q, sba_q, ch_q, site_q, loc_q) if isinstance(roster, pd.DataFrame) else pd.DataFrame()
-        hiring_f = _filter_scope_df(hiring, ba_q, sba_q, ch_q, site_q, loc_q) if isinstance(hiring, pd.DataFrame) else pd.DataFrame()
+        roster_f = _apply_scope_filter(rinfo, ba_q, sba_q, ch_q, site_q, loc_q)
+        hiring_f = _apply_scope_filter(hinfo, ba_q, sba_q, ch_q, site_q, loc_q)
         if (roster_f.empty and hiring_f.empty) and (ba_q or sba_q):
-            roster_f = _filter_scope_df(roster, [], [], ch_q, site_q, loc_q) if isinstance(roster, pd.DataFrame) else pd.DataFrame()
-            hiring_f = _filter_scope_df(hiring, [], [], ch_q, site_q, loc_q) if isinstance(hiring, pd.DataFrame) else pd.DataFrame()
+            roster_f = _apply_scope_filter(rinfo, [], [], ch_q, site_q, loc_q)
+            hiring_f = _apply_scope_filter(hinfo, [], [], ch_q, site_q, loc_q)
 
         sup = supply_fte_daily(roster_f, hiring_f)
         avg_val = 0.0
