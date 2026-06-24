@@ -583,18 +583,18 @@ export default function HomePage() {
           const staffingValue = metricValue(
             upper,
             [
-            "FTE Over/Under MTP Vs Actual",
+            "FTE Over/Under vs MTP",
             "FTE Over/Under (#)",
-            "FTE Over/Under Budgeted Vs Actual"
+            "FTE Over/Under vs Budgeted"
             ],
             lastActualCol || undefined
           );
           const staffingDelta = metricDelta(
             upper,
             [
-            "FTE Over/Under MTP Vs Actual",
+            "FTE Over/Under vs MTP",
             "FTE Over/Under (#)",
-            "FTE Over/Under Budgeted Vs Actual"
+            "FTE Over/Under vs Budgeted"
             ],
             lastActualCol,
             prevActualCol
@@ -648,7 +648,7 @@ export default function HomePage() {
               status: computeStatus("Staffing Gap", staffingDelta),
               trend: metricSeries(
                 upper,
-                ["FTE Over/Under MTP Vs Actual", "FTE Over/Under (#)", "FTE Over/Under Budgeted Vs Actual"],
+                ["FTE Over/Under vs MTP", "FTE Over/Under (#)", "FTE Over/Under vs Budgeted"],
                 actualColumns
               )
             },

@@ -403,16 +403,16 @@ def _compute_ba_rollup_tables_impl(ba: str, fw_cols: list[dict], whatif=None, st
     reqF = _upper_row_sum("FTE Required @ Forecast Volume")
     reqA = _upper_row_sum("FTE Required @ Actual Volume")
     # Tactical/Budget deltas can be summed directly
-    ou_tac = _upper_row_sum("FTE Over/Under Tactical Vs Actual")
-    ou_bud = _upper_row_sum("FTE Over/Under Budgeted Vs Actual")
+    ou_tac = _upper_row_sum("FTE Over/Under vs Tactical")
+    ou_bud = _upper_row_sum("FTE Over/Under vs Budgeted")
     # Supply and Handling Capacity
     sup   = _upper_row_sum("Projected Supply HC")
     hcap  = _upper_row_sum("Projected Handling Capacity (#)")
 
-    # MTP vs Actual = sum(reqF) - sum(reqA)
-    ou_mtp = {"metric": "FTE Over/Under MTP Vs Actual"}
+    # FTE Over/Under vs MTP = sum(Supply) - sum(Required @ Forecast)
+    ou_mtp = {"metric": "FTE Over/Under vs MTP"}
     for col in ids:
-        ou_mtp[col] = float(reqF.get(col, 0.0)) - float(reqA.get(col, 0.0))
+        ou_mtp[col] = float(sup.get(col, 0.0)) - float(reqF.get(col, 0.0))
 
     # Projected Service Level = volume-weighted average of child SL (weights = Forecast per child)
     sl = {"metric": "Projected Service Level"}

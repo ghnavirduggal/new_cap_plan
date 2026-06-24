@@ -1200,7 +1200,7 @@ def _fill_tables_fixed(ptype, pid, fw_cols, _tick, whatif=None, grain: str = 'we
                if (k or "").strip().lower().startswith("volume") else
                ["Billable Hours","AHT/SUT","Shrinkage","Training"] if (k or "").strip().lower().startswith("billable hours") else ["Billable Txns","AHT/SUT","Efficiency","Shrinkage"] if (k or "").strip().lower().startswith("fte based billable") else
                ["Billable FTE Required","Shrinkage","Training"]),
-        "upper": (["FTE Required @ Forecast Volume","FTE Required @ Actual Volume","FTE Over/Under MTP Vs Actual","FTE Over/Under Tactical Vs Actual","FTE Over/Under Budgeted Vs Actual","Projected Supply HC","Projected Handling Capacity (#)","Projected Service Level"]
+        "upper": (["FTE Required @ Forecast Volume","FTE Required @ Actual Volume","FTE Over/Under vs MTP","FTE Over/Under vs Tactical","FTE Over/Under vs Budgeted","Projected Supply HC","Projected Handling Capacity (#)","Projected Service Level"]
                   if (k or "").strip().lower().startswith("volume") else
                   ["Billable FTE Required (#)","Headcount Required With Shrinkage (#)","FTE Over/Under (#)"] if (k or "").strip().lower().startswith("billable hours") else
                   ["Billable Transactions","FTE Required (#)","FTE Over/Under (#)"] if (k or "").strip().lower().startswith("fte based billable") else
@@ -3827,39 +3827,31 @@ def _fill_tables_fixed(ptype, pid, fw_cols, _tick, whatif=None, grain: str = 'we
     if "FTE Required @ Actual Volume" in spec["upper"]:
         for w in week_ids:
             upper_df.loc[upper_df["metric"] == "FTE Required @ Actual Volume", w] = float(req_w_actual_adj.get(w, 0.0))
-    if "FTE Over/Under MTP Vs Actual" in spec["upper"]:
+    # FTE Over/Under = Projected Supply - Required @ scenario (positive => surplus).
+    if "FTE Over/Under vs MTP" in spec["upper"]:
         for w in week_ids:
             try:
                 mtp = float(pd.to_numeric(upper_df.loc[upper_df["metric"] == "FTE Required @ Forecast Volume", w], errors="coerce").fillna(0.0).iloc[0])
             except Exception:
                 mtp = float(req_w_forecast.get(w, 0.0))
-            try:
-                act = float(pd.to_numeric(upper_df.loc[upper_df["metric"] == "FTE Required @ Actual Volume", w], errors="coerce").fillna(0.0).iloc[0])
-            except Exception:
-                act = float(req_w_actual_adj.get(w, 0.0))
-            upper_df.loc[upper_df["metric"] == "FTE Over/Under MTP Vs Actual", w] = mtp - act
-    if "FTE Over/Under Tactical Vs Actual" in spec["upper"]:
+            sup = float(projected_supply.get(w, 0.0) or 0.0)
+            upper_df.loc[upper_df["metric"] == "FTE Over/Under vs MTP", w] = sup - mtp
+    if "FTE Over/Under vs Tactical" in spec["upper"]:
         for w in week_ids:
             try:
                 tac = float(pd.to_numeric(upper_df.loc[upper_df["metric"] == "FTE Required @ Tactical Volume", w], errors="coerce").fillna(0.0).iloc[0])
             except Exception:
                 tac = float(req_w_tactical.get(w, 0.0))
-            try:
-                act = float(pd.to_numeric(upper_df.loc[upper_df["metric"] == "FTE Required @ Actual Volume", w], errors="coerce").fillna(0.0).iloc[0])
-            except Exception:
-                act = float(req_w_actual_adj.get(w, 0.0))
-            upper_df.loc[upper_df["metric"] == "FTE Over/Under Tactical Vs Actual", w] = tac - act
-    if "FTE Over/Under Budgeted Vs Actual" in spec["upper"]:
+            sup = float(projected_supply.get(w, 0.0) or 0.0)
+            upper_df.loc[upper_df["metric"] == "FTE Over/Under vs Tactical", w] = sup - tac
+    if "FTE Over/Under vs Budgeted" in spec["upper"]:
         for w in week_ids:
             try:
                 bud = float(pd.to_numeric(upper_df.loc[upper_df["metric"] == "FTE Required @ Budgeted Volume", w], errors="coerce").fillna(0.0).iloc[0])
             except Exception:
                 bud = float(req_w_budgeted.get(w, 0.0))
-            try:
-                act = float(pd.to_numeric(upper_df.loc[upper_df["metric"] == "FTE Required @ Actual Volume", w], errors="coerce").fillna(0.0).iloc[0])
-            except Exception:
-                act = float(req_w_actual_adj.get(w, 0.0))
-            upper_df.loc[upper_df["metric"] == "FTE Over/Under Budgeted Vs Actual", w] = bud - act
+            sup = float(projected_supply.get(w, 0.0) or 0.0)
+            upper_df.loc[upper_df["metric"] == "FTE Over/Under vs Budgeted", w] = sup - bud
     if "Projected Supply HC" in spec["upper"]:
         for w in week_ids:
             upper_df.loc[upper_df["metric"] == "Projected Supply HC", w] = projected_supply.get(w, 0.0)

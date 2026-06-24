@@ -923,18 +923,19 @@ def _fill_tables_fixed_daily(ptype, pid, _fw_cols_unused, _tick, whatif=None):
             if active and vol_delta:
                 volF[d] = eff_v * (1.0 + vol_delta / 100.0)
 
-    # Variance rows use the effective (post backlog + what-if) FTE @ Forecast.
-    var_mtp = [ (m_fte_f.get(c, 0.0) - m_fte_a.get(c, 0.0)) for c in day_ids ]
-    var_tac = [ (m_fte_t.get(c, 0.0) - m_fte_a.get(c, 0.0)) for c in day_ids ]
-    var_bud = [ (m_fte_b.get(c, 0.0) - m_fte_a.get(c, 0.0)) for c in day_ids ]
+    # FTE Over/Under = Projected Supply - Required @ scenario (positive => surplus).
+    # Required @ scenario uses the effective (post backlog + what-if) FTE.
+    var_mtp = [ (m_supply.get(c, 0.0) - m_fte_f.get(c, 0.0)) for c in day_ids ]
+    var_tac = [ (m_supply.get(c, 0.0) - m_fte_t.get(c, 0.0)) for c in day_ids ]
+    var_bud = [ (m_supply.get(c, 0.0) - m_fte_b.get(c, 0.0)) for c in day_ids ]
 
     # Build the upper DataFrame
     upper_payload = {
         "FTE Required @ Forecast Volume":   [m_fte_f.get(c, 0.0) for c in day_ids],
         "FTE Required @ Actual Volume":     [m_fte_a.get(c, 0.0) for c in day_ids],
-        "FTE Over/Under MTP Vs Actual":     var_mtp,
-        "FTE Over/Under Tactical Vs Actual":var_tac,
-        "FTE Over/Under Budgeted Vs Actual":var_bud,
+        "FTE Over/Under vs MTP":     var_mtp,
+        "FTE Over/Under vs Tactical":var_tac,
+        "FTE Over/Under vs Budgeted":var_bud,
         "Projected Supply HC":              [m_supply.get(c, 0.0) for c in day_ids],
         "Projected Handling Capacity (#)":  [m_phc.get(c, 0.0) for c in day_ids],
         "Projected Service Level":          [m_sl.get(c, 0.0) for c in day_ids],
