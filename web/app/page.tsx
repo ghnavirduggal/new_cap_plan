@@ -4,6 +4,7 @@ import Link from "next/link";
 import React from "react";
 import { useEffect, useMemo, useState } from "react";
 import AppShell from "./_components/AppShell";
+import Sparkline from "./_components/Sparkline";
 import { apiGet, apiPost } from "../lib/api";
 
 type PlanRecord = {
@@ -22,7 +23,18 @@ type PlanRecord = {
 };
 
 
-const kpiCards = [
+type KpiCard = {
+  title: string;
+  status: string;
+  value: string;
+  suffix?: string;
+  delta: string;
+  meta: string;
+  tone: string;
+  trend?: number[];
+};
+
+const kpiCards: KpiCard[] = [
   { title: "Staffing Gap", status: "Watch", value: "-", suffix: "FTE", delta: "-", meta: "Last Week - plan detail", tone: "blue" },
   { title: "Hiring", status: "Watch", value: "-", suffix: "starts", delta: "-", meta: "Last Week - plan detail", tone: "mint" },
   { title: "Shrinkage", status: "Watch", value: "-", delta: "-", meta: "Last Week - plan detail", tone: "indigo" },
@@ -291,6 +303,34 @@ function metricDelta(
   if (current === null || previous === null) return null;
   return current - previous;
 }
+
+// Trend series for the embedded KPI sparkline: the metric's values across the
+// most recent date columns (filtered to the active range), nulls dropped.
+function metricSeries(
+  rows: Array<Record<string, any>>,
+  metricKeys: string[],
+  columns: string[],
+  maxPoints = 12
+): number[] {
+  const row = pickMetricRow(rows, metricKeys);
+  if (!row) return [];
+  const cols = (columns && columns.length ? columns : extractDateColumns([row])).slice(-maxPoints);
+  const pts: number[] = [];
+  for (const c of cols) {
+    const v = toNumber(row[c]);
+    if (v !== null && Number.isFinite(v)) pts.push(v);
+  }
+  return pts;
+}
+
+const KPI_TONE_COLOR: Record<string, string> = {
+  blue: "#eb2525",
+  mint: "#14b8a6",
+  indigo: "#6366f1",
+  peach: "#f97316",
+  teal: "#10b981",
+  sun: "#eab308"
+};
 
 function formatDelta(value: number | null, suffix?: string) {
   if (value === null) return "-";
@@ -605,7 +645,12 @@ export default function HomePage() {
               delta: formatDelta(staffingDelta),
               meta: kpiMeta,
               tone: "blue",
-              status: computeStatus("Staffing Gap", staffingDelta)
+              status: computeStatus("Staffing Gap", staffingDelta),
+              trend: metricSeries(
+                upper,
+                ["FTE Over/Under MTP Vs Actual", "FTE Over/Under (#)", "FTE Over/Under Budgeted Vs Actual"],
+                actualColumns
+              )
             },
             {
               title: "Hiring",
@@ -614,7 +659,8 @@ export default function HomePage() {
               delta: formatDelta(hiringDelta),
               meta: kpiMeta,
               tone: "mint",
-              status: computeStatus("Hiring", hiringDelta)
+              status: computeStatus("Hiring", hiringDelta),
+              trend: metricSeries(nh, ["Planned New Hire HC (#)", "Actual New Hire HC (#)"], actualColumns)
             },
             {
               title: "Shrinkage",
@@ -622,7 +668,8 @@ export default function HomePage() {
               delta: formatDelta(shrinkDelta, "%"),
               meta: kpiMeta,
               tone: "indigo",
-              status: computeStatus("Shrinkage", shrinkDelta)
+              status: computeStatus("Shrinkage", shrinkDelta),
+              trend: metricSeries(shr, ["Overall Shrinkage %", "Planned Shrinkage %"], actualColumns)
             },
             {
               title: "Attrition",
@@ -630,7 +677,8 @@ export default function HomePage() {
               delta: formatDelta(attrDelta, "%"),
               meta: kpiMeta,
               tone: "peach",
-              status: computeStatus("Attrition", attrDelta)
+              status: computeStatus("Attrition", attrDelta),
+              trend: metricSeries(attr, ["Actual Attrition %", "Planned Attrition %"], actualColumns)
             },
             {
               title: "Service Level",
@@ -638,7 +686,8 @@ export default function HomePage() {
               delta: formatDelta(slDelta, "%"),
               meta: kpiMeta,
               tone: "teal",
-              status: computeStatus("Service Level", slDelta)
+              status: computeStatus("Service Level", slDelta),
+              trend: metricSeries(upper, ["Projected Service Level"], actualColumns)
             },
             {
               title: "Handling Capacity",
@@ -647,7 +696,8 @@ export default function HomePage() {
               delta: formatDelta(capDelta),
               meta: kpiMeta,
               tone: "sun",
-              status: computeStatus("Handling Capacity", capDelta)
+              status: computeStatus("Handling Capacity", capDelta),
+              trend: metricSeries(upper, ["Projected Handling Capacity (#)"], actualColumns)
             }
           ]);
 
@@ -1099,8 +1149,19 @@ export default function HomePage() {
                   </div>
                   {/* Meta text remains unchanged */}
                   <div className="kpi-meta">{card.meta}</div>
-                  {/* Sparkline placeholder */}
-                  <div className={`kpi-spark kpi-spark--${String(card.status || "watch").toLowerCase()}`} />
+                  {/* Embedded trend line */}
+                  <div className="kpi-spark">
+                    {card.trend && card.trend.length >= 2 ? (
+                      <Sparkline
+                        points={card.trend}
+                        color={KPI_TONE_COLOR[card.tone] || "#2563eb"}
+                        width={150}
+                        height={40}
+                      />
+                    ) : (
+                      <div className="kpi-spark-empty">No trend yet</div>
+                    )}
+                  </div>
                 </div>
               ))}
             </div>

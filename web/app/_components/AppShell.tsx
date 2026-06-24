@@ -27,6 +27,15 @@ export default function AppShell({ title, crumbs, crumbIcon, userLabel, crumbLin
   const [resolvedUser, setResolvedUser] = useState<string>("");
   const [resolvedEmail, setResolvedEmail] = useState<string>("");
   const [resolvedPhoto, setResolvedPhoto] = useState<string>("");
+  // Full /api/user payload so the profile panel can show org details that were
+  // populated at onboarding (business area, role, location, manager, …).
+  const [userInfo, setUserInfo] = useState<Record<string, any>>({});
+  // Client-side profile overrides (display name + photo). There is no
+  // user-update backend, so edits persist in localStorage keyed by email.
+  const [localPhoto, setLocalPhoto] = useState<string>("");
+  const [localName, setLocalName] = useState<string>("");
+  const [menuOpen, setMenuOpen] = useState<boolean>(false);
+  const [profileOpen, setProfileOpen] = useState<boolean>(false);
   const pathname = usePathname();
 
   useEffect(() => {
@@ -40,30 +49,97 @@ export default function AppShell({ title, crumbs, crumbIcon, userLabel, crumbLin
       return;
     }
     let active = true;
-    apiGet<{ name?: string; email?: string; photo_url?: string }>("/api/user")
+    apiGet<Record<string, any>>("/api/user")
       .then((data) => {
         if (!active) return;
-        const nextName = data?.name?.trim() || data?.email?.trim();
+        const nextName = data?.name?.trim?.() || data?.email?.trim?.();
         setResolvedUser(nextName || "system");
         setResolvedEmail((data?.email || "").trim());
         setResolvedPhoto((data?.photo_url || "").trim());
+        setUserInfo(data && typeof data === "object" ? data : {});
       })
       .catch(() => {
         if (!active) return;
         setResolvedUser("system");
         setResolvedEmail("");
         setResolvedPhoto("");
+        setUserInfo({});
       });
     return () => {
       active = false;
     };
   }, [userLabel]);
 
+  // Load any locally-saved profile overrides (photo + display name).
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const key = resolvedEmail || resolvedUser;
+    if (!key) return;
+    try {
+      const raw = window.localStorage.getItem(`cap-profile:${key}`);
+      if (raw) {
+        const saved = JSON.parse(raw);
+        if (saved?.photo) setLocalPhoto(String(saved.photo));
+        if (saved?.name) setLocalName(String(saved.name));
+      }
+    } catch {
+      /* ignore corrupt storage */
+    }
+  }, [resolvedEmail, resolvedUser]);
+
   const toggleSidebar = () => {
     setCollapsed((prev: boolean) => !prev);
   };
   
-  const initials = (resolvedUser || "S").split(/\s+/).map(s => s[0]?.toUpperCase() || "").slice(0, 2).join("");
+  const effectiveName = localName || resolvedUser || "system";
+  const effectivePhoto = localPhoto || resolvedPhoto;
+  const initials = (effectiveName || "S").split(/\s+/).map(s => s[0]?.toUpperCase() || "").slice(0, 2).join("");
+
+  // Org details captured at onboarding, shown read-only in the profile panel.
+  const orgFields: Array<{ label: string; value: string }> = [
+    { label: "Business Area", value: userInfo.business_area || userInfo.vertical || "" },
+    { label: "Sub Business Area", value: userInfo.sub_business_area || userInfo.sub_ba || "" },
+    { label: "Role", value: userInfo.role || userInfo.title || userInfo.designation || "" },
+    { label: "Manager", value: userInfo.manager || userInfo.reports_to || "" },
+    { label: "Location", value: userInfo.location || userInfo.site || userInfo.country || "" }
+  ].filter((f) => String(f.value || "").trim());
+
+  const onPickPhoto = (file?: File | null) => {
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = () => setLocalPhoto(String(reader.result || ""));
+    reader.readAsDataURL(file);
+  };
+
+  const saveProfile = () => {
+    if (typeof window !== "undefined") {
+      const key = resolvedEmail || resolvedUser;
+      try {
+        window.localStorage.setItem(
+          `cap-profile:${key}`,
+          JSON.stringify({ name: localName || resolvedUser, photo: localPhoto })
+        );
+      } catch {
+        /* storage full / disabled — keep in-memory */
+      }
+    }
+    setProfileOpen(false);
+  };
+
+  const signOut = () => {
+    setMenuOpen(false);
+    if (typeof window === "undefined") return;
+    const logoutUrl = process.env.NEXT_PUBLIC_LOGOUT_URL;
+    try {
+      window.sessionStorage.clear();
+    } catch {
+      /* ignore */
+    }
+    // Reverse-proxy SSO deployments set NEXT_PUBLIC_LOGOUT_URL (e.g.
+    // /oauth2/sign_out). Without it, just return to the home page.
+    window.location.href = logoutUrl || "/";
+  };
+
   return (
     <div className={`app-shell ${collapsed ? "sidebar-collapsed" : "sidebar-expanded"}`}>
       <Sidebar collapsed={collapsed} />
@@ -129,22 +205,134 @@ export default function AppShell({ title, crumbs, crumbIcon, userLabel, crumbLin
               </div>
             </div>
           </div>
-          <div className="topbar-user" title={resolvedEmail || resolvedUser || "system"}>
-            {resolvedPhoto ? (
-              <img src={resolvedPhoto} alt={resolvedUser || "user"} className="avatar" referrerPolicy="no-referrer"/>
-            ) : (
-              <div className="avatar avatar-fallback">{initials}</div>
-            )}
-            <div className="user-meta">
-              <div className="user-name">{resolvedUser || "system"}</div>
-              {resolvedEmail ? <div className="user-email">{resolvedEmail}</div> : null}
-            </div>
+          <div className="topbar-user-wrap">
+            <button
+              type="button"
+              className="topbar-user"
+              title={resolvedEmail || effectiveName}
+              onClick={() => setMenuOpen((v) => !v)}
+              aria-haspopup="menu"
+              aria-expanded={menuOpen}
+            >
+              {effectivePhoto ? (
+                <img src={effectivePhoto} alt={effectiveName} className="avatar" referrerPolicy="no-referrer" />
+              ) : (
+                <div className="avatar avatar-fallback">{initials}</div>
+              )}
+              <div className="user-meta">
+                <div className="user-name">{effectiveName}</div>
+                {resolvedEmail ? <div className="user-email">{resolvedEmail}</div> : null}
+              </div>
+              <svg className="user-caret" width="12" height="12" viewBox="0 0 12 12" aria-hidden>
+                <path d="M2 4 L6 8 L10 4" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" />
+              </svg>
+            </button>
+            {menuOpen ? (
+              <>
+                <div className="user-menu-backdrop" onClick={() => setMenuOpen(false)} />
+                <div className="user-menu" role="menu">
+                  <button
+                    type="button"
+                    className="user-menu-item"
+                    role="menuitem"
+                    onClick={() => {
+                      setLocalName(localName || resolvedUser);
+                      setMenuOpen(false);
+                      setProfileOpen(true);
+                    }}
+                  >
+                    <span className="user-menu-icon">👤</span> Profile
+                  </button>
+                  <button type="button" className="user-menu-item user-menu-item--danger" role="menuitem" onClick={signOut}>
+                    <span className="user-menu-icon">⏻</span> Sign out
+                  </button>
+                </div>
+              </>
+            ) : null}
           </div>
         </div>
+
+        {profileOpen ? (
+          <div className="ws-modal-backdrop" onClick={() => setProfileOpen(false)}>
+            <div className="ws-modal ws-modal-sm" onClick={(e) => e.stopPropagation()}>
+              <div className="ws-modal-header">
+                <h3>My Profile</h3>
+                <button type="button" className="btn btn-light closeOptions" onClick={() => setProfileOpen(false)}>
+                  <svg width="16" height="16" viewBox="0 0 16 16">
+                    <line x1="2" y1="2" x2="14" y2="14" stroke="white" strokeWidth="2" />
+                    <line x1="14" y1="2" x2="2" y2="14" stroke="white" strokeWidth="2" />
+                  </svg>
+                </button>
+              </div>
+              <div className="ws-modal-body">
+                <div className="profile-photo-row">
+                  {effectivePhoto ? (
+                    <img src={effectivePhoto} alt={effectiveName} className="profile-photo" />
+                  ) : (
+                    <div className="profile-photo profile-photo--fallback">{initials}</div>
+                  )}
+                  <div className="profile-photo-actions">
+                    <label className="btn btn-light">
+                      Change photo
+                      <input
+                        type="file"
+                        accept="image/*"
+                        className="file-input"
+                        onChange={(e) => onPickPhoto(e.target.files?.[0])}
+                      />
+                    </label>
+                    {localPhoto ? (
+                      <button type="button" className="btn btn-ghost" onClick={() => setLocalPhoto("")}>
+                        Remove
+                      </button>
+                    ) : null}
+                  </div>
+                </div>
+
+                <label className="profile-field">
+                  Display Name
+                  <input
+                    className="input"
+                    value={localName}
+                    onChange={(e) => setLocalName(e.target.value)}
+                    placeholder={resolvedUser}
+                  />
+                </label>
+                <label className="profile-field">
+                  Email
+                  <input className="input" value={resolvedEmail} readOnly disabled />
+                </label>
+
+                {orgFields.length ? (
+                  <div className="profile-org">
+                    <div className="profile-org-title">From your organization (onboarding)</div>
+                    {orgFields.map((f) => (
+                      <div className="profile-org-row" key={f.label}>
+                        <span className="profile-org-label">{f.label}</span>
+                        <span className="profile-org-value">{f.value}</span>
+                      </div>
+                    ))}
+                  </div>
+                ) : (
+                  <div className="profile-org-empty">Organization details will appear here once provided at onboarding.</div>
+                )}
+              </div>
+              <div className="ws-modal-footer">
+                <button type="button" className="btn btn-light" onClick={() => setProfileOpen(false)}>
+                  Cancel
+                </button>
+                <button type="button" className="btn btn-primary" onClick={saveProfile}>
+                  Save
+                </button>
+              </div>
+            </div>
+          </div>
+        ) : null}
         {children}
       </div>
       <style jsx global>{`
-        .topbar-user {display: flex; align-items: center; gap: 0.5rem; }
+        .topbar-user {display: flex; align-items: center; gap: 0.5rem; background: transparent; border: 1px solid transparent; cursor: pointer; padding: 4px 8px; border-radius: 10px; color: inherit; font: inherit; transition: background 150ms ease, border-color 150ms ease; }
+        .topbar-user:hover {background: #f8fafc; border-color: var(--border); }
         .avatar {width: 28px; height: 28px; border-radius: 50%; object-fit: cover; }
         .avatar-fallback {width: 28px; height: 28px; border-radius: 50%; display: flex; align-items: center; justify-content: center; background: #0b5fff20; color: #0b5fff; font-size: 0.8rem; }
         .user-meta {display: flex; flex-direction: column; line-height: 1.1; }
