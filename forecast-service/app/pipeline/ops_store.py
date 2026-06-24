@@ -794,6 +794,8 @@ def load_timeseries_any(
         df = pd.DataFrame()
         if batch and not df_all.empty:
             df = df_all[df_all["scope_key_norm"].isin(scope_norms)].copy()
+            # Match the non-batch output (which drops this internal column).
+            df = df.drop(columns=["scope_key_norm"], errors="ignore")
         elif not batch:
             with db_conn() as conn:
                 cur = conn.cursor()

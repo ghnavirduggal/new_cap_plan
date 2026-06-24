@@ -1154,7 +1154,9 @@ def get_settings(
         elif raw_channel in ("outbound", "ob", "out bound"):
             kind = "ob_actual"
         if kind:
-            ts_df = load_timeseries_any(kind, scopes)
+            # Multi-scope load: use the batched single-query path instead of one
+            # DB round-trip per scope.
+            ts_df = load_timeseries_any(kind, scopes, batch=True)
             actual_val = _last_actual_value(ts_df, value_col, weight_col=weight_col)
             if actual_val is None and value_col == "sut_sec" and "aht_sec" in ts_df.columns:
                 actual_val = _last_actual_value(ts_df, "aht_sec", weight_col=weight_col)
