@@ -264,14 +264,15 @@ def _nh_effective_count(row, pt_fte_ratio: float = 0.5) -> int:
     Effective class size:
       - If billable_hc > 0 -> use it.
       - Else Full-Time -> grads_needed
-      - Else Part-Time -> ceil(grads_needed * pt_fte_ratio)
+      - Else Part-Time -> round(grads_needed * pt_fte_ratio)
 
     pt_fte_ratio is configurable (Settings: pt_fte_ratio, default 0.5 = two PT
-    heads ~= one FTE).
+    heads ~= one FTE). All branches round to nearest for a consistent rounding
+    direction (previously billable/FT truncated while PT used ceil).
     """
     billable = pd.to_numeric(row.get("billable_hc"), errors="coerce")
     if pd.notna(billable) and billable > 0:
-        return int(billable)
+        return int(round(float(billable)))
 
     grads = int(pd.to_numeric(row.get("grads_needed"), errors="coerce") or 0)
     emp   = str(row.get("emp_type", "")).strip().lower()
@@ -281,7 +282,7 @@ def _nh_effective_count(row, pt_fte_ratio: float = 0.5) -> int:
         except Exception:
             ratio = 0.5
         ratio = ratio if ratio > 0 else 0.5
-        return int(math.ceil(grads * ratio))
+        return int(round(grads * ratio))
     return int(grads)
 
 
@@ -3311,7 +3312,7 @@ def _fill_tables_fixed(ptype, pid, fw_cols, _tick, whatif=None, grain: str = 'we
                     if login_f is not None: p *= login_f
                     denom = (1.0 + u)
                     if aht_m is not None:   denom *= aht_m
-                    total += float(cnt) * (p / max(1.0, denom))
+                    total += float(cnt) * (p / max(0.05, denom))
                 return total
 
             nest_eff = eff_from_buckets(nest_buckets, lc["nesting_prod_pct"], lc["nesting_aht_uplift_pct"])
@@ -3374,7 +3375,7 @@ def _fill_tables_fixed(ptype, pid, fw_cols, _tick, whatif=None, grain: str = 'we
                     if login_f is not None: p *= login_f
                     denom = (1.0 + u)
                     if aht_m is not None:   denom *= aht_m
-                    total += float(cnt) * (p / max(1.0, denom))
+                    total += float(cnt) * (p / max(0.05, denom))
                 return total
 
             agents_eff = max(1.0, float(projected_supply.get(w, 0.0)) + eff(nest_buckets, lc["nesting_prod_pct"], lc["nesting_aht_uplift_pct"]) + (eff(sda_buckets, lc["sda_prod_pct"], lc["sda_aht_uplift_pct"]) - _sda_heads_in_week(w)))
@@ -3420,7 +3421,7 @@ def _fill_tables_fixed(ptype, pid, fw_cols, _tick, whatif=None, grain: str = 'we
                     if login_f is not None: p *= login_f
                     denom = (1.0 + u)
                     if aht_m is not None:   denom *= aht_m
-                    total += float(cnt) * (p / max(1.0, denom))
+                    total += float(cnt) * (p / max(0.05, denom))
                 return total
             agents_eff = max(1.0, (float(projected_supply.get(w, 0.0)) + eff_ob(nest_buckets, lc["nesting_prod_pct"], lc["nesting_aht_uplift_pct"]) + (eff_ob(sda_buckets, lc["sda_prod_pct"], lc["sda_aht_uplift_pct"]) - _sda_heads_in_week(w))) * ob_util)
             ivl_min_ob = int(float(sw.get("ob_interval_minutes", sw.get("interval_minutes", 30)) or 30))
@@ -3453,7 +3454,7 @@ def _fill_tables_fixed(ptype, pid, fw_cols, _tick, whatif=None, grain: str = 'we
                     if login_f is not None: p *= login_f
                     denom = (1.0 + u)
                     if aht_m is not None:   denom *= aht_m
-                    total += float(cnt) * (p / max(1.0, denom))
+                    total += float(cnt) * (p / max(0.05, denom))
                 return total
             agents_eff = max(1.0, (float(projected_supply.get(w, 0.0)) + eff_ch(nest_buckets, lc["nesting_prod_pct"], lc["nesting_aht_uplift_pct"]) + (eff_ch(sda_buckets, lc["sda_prod_pct"], lc["sda_aht_uplift_pct"]) - _sda_heads_in_week(w))) * chat_util)
             ivl_min_ch = int(float(sw.get("chat_interval_minutes", sw.get("interval_minutes", 30)) or 30))
@@ -3500,7 +3501,7 @@ def _fill_tables_fixed(ptype, pid, fw_cols, _tick, whatif=None, grain: str = 'we
                     if login_f is not None: p *= login_f
                     denom = (1.0 + u)
                     if aht_m is not None:   denom *= aht_m
-                    total += float(cnt) * (p / max(1.0, denom))
+                    total += float(cnt) * (p / max(0.05, denom))
                 return total
 
             nest_eff = eff_from_buckets(nest_buckets, lc["nesting_prod_pct"], lc["nesting_aht_uplift_pct"])
@@ -3708,7 +3709,7 @@ def _fill_tables_fixed(ptype, pid, fw_cols, _tick, whatif=None, grain: str = 'we
                         if login_f is not None: p *= login_f
                         denom = (1.0 + u)
                         if aht_m is not None:   denom *= aht_m
-                        total += float(cnt) * (p / max(1.0, denom))
+                        total += float(cnt) * (p / max(0.05, denom))
                     return total
                 agents_eff = max(1.0, (float(projected_supply.get(w, 0.0)) + eff(nest_buckets, lc["nesting_prod_pct"], lc["nesting_aht_uplift_pct"]) + (eff(sda_buckets, lc["sda_prod_pct"], lc["sda_aht_uplift_pct"]) - _sda_heads_in_week(w))) * util_bo)
                 sl_frac = _erlang_sl(items_per_ivl, max(1.0, float(sut)), agents_eff, sl_seconds, ivl_sec)
