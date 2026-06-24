@@ -65,7 +65,8 @@ const sections: Section[] = [
       "Volume upload: CSV/Excel with date and volume; optional category and forecast_group.",
       "IQ_Data sheet: required for IQ summary and contact ratio calculations.",
       "Holidays sheet: optional, used for Prophet regressors and seasonality.",
-      "Interval history: date, interval, volume (AHT optional) for daily/interval split."
+      "Interval history: date, interval, volume (AHT optional) for daily/interval split.",
+      "Programmatic ingest (REST API): instead of manual uploads, automated systems can push volume/AHT actuals and forecasts to POST /api/ingest/v1/timeseries (X-API-Key auth). See docs/INGEST_API.md for the contract and a curl example."
     ]
   },
   {

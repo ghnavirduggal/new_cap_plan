@@ -1455,6 +1455,159 @@ def save_timeseries_endpoint(payload: dict):
     return payload_out
 
 
+# --- Programmatic REST ingest API (v1) ------------------------------------
+# A stable, documented, machine-facing contract for pushing volume/AHT actuals
+# and forecasts, so refreshes can be automated instead of manual file uploads.
+# It reuses the same normalization + persistence as the interactive upload path.
+
+_INGEST_CHANNEL_TYPES = {"voice", "bo", "chat", "ob"}
+_INGEST_METRICS = {"forecast", "actual", "tactical"}
+_INGEST_MAX_ROWS = 200_000
+
+
+def _require_ingest_auth(request: Request) -> None:
+    """Auth for the ingest API: an INGEST_API_KEY (X-API-Key header) when one is
+    configured, otherwise the normal interactive principal."""
+    if security.ingest_api_key_configured():
+        if not security.ingest_key_ok(request):
+            raise HTTPException(status_code=401, detail="Invalid or missing X-API-Key.")
+    else:
+        security.require_user(request)
+
+
+def _ingest_timeseries_core(kind: str, scope_key: str, rows: list, mode: str, actor: str) -> dict:
+    """Normalize + persist a timeseries batch, reusing the interactive path's
+    helpers. Returns a clean integrator-facing summary."""
+    df = df_from_payload(rows)
+    base_df, extras = _normalize_timeseries(str(kind or ""), df)
+    scope_norm = normalize_scope_key(scope_key)
+    data_hash = timeseries_dataset_hash(str(kind or ""), base_df)
+    if data_hash:
+        latest = get_latest_timeseries_hash(str(kind or ""), scope_norm)
+        if latest and latest == data_hash:
+            return {"status": "unchanged", "rows_ingested": 0, "unchanged": True, "kind": kind, "scope_key": scope_key}
+    result = save_timeseries(kind, scope_key, base_df, mode=mode)
+    extra_results: dict[str, int] = {}
+    for extra_kind, extra_df in extras.items():
+        if isinstance(extra_df, pd.DataFrame) and not extra_df.empty:
+            save_timeseries(extra_kind, scope_key, extra_df, mode=mode)
+            extra_results[extra_kind] = len(extra_df.index)
+    if data_hash:
+        try:
+            record_timeseries_upload_hash(str(kind or ""), scope_norm, data_hash, len(base_df.index))
+        except Exception:
+            pass
+    try:
+        record_activity(
+            action=f"ingested timeseries {str(kind or '').strip() or 'data'} (API)",
+            actor=actor,
+            entity_type="timeseries",
+            entity_id=str(kind or ""),
+            payload={"scope_key": scope_key, "mode": mode, "source": "ingest_api"},
+        )
+    except Exception:
+        pass
+    try:
+        _invalidate_plan_detail_for_scope(_scope_from_key(scope_key), "timeseries")
+    except Exception:
+        pass
+    date_range = None
+    try:
+        if isinstance(base_df, pd.DataFrame) and "date" in base_df.columns and not base_df.empty:
+            date_range = {"from": str(base_df["date"].min()), "to": str(base_df["date"].max())}
+    except Exception:
+        date_range = None
+    out = {
+        "status": result.get("status"),
+        "kind": kind,
+        "scope_key": scope_key,
+        "mode": mode,
+        "rows_ingested": result.get("rows", 0),
+        "date_range": date_range,
+    }
+    if extra_results:
+        out["derived"] = extra_results
+    return out
+
+
+@app.get("/api/ingest/v1/schema")
+def ingest_schema(request: Request):
+    """Self-describing contract for the ingest API so integrators can self-serve."""
+    _require_ingest_auth(request)
+    return {
+        "version": "1",
+        "endpoint": "POST /api/ingest/v1/timeseries",
+        "auth": "X-API-Key header (set INGEST_API_KEY), or a normal session token.",
+        "channel_types": sorted(_INGEST_CHANNEL_TYPES),
+        "metrics": sorted(_INGEST_METRICS),
+        "kinds": sorted(_COMBINED_TIMESERIES_KINDS),
+        "scope_fields": ["business_area", "sub_business_area", "channel", "site"],
+        "modes": ["append", "replace"],
+        "max_rows_per_request": _INGEST_MAX_ROWS,
+        "row_fields": {
+            "date": "YYYY-MM-DD (required)",
+            "interval": "HH:MM (optional; for interval-grain voice/chat data)",
+            "volume": "contacts/calls/items handled (voice/chat/ob: volume; bo: items)",
+            "aht": "average handle time in seconds (bo: use 'sut')",
+        },
+        "example": {
+            "business_area": "Cards",
+            "sub_business_area": "Servicing",
+            "channel": "Voice",
+            "channel_type": "voice",
+            "metric": "actual",
+            "mode": "append",
+            "rows": [{"date": "2026-06-01", "interval": "09:00", "volume": 120, "aht": 280}],
+        },
+    }
+
+
+@app.post("/api/ingest/v1/timeseries")
+def ingest_timeseries(payload: dict, request: Request):
+    """Push volume/AHT actuals or forecasts programmatically.
+
+    Identify the series either with an explicit `kind` (e.g. voice_actual) or with
+    `channel_type` (voice|bo|chat|ob) + `metric` (forecast|actual|tactical).
+    Identify the scope with business_area/sub_business_area/channel/site (or a raw
+    `scope_key`). Send `rows` as a list of {date, interval?, volume|items, aht|sut}.
+    """
+    _require_ingest_auth(request)
+    if not isinstance(payload, dict):
+        raise HTTPException(status_code=400, detail="Ingest payload must be a JSON object.")
+
+    kind = str(payload.get("kind") or "").strip().lower()
+    if not kind:
+        channel_type = str(payload.get("channel_type") or "").strip().lower()
+        metric = str(payload.get("metric") or "").strip().lower()
+        if channel_type not in _INGEST_CHANNEL_TYPES:
+            raise HTTPException(status_code=400, detail=f"channel_type must be one of {sorted(_INGEST_CHANNEL_TYPES)}.")
+        if metric not in _INGEST_METRICS:
+            raise HTTPException(status_code=400, detail=f"metric must be one of {sorted(_INGEST_METRICS)}.")
+        kind = f"{channel_type}_{metric}"
+    if kind not in _COMBINED_TIMESERIES_KINDS:
+        raise HTTPException(status_code=400, detail=f"Unsupported kind '{kind}'. Valid kinds: {sorted(_COMBINED_TIMESERIES_KINDS)}.")
+
+    rows = payload.get("rows")
+    if not isinstance(rows, list) or not rows:
+        raise HTTPException(status_code=400, detail="A non-empty 'rows' list is required.")
+    if len(rows) > _INGEST_MAX_ROWS:
+        raise HTTPException(status_code=413, detail=f"Too many rows ({len(rows)}); max {_INGEST_MAX_ROWS} per request.")
+
+    scope_key = str(payload.get("scope_key") or "").strip() or _scope_key_from_payload(payload)
+    mode = (payload.get("mode") or "append").lower()
+    if mode not in {"append", "replace"}:
+        raise HTTPException(status_code=400, detail="mode must be 'append' or 'replace'.")
+
+    actor = ""
+    try:
+        actor = (getattr(security.principal_from_request(request), "email", "") or "").strip()
+    except Exception:
+        actor = ""
+    actor = actor or "ingest-api"
+
+    return sanitize_for_json(_ingest_timeseries_core(kind, scope_key, rows, mode, actor))
+
+
 @app.post("/api/uploads/timeseries/preview")
 def preview_timeseries_endpoint(payload: dict):
     if not isinstance(payload, dict):
