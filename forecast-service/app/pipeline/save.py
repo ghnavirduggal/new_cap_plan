@@ -88,6 +88,20 @@ def save_forecast_results(payload: dict) -> dict:
     accuracy_path = outdir / "forecast_accuracy.csv"
     sanitize_export(combined).to_csv(combined_path, index=False)
     sanitize_export(accuracy).to_csv(accuracy_path, index=False)
+    # Track accuracy over time so the workspace can show which model is winning
+    # (the CSV above is latest-only; this appends a per-scope history snapshot).
+    try:
+        from app.pipeline import accuracy_store
+
+        scope = payload.get("scope") or payload.get("business_area") or payload.get("forecast_group") or "global"
+        accuracy_store.record_snapshot(
+            str(scope),
+            payload.get("accuracy") or [],
+            run_label=str(payload.get("run_label") or payload.get("forecast_group") or ""),
+            actor=_safe_user(),
+        )
+    except Exception:
+        pass
     return {
         "status": "saved",
         "paths": [str(combined_path), str(accuracy_path)],

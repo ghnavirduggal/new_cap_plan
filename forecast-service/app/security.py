@@ -48,6 +48,27 @@ def _secret() -> str:
     return os.getenv("AUTH_JWT_SECRET", "")
 
 
+def _proxy_shared_secret() -> str:
+    return os.getenv("PROXY_SHARED_SECRET", "")
+
+
+def proxy_request_verified(request: Request) -> bool:
+    """Defense-in-depth for the token-mint oracle and proxy-trusted identity.
+
+    When PROXY_SHARED_SECRET is set, proxy-provided identity (and the
+    /api/auth/token mint endpoint) is only honored if the request carries the
+    matching X-Proxy-Auth header — a value the trusted reverse proxy injects and
+    strips from inbound client requests. This stops an attacker who reaches the
+    backend port directly (or spoofs X-Forwarded-Email) from minting a token.
+    When the secret is unset, returns True to preserve existing behavior.
+    """
+    secret = _proxy_shared_secret()
+    if not secret:
+        return True
+    provided = (request.headers.get("x-proxy-auth") or "").strip()
+    return bool(provided) and hmac.compare_digest(provided, secret)
+
+
 def ingest_api_key_configured() -> bool:
     """Whether a machine-to-machine ingest API key is set (INGEST_API_KEY)."""
     return bool(os.getenv("INGEST_API_KEY", "").strip())
@@ -109,13 +130,16 @@ def verify_jwt(token: str, secret: str) -> Optional[dict]:
         payload = json.loads(_b64url_decode(payload_b64))
     except Exception:
         return None
+    # Require exp: a token without an expiry would be valid forever, so reject it
+    # rather than treating a missing exp as "never expires".
     exp = payload.get("exp")
-    if exp is not None:
-        try:
-            if time.time() > float(exp):
-                return None
-        except (TypeError, ValueError):
+    if exp is None:
+        return None
+    try:
+        if time.time() > float(exp):
             return None
+    except (TypeError, ValueError):
+        return None
     return payload
 
 
@@ -157,8 +181,10 @@ def principal_from_request(request: Request) -> Optional[Principal]:
                 roles=tuple(str(r) for r in roles),
             )
     # Only honor proxy-provided identity when explicitly told the upstream proxy
-    # is trusted (and strips client-supplied copies of these headers).
-    if trust_proxy_auth():
+    # is trusted (and strips client-supplied copies of these headers), and — when
+    # a PROXY_SHARED_SECRET is configured — only if the request proves it came
+    # through that proxy.
+    if trust_proxy_auth() and proxy_request_verified(request):
         email = (
             request.headers.get("x-forwarded-email")
             or request.headers.get("x-email")

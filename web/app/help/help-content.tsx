@@ -53,6 +53,7 @@ const sections: Section[] = [
       "Normalized Ratio 1: adjust caps and base volume, then apply changes.",
       "Prophet Smoothing: smooth the series and confirm Normalized Ratio 2.",
       "Phase 1: run multi-model forecasts and review accuracy.",
+      "Forecast Accuracy: after you save forecast results, the Forecast Accuracy page tracks per-model accuracy (accuracy bands / MAPE / WAPE / bias) over time, ranks the models, and highlights the winning model per scope so you can see whether forecasts are improving.",
       "Phase 2: apply best configs and generate final forecast outputs.",
       "Transformation Projects: apply sequential adjustments and save final outputs.",
       "Daily and Interval Forecast: split monthly totals into daily and interval plans."
@@ -119,6 +120,7 @@ const sections: Section[] = [
       "Learning curve (new hires): during Nesting and SDA, agents are partially productive (productivity %) and may handle slower (AHT uplift). Effective agents = headcount × productivity ÷ (1 + uplift). Nesting precedes production; SDA agents are already in supply, so only their shortfall vs a full head is applied.",
       "Backlog (Back Office, opt-in per plan): backlog = max(0, Actual − Forecast) per period, carried once into the next OPEN period (never stacked onto a completed period). Carried backlog is not amplified by the what-if volume dial.",
       "What-if dials: volume and AHT deltas are multiplicative (× (1 + delta/100)); shrink delta is additive percentage points (30% + 5 → 35%). Dials apply only to the active/future window, never to past/locked periods.",
+      "Saved scenarios: the current What-If dials can be saved as a named, reusable case (e.g. Base, Downside, Peak season). Apply re-loads a scenario's dials as the live What-If and recomputes the plan; Compare computes a baseline (no dials) plus each saved scenario side by side (weekly-average of each upper-summary metric) without disturbing the live plan.",
       "FTE Over/Under = Projected Supply − Required @ scenario (positive = surplus, negative = shortfall). Reported vs MTP (Forecast), Tactical and Budgeted requirements.",
       "Budget vs Actual (BvA): Budgeted FTE uses budget volume/AHT (it does not move with what-if dials); Actual FTE uses the shrink-adjusted actual; Variance = Actual − Budgeted. (Note: BvA Variance is demand-vs-demand, whereas FTE Over/Under is supply-vs-demand — the two use opposite sign ordering by design.)",
       "Supply projection: future supply = prior supply − attrition + new-hire additions, floored at zero, applied forward in time; learning-curve ramp reduces the effective (capacity) supply, not the displayed headcount."

@@ -64,10 +64,13 @@ func main() {
 
   r := chi.NewRouter()
   r.Use(cors.Handler(cors.Options{
-    AllowedOrigins:   splitCSV(envOrDefault("CORS_ORIGINS", "http://localhost:3000")),
-    AllowedMethods:   []string{"GET", "POST", "PUT", "DELETE", "OPTIONS"},
-    AllowedHeaders:   []string{"Accept", "Authorization", "Content-Type", "X-CSRF-Token"},
-    AllowCredentials: true,
+    AllowedOrigins: splitCSV(envOrDefault("CORS_ORIGINS", "http://localhost:3000")),
+    AllowedMethods: []string{"GET", "POST", "PUT", "DELETE", "OPTIONS"},
+    AllowedHeaders: []string{"Accept", "Authorization", "Content-Type", "X-CSRF-Token"},
+    // Auth is a bearer token in the Authorization header (not a cross-site
+    // cookie), so credentialed CORS is unnecessary and would broaden the attack
+    // surface. Keep this false unless cookie auth + CSRF protection is adopted.
+    AllowCredentials: false,
     MaxAge:           300,
   }))
   r.Use(limitBody(maxBodyBytes()))
@@ -158,7 +161,15 @@ func headerPhoto(r *http.Request) string {
     if val == "" {
       continue
     }
-    return val
+    // Allowlist schemes: the value is later rendered as <img src=...>, so reject
+    // javascript:/arbitrary data: and only permit https or image data URLs.
+    low := strings.ToLower(val)
+    if strings.HasPrefix(low, "https://") || strings.HasPrefix(val, "/") ||
+      strings.HasPrefix(low, "data:image/png") || strings.HasPrefix(low, "data:image/jpeg") ||
+      strings.HasPrefix(low, "data:image/webp") {
+      return val
+    }
+    return ""
   }
   return ""
 }

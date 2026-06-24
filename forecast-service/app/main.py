@@ -100,6 +100,7 @@ from app.pipeline.plan_detail_engine import (
     prefetch_plan_detail_grains,
 )
 from app.pipeline.plan_detail.calc_engine import mark_plan_dirty as mark_plan_detail_dirty, mark_plan_dirty_deps as mark_plan_detail_dirty_deps, dep_snapshot_all
+from app.pipeline import scenario_store
 from app.pipeline.ba_rollup_plan import compute_ba_rollup_tables, invalidate_rollup_cache, month_cols_for_ba, week_cols_for_ba
 from app.pipeline.plan_detail._common import (
     clone_plan,
@@ -163,10 +164,57 @@ def _max_request_bytes() -> int:
         return 50 * 1024 * 1024
 
 
+def _max_zip_uncompressed_bytes() -> int:
+    try:
+        return int(os.getenv("MAX_ZIP_UNCOMPRESSED_BYTES", str(300 * 1024 * 1024)))
+    except (TypeError, ValueError):
+        return 300 * 1024 * 1024
+
+
+async def _read_upload_capped(file: "UploadFile") -> bytes:
+    """Read an uploaded file in chunks, aborting past the request-size cap.
+
+    The Content-Length middleware can be bypassed with Transfer-Encoding: chunked,
+    so we also enforce the byte budget here while streaming, before the whole body
+    is buffered in memory.
+    """
+    cap = _max_request_bytes()
+    chunks: list[bytes] = []
+    total = 0
+    while True:
+        chunk = await file.read(1024 * 1024)
+        if not chunk:
+            break
+        total += len(chunk)
+        if total > cap:
+            raise HTTPException(status_code=413, detail="Request body too large.")
+        chunks.append(chunk)
+    return b"".join(chunks)
+
+
+def _guard_zip_bomb(content: bytes) -> None:
+    """Reject decompression bombs: .xlsx is a ZIP, and a small file can inflate to
+    many GB. Sum the declared uncompressed sizes and abort past the cap before any
+    parser (pandas/openpyxl) expands the archive."""
+    if len(content) < 4 or content[:2] != b"PK":
+        return  # not a zip (e.g. CSV) — nothing to expand
+    import zipfile
+
+    try:
+        with zipfile.ZipFile(io.BytesIO(content)) as zf:
+            total = sum(max(0, info.file_size) for info in zf.infolist())
+    except zipfile.BadZipFile:
+        return  # let the downstream parser surface a clean error
+    if total > _max_zip_uncompressed_bytes():
+        raise HTTPException(status_code=413, detail="Spreadsheet expands too large to process.")
+
+
 @app.middleware("http")
 async def _limit_request_size(request, call_next):
     # Reject oversized bodies up front (by Content-Length) so huge uploads can't
-    # exhaust memory before they're even parsed.
+    # exhaust memory before they're even parsed. Chunked-encoding requests omit
+    # Content-Length and are additionally capped while streaming in
+    # _read_upload_capped at the upload handlers.
     from fastapi.responses import JSONResponse
 
     cl = request.headers.get("content-length")
@@ -210,7 +258,7 @@ def issue_token(request: Request):
     secret = os.getenv("AUTH_JWT_SECRET", "")
     if not secret:
         return {"token": None, "auth": "disabled"}
-    if not security.trust_proxy_auth():
+    if not security.trust_proxy_auth() or not security.proxy_request_verified(request):
         raise HTTPException(status_code=404, detail="Not found.")
     email = (
         request.headers.get("x-forwarded-email")
@@ -266,13 +314,30 @@ def get_user(request: Request):
         return {"key": key, "email": email, "name": name or email or key, "photo_url": ""}
 
 
+def _safe_photo_url(value) -> str | None:
+    """Allowlist photo URL schemes. The value is later rendered as <img src=...>
+    in the browser, so block javascript:/vbscript:/arbitrary data: payloads and
+    only permit https:, root-relative paths, and image data URLs."""
+    if not isinstance(value, str):
+        return None
+    candidate = value.strip()
+    if not candidate:
+        return ""  # explicit clear
+    lowered = candidate.lower()
+    if lowered.startswith("https://") or candidate.startswith("/"):
+        return candidate
+    if lowered.startswith("data:image/png") or lowered.startswith("data:image/jpeg") or lowered.startswith("data:image/webp"):
+        return candidate
+    raise HTTPException(status_code=400, detail="Unsupported photo URL (use https:// or an image data URL).")
+
+
 @app.patch("/api/user")
 def patch_user(payload: dict, request: Request):
     if not isinstance(payload, dict):
         raise HTTPException(status_code=400, detail="Profile payload must be a JSON object.")
     key, email, name = _user_identity(request)
     display_name = payload.get("name")
-    photo_url = payload.get("photo_url")
+    photo_url = _safe_photo_url(payload.get("photo_url")) if "photo_url" in payload else None
     # Data-URL photos can balloon; cap here (the body-size middleware also guards).
     if isinstance(photo_url, str) and len(photo_url) > 3_000_000:
         raise HTTPException(status_code=413, detail="Profile photo too large (max ~2MB).")
@@ -291,9 +356,10 @@ def patch_user(payload: dict, request: Request):
 
 
 @app.post("/api/users/display")
-def users_display(payload: dict):
+def users_display(payload: dict, request: Request):
     """Resolve a batch of user identifiers (BRID/email/name keys) to display
     name + photo so owners/actors render as names instead of opaque IDs."""
+    security.require_user(request)  # no-op unless AUTH_ENABLED
     keys = payload.get("keys") if isinstance(payload, dict) else None
     if not isinstance(keys, list):
         return {}
@@ -1877,7 +1943,7 @@ def planning_consolidated(payload: dict):
 
 
 @app.post("/api/planning/plan/rebalancing")
-def planning_rebalancing_preview(payload: dict):
+def planning_rebalancing_preview(payload: dict, request: Request):
     if not isinstance(payload, dict):
         raise HTTPException(status_code=400, detail="Rebalancing payload must be a JSON object.")
 
@@ -1894,9 +1960,7 @@ def planning_rebalancing_preview(payload: dict):
     loc: list[str] = []
 
     if plan_id:
-        plan = load_plan(int(plan_id))
-        if not plan:
-            raise HTTPException(status_code=404, detail="Plan not found.")
+        plan = _authorize_plan_access(plan_id, request)
         ba_val = str(plan.get("business_area") or plan.get("vertical") or "").strip()
         if ba_val:
             ba = [ba_val]
@@ -2167,7 +2231,9 @@ def plan_debug_upper(plan_id: int = Query(...)):
 
 
 @app.get("/api/planning/activity")
-def get_planning_activity(limit: int = Query(10), plan_id: Optional[int] = Query(None)):
+def get_planning_activity(request: Request, limit: int = Query(10), plan_id: Optional[int] = Query(None)):
+    if plan_id is not None:
+        _authorize_plan_access(plan_id, request)
     return {"rows": list_activity(limit=limit, plan_id=plan_id)}
 
 
@@ -2191,10 +2257,8 @@ def save_plan(payload: dict):
 
 
 @app.get("/api/planning/plan/scope-options")
-def plan_scope_options(plan_id: int = Query(...)):
-    plan = load_plan(int(plan_id))
-    if not plan:
-        raise HTTPException(status_code=404, detail="Plan not found.")
+def plan_scope_options(request: Request, plan_id: int = Query(...)):
+    plan = _authorize_plan_access(plan_id, request)
     options = []
     plans = list_plans(
         business_area=plan.get("business_area"),
@@ -2312,7 +2376,8 @@ def export_plan(payload: dict, request: Request):
 
 
 @app.get("/api/planning/plan/whatif")
-def get_plan_whatif(plan_id: int = Query(...)):
+def get_plan_whatif(request: Request, plan_id: int = Query(...)):
+    _authorize_plan_access(plan_id, request)
     df = load_df(f"plan_{plan_id}_whatif")
     if not isinstance(df, pd.DataFrame) or df.empty:
         return {"overrides": {}}
@@ -2327,12 +2392,13 @@ def get_plan_whatif(plan_id: int = Query(...)):
 
 
 @app.post("/api/planning/plan/whatif")
-def save_plan_whatif(payload: dict):
+def save_plan_whatif(payload: dict, request: Request):
     if not isinstance(payload, dict):
         raise HTTPException(status_code=400, detail="What-if payload must be a JSON object.")
     plan_id = payload.get("plan_id")
     if not plan_id:
         raise HTTPException(status_code=400, detail="plan_id is required.")
+    _authorize_plan_access(plan_id, request)
     action = (payload.get("action") or "apply").lower()
     overrides = payload.get("overrides") if isinstance(payload.get("overrides"), dict) else {}
     if action == "clear":
@@ -2362,8 +2428,158 @@ def save_plan_whatif(payload: dict):
     return {"status": "saved", "overrides": overrides}
 
 
+# --- Saved scenarios -------------------------------------------------------
+# A scenario is a named, reusable snapshot of the what-if dials. Unlike the live
+# What-If (a single transient record), scenarios are durable cases a planner can
+# save, re-apply, and compare side by side.
+
+def _scenario_upper_rows(plan_id: int, overrides: dict) -> list[dict]:
+    """Compute the weekly upper-summary rows for a plan under an arbitrary
+    override set, ignoring whatever What-If is currently persisted."""
+    wf = dict(overrides or {})
+    wf["__replace_persisted__"] = True
+    data, status, _meta = compute_plan_detail_tables(int(plan_id), grain="week", whatif=wf)
+    rows: list[dict] = []
+    if status == "ready" and data:
+        rows = data.get("upper") or []
+    if not rows:
+        cached = load_plan_detail_tables(int(plan_id), grain="week")
+        rows = cached.get("upper") or []
+    return rows
+
+
+@app.get("/api/planning/plan/scenarios")
+def get_plan_scenarios(plan_id: int = Query(...), request: Request = None):
+    _authorize_plan_access(plan_id, request)
+    return {"scenarios": scenario_store.list_scenarios(int(plan_id))}
+
+
+@app.post("/api/planning/plan/scenarios")
+def save_plan_scenario(payload: dict, request: Request):
+    if not isinstance(payload, dict):
+        raise HTTPException(status_code=400, detail="Scenario payload must be a JSON object.")
+    plan_id = payload.get("plan_id")
+    if not plan_id:
+        raise HTTPException(status_code=400, detail="plan_id is required.")
+    _authorize_plan_access(plan_id, request)
+    name = str(payload.get("name") or "").strip()
+    if not name:
+        raise HTTPException(status_code=400, detail="Scenario name is required.")
+    overrides = payload.get("overrides") if isinstance(payload.get("overrides"), dict) else {}
+    saved = scenario_store.save_scenario(
+        int(plan_id),
+        scenario_id=payload.get("scenario_id"),
+        name=name,
+        note=str(payload.get("note") or ""),
+        overrides=overrides,
+        start_week=str(payload.get("start_week") or ""),
+        end_week=str(payload.get("end_week") or ""),
+        actor=current_user_fallback(),
+    )
+    try:
+        record_activity(
+            plan_id=int(plan_id),
+            action=f"saved scenario '{name}'",
+            actor=current_user_fallback(),
+            entity_type="scenario",
+            entity_id=str(saved.get("scenario_id") or ""),
+        )
+    except Exception:
+        pass
+    return {"status": "saved", "scenario": saved}
+
+
+@app.post("/api/planning/plan/scenarios/delete")
+def delete_plan_scenario(payload: dict, request: Request):
+    if not isinstance(payload, dict):
+        raise HTTPException(status_code=400, detail="Scenario payload must be a JSON object.")
+    plan_id = payload.get("plan_id")
+    scenario_id = payload.get("scenario_id")
+    if not plan_id or not scenario_id:
+        raise HTTPException(status_code=400, detail="plan_id and scenario_id are required.")
+    _authorize_plan_access(plan_id, request)
+    removed = scenario_store.delete_scenario(int(plan_id), str(scenario_id))
+    return {"status": "deleted" if removed else "not_found"}
+
+
+@app.post("/api/planning/plan/scenarios/apply")
+def apply_plan_scenario(payload: dict, request: Request):
+    """Make a saved scenario the live What-If: writes its overrides + window into
+    the plan's What-If record and triggers a recompute."""
+    if not isinstance(payload, dict):
+        raise HTTPException(status_code=400, detail="Scenario payload must be a JSON object.")
+    plan_id = payload.get("plan_id")
+    scenario_id = payload.get("scenario_id")
+    if not plan_id or not scenario_id:
+        raise HTTPException(status_code=400, detail="plan_id and scenario_id are required.")
+    _authorize_plan_access(plan_id, request)
+    scenario = scenario_store.get_scenario(int(plan_id), str(scenario_id))
+    if not scenario:
+        raise HTTPException(status_code=404, detail="Scenario not found.")
+    rec = {
+        "ts": pd.Timestamp.utcnow().isoformat(timespec="seconds"),
+        "start_week": scenario.get("start_week") or "",
+        "end_week": scenario.get("end_week") or "",
+        "overrides": scenario.get("overrides") or {},
+    }
+    save_df(f"plan_{int(plan_id)}_whatif", pd.DataFrame([rec]))
+    save_plan_meta(int(plan_id), {"last_updated_on": rec["ts"], "last_updated_by": current_user_fallback()})
+    try:
+        mark_plan_detail_dirty_deps(int(plan_id), "whatif")
+        _PRECOMPUTE_EXECUTOR.submit(_precompute_plan_detail, int(plan_id))
+    except Exception:
+        pass
+    try:
+        record_activity(
+            plan_id=int(plan_id),
+            action=f"applied scenario '{scenario.get('name')}'",
+            actor=current_user_fallback(),
+            entity_type="scenario",
+            entity_id=str(scenario_id),
+        )
+    except Exception:
+        pass
+    return {"status": "applied", "overrides": rec["overrides"], "start_week": rec["start_week"], "end_week": rec["end_week"]}
+
+
+@app.post("/api/planning/plan/scenarios/compare")
+def compare_plan_scenarios(payload: dict, request: Request):
+    """Compute the weekly upper summary for a baseline (no dials) plus each
+    requested scenario, side by side, without disturbing the live plan."""
+    if not isinstance(payload, dict):
+        raise HTTPException(status_code=400, detail="Scenario payload must be a JSON object.")
+    plan_id = payload.get("plan_id")
+    if not plan_id:
+        raise HTTPException(status_code=400, detail="plan_id is required.")
+    _authorize_plan_access(plan_id, request)
+    ids = payload.get("scenario_ids")
+    ids = [str(s) for s in ids] if isinstance(ids, list) else None
+    all_scenarios = scenario_store.list_scenarios(int(plan_id))
+    if ids:
+        chosen = [s for s in all_scenarios if s["scenario_id"] in ids]
+    else:
+        chosen = all_scenarios
+    columns = []
+    include_baseline = payload.get("include_baseline", True)
+    if include_baseline:
+        columns.append({"scenario_id": "__baseline__", "name": "Baseline (no dials)", "overrides": {}})
+    for s in chosen:
+        columns.append({"scenario_id": s["scenario_id"], "name": s["name"], "overrides": s.get("overrides") or {}})
+    out = []
+    for col in columns:
+        rows = _scenario_upper_rows(int(plan_id), col["overrides"])
+        out.append({
+            "scenario_id": col["scenario_id"],
+            "name": col["name"],
+            "overrides": col["overrides"],
+            "upper": sanitize_for_json(rows),
+        })
+    return {"columns": out}
+
+
 @app.get("/api/planning/plan/new-hire/classes")
-def get_plan_new_hire_classes(plan_id: int = Query(...)):
+def get_plan_new_hire_classes(request: Request, plan_id: int = Query(...)):
+    _authorize_plan_access(plan_id, request)
     df = load_nh_classes(int(plan_id))
     return {
         "rows": df_to_records(df),
@@ -2373,13 +2589,14 @@ def get_plan_new_hire_classes(plan_id: int = Query(...)):
 
 
 @app.post("/api/planning/plan/new-hire/classes")
-def save_plan_new_hire_classes(payload: dict):
+def save_plan_new_hire_classes(payload: dict, request: Request):
     if not isinstance(payload, dict):
         raise HTTPException(status_code=400, detail="New-hire payload must be a JSON object.")
     plan_id = payload.get("plan_id")
     rows = payload.get("rows") or []
     if not plan_id:
         raise HTTPException(status_code=400, detail="plan_id is required.")
+    _authorize_plan_access(plan_id, request)
     df = df_from_payload(rows)
     save_nh_classes(int(plan_id), df)
     try:
@@ -2400,13 +2617,14 @@ def save_plan_new_hire_classes(payload: dict):
 
 
 @app.post("/api/planning/plan/new-hire/class")
-def add_plan_new_hire_class(payload: dict):
+def add_plan_new_hire_class(payload: dict, request: Request):
     if not isinstance(payload, dict):
         raise HTTPException(status_code=400, detail="New-hire payload must be a JSON object.")
     plan_id = payload.get("plan_id")
     data = payload.get("data") or {}
     if not plan_id:
         raise HTTPException(status_code=400, detail="plan_id is required.")
+    _authorize_plan_access(plan_id, request)
     if not isinstance(data, dict):
         raise HTTPException(status_code=400, detail="data must be a JSON object.")
     df = load_nh_classes(int(plan_id))
@@ -2453,13 +2671,14 @@ def add_plan_new_hire_class(payload: dict):
 
 
 @app.post("/api/planning/plan/new-hire/confirm")
-def confirm_plan_new_hire_classes(payload: dict):
+def confirm_plan_new_hire_classes(payload: dict, request: Request):
     if not isinstance(payload, dict):
         raise HTTPException(status_code=400, detail="New-hire payload must be a JSON object.")
     plan_id = payload.get("plan_id")
     class_refs = payload.get("class_refs") or []
     if not plan_id:
         raise HTTPException(status_code=400, detail="plan_id is required.")
+    _authorize_plan_access(plan_id, request)
     if not isinstance(class_refs, list):
         raise HTTPException(status_code=400, detail="class_refs must be a list.")
     df = load_nh_classes(int(plan_id))
@@ -2491,13 +2710,15 @@ def confirm_plan_new_hire_classes(payload: dict):
 
 
 @app.post("/api/planning/plan/compare")
-def compare_plans(payload: dict):
+def compare_plans(payload: dict, request: Request):
     if not isinstance(payload, dict):
         raise HTTPException(status_code=400, detail="Compare payload must be a JSON object.")
     plan_id = payload.get("plan_id")
     compare_id = payload.get("compare_id")
     if not plan_id or not compare_id:
         raise HTTPException(status_code=400, detail="plan_id and compare_id are required.")
+    _authorize_plan_access(plan_id, request)
+    _authorize_plan_access(compare_id, request)
 
     def _upper_df(pid: int) -> pd.DataFrame:
         data, status, _meta = compute_plan_detail_tables(int(pid), grain="week")
@@ -2538,7 +2759,8 @@ def compare_plans(payload: dict):
 
 
 @app.get("/api/planning/plan/table")
-def get_plan_table(plan_id: int = Query(...), name: str = Query(...)):
+def get_plan_table(request: Request, plan_id: int = Query(...), name: str = Query(...)):
+    _authorize_plan_access(plan_id, request)
     pid = int(plan_id)
     table_name = str(name or "")
     if table_name.strip().lower() == "emp":
@@ -2993,9 +3215,10 @@ def attrition_raw_endpoint(payload: dict):
 
 @app.post("/api/forecast/volume-summary")
 async def volume_summary(file: UploadFile = File(...)):
-    content = await file.read()
+    content = await _read_upload_capped(file)
     if not content:
         raise HTTPException(status_code=400, detail="Empty file upload.")
+    _guard_zip_bomb(content)
     result = run_volume_summary(file.filename or "upload", content)
     try:
         save_forecast_run(
@@ -3012,9 +3235,10 @@ async def volume_summary(file: UploadFile = File(...)):
 
 @app.post("/api/forecast/ingest/original")
 async def ingest_original(file: UploadFile = File(...)):
-    content = await file.read()
+    content = await _read_upload_capped(file)
     if not content:
         raise HTTPException(status_code=400, detail="Empty file upload.")
+    _guard_zip_bomb(content)
     df, msg = parse_upload_any(
         file.filename or "upload",
         content,
@@ -3025,9 +3249,10 @@ async def ingest_original(file: UploadFile = File(...)):
 
 @app.post("/api/forecast/ingest/interval")
 async def ingest_interval(file: UploadFile = File(...)):
-    content = await file.read()
+    content = await _read_upload_capped(file)
     if not content:
         raise HTTPException(status_code=400, detail="Empty file upload.")
+    _guard_zip_bomb(content)
     df, msg = parse_upload_any(
         file.filename or "upload",
         content,
@@ -3039,6 +3264,47 @@ async def ingest_interval(file: UploadFile = File(...)):
 @app.get("/api/forecast/saved-runs")
 def list_saved_runs():
     return sanitize_for_json({"runs": list_saved_forecasts()})
+
+
+# --- Forecast accuracy tracking -------------------------------------------
+# Phase 1 computes per-model accuracy; these endpoints expose the persisted
+# history + a "which model is winning" leaderboard for a scope.
+
+@app.get("/api/forecast/accuracy")
+def get_forecast_accuracy(scope: str = Query("global")):
+    from app.pipeline import accuracy_store
+
+    return sanitize_for_json(
+        {
+            "scopes": accuracy_store.list_scopes(),
+            "leaderboard": accuracy_store.leaderboard(scope),
+            "history": accuracy_store.load_history(scope),
+        }
+    )
+
+
+@app.post("/api/forecast/accuracy/record")
+def record_forecast_accuracy(payload: dict, request: Request):
+    """Record an accuracy snapshot from a Phase-1 accuracy table. Auth is a no-op
+    unless AUTH_ENABLED; the forecast result-save path also records automatically."""
+    security.require_user(request)
+    if not isinstance(payload, dict):
+        raise HTTPException(status_code=400, detail="Accuracy payload must be a JSON object.")
+    from app.pipeline import accuracy_store
+
+    rows = payload.get("accuracy") if isinstance(payload.get("accuracy"), list) else payload.get("rows")
+    if not isinstance(rows, list) or not rows:
+        raise HTTPException(status_code=400, detail="An 'accuracy' table (list of per-model rows) is required.")
+    scope = payload.get("scope") or payload.get("business_area") or payload.get("forecast_group") or "global"
+    snap = accuracy_store.record_snapshot(
+        str(scope),
+        rows,
+        run_label=str(payload.get("run_label") or ""),
+        actor=current_user_fallback(),
+    )
+    if not snap:
+        raise HTTPException(status_code=422, detail="No usable per-model accuracy metrics found in the table.")
+    return sanitize_for_json({"status": "recorded", "snapshot": snap})
 
 
 @app.get("/api/forecast/saved-runs/{filename}")

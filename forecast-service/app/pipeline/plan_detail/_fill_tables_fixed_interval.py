@@ -776,12 +776,13 @@ def _fill_tables_fixed_interval(
                         _ovr = _ast.literal_eval(_raw)
                     except Exception:
                         _ovr = {}
-            if isinstance(_ovr, dict):
+            if isinstance(_ovr, dict) and not bool((whatif or {}).get("__replace_persisted__")):
                 whatif = dict(whatif or {})
                 whatif.update(_ovr)
     except Exception:
         pass
     whatif = dict(whatif or {})
+    whatif.pop("__replace_persisted__", None)
 
     def _wf_f(x, d=0.0):
         try:

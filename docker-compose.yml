@@ -1,38 +1,55 @@
+# Local / single-host compose.
+#
+# SECURITY — before exposing this to any untrusted network:
+#  * Set strong unique POSTGRES_PASSWORD / REDIS_PASSWORD (and matching DSNs)
+#    via a .env file or secrets manager — do NOT ship the cap/cap defaults.
+#  * Enable auth: AUTH_ENABLED=1, AUTHZ_ENABLED=1, a random AUTH_JWT_SECRET, and
+#    front the stack with deploy/reverse-proxy/ (SSO). Optionally PROXY_SHARED_SECRET.
+#  * The port mappings below bind to 127.0.0.1 so the backends/datastores are not
+#    reachable from other hosts. In production publish ONLY the reverse proxy;
+#    keep api/engine/models/forecast/db/redis on the internal network.
+#  * Use sslmode=require (or verify-full) for Postgres over any real network.
 services:
   db:
     image: postgres:16
     environment:
-      POSTGRES_USER: cap
-      POSTGRES_PASSWORD: cap
-      POSTGRES_DB: cap_planner
+      POSTGRES_USER: ${POSTGRES_USER:-cap}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-cap}
+      POSTGRES_DB: ${POSTGRES_DB:-cap_planner}
     ports:
-      - "5432:5432"
+      - "127.0.0.1:5432:5432"
     volumes:
       - db_data:/var/lib/postgresql/data
       - ./db/init:/docker-entrypoint-initdb.d:ro
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U cap -d cap_planner"]
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-cap} -d ${POSTGRES_DB:-cap_planner}"]
       interval: 5s
       timeout: 5s
       retries: 10
 
   redis:
     image: redis:7
+    # Set REDIS_PASSWORD to require auth (and update the REDIS_URL DSNs to match).
+    command: ["sh", "-c", "redis-server ${REDIS_PASSWORD:+--requirepass \"$REDIS_PASSWORD\"}"]
     ports:
-      - "6379:6379"
+      - "127.0.0.1:6379:6379"
     volumes:
       - redis_data:/data
 
   api:
     build: ./services/api
     environment:
-      DATABASE_URL: postgres://cap:cap@db:5432/cap_planner?sslmode=disable
+      DATABASE_URL: postgres://${POSTGRES_USER:-cap}:${POSTGRES_PASSWORD:-cap}@db:5432/${POSTGRES_DB:-cap_planner}?sslmode=disable
       REDIS_URL: redis://redis:6379/0
       ENGINE_URL: http://engine:8081
       MODELS_URL: http://models:8000
-      CORS_ORIGINS: http://localhost:3000
+      CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:3000}
+      AUTH_ENABLED: ${AUTH_ENABLED:-}
+      AUTH_JWT_SECRET: ${AUTH_JWT_SECRET:-}
+      TRUST_PROXY_AUTH: ${TRUST_PROXY_AUTH:-}
+      PROXY_SHARED_SECRET: ${PROXY_SHARED_SECRET:-}
     ports:
-      - "8080:8080"
+      - "127.0.0.1:8080:8080"
     depends_on:
       db:
         condition: service_healthy
@@ -47,10 +64,10 @@ services:
   engine:
     build: ./services/engine
     environment:
-      DATABASE_URL: postgres://cap:cap@db:5432/cap_planner?sslmode=disable
+      DATABASE_URL: postgres://${POSTGRES_USER:-cap}:${POSTGRES_PASSWORD:-cap}@db:5432/${POSTGRES_DB:-cap_planner}?sslmode=disable
       REDIS_URL: redis://redis:6379/0
     ports:
-      - "8081:8081"
+      - "127.0.0.1:8081:8081"
     depends_on:
       - db
       - redis
@@ -60,13 +77,18 @@ services:
     environment:
       MODEL_STORE: /app/models
     ports:
-      - "8000:8000"
+      - "127.0.0.1:8000:8000"
 
   forecast-service:
-    build: ./apps/forecast-service
+    build: ./forecast-service
     environment:
-      DATABASE_URL: postgres://cap:cap@db:5432/cap_planner?sslmode=disable
-      CORS_ORIGINS: http://localhost:3000
+      DATABASE_URL: postgres://${POSTGRES_USER:-cap}:${POSTGRES_PASSWORD:-cap}@db:5432/${POSTGRES_DB:-cap_planner}?sslmode=disable
+      CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:3000}
+      AUTH_ENABLED: ${AUTH_ENABLED:-}
+      AUTHZ_ENABLED: ${AUTHZ_ENABLED:-}
+      AUTH_JWT_SECRET: ${AUTH_JWT_SECRET:-}
+      TRUST_PROXY_AUTH: ${TRUST_PROXY_AUTH:-}
+      PROXY_SHARED_SECRET: ${PROXY_SHARED_SECRET:-}
       # Realtime: run plan-detail (incl. FTE) calculations inline so the
       # compute endpoint returns "ready" with data in one round-trip. With "0"
       # the frontend had to poll every 1.2s until a background worker finished,
@@ -76,12 +98,12 @@ services:
       PLAN_CALC_REALTIME: "1"
       PLAN_CALC_WORKERS: "2"
     ports:
-      - "8082:8080"
+      - "127.0.0.1:8082:8080"
     volumes:
-      - ./apps/forecast-service/exports:/app/exports
+      - ./forecast-service/exports:/app/exports
 
   web:
-    build: ./apps/web
+    build: ./web
     environment:
       NEXT_PUBLIC_API_URL: http://api:8080
       NEXT_PUBLIC_FORECAST_URL: http://forecast-service:8080
