@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useState, type ReactNode, type Ref } from "react";
+import { useCallback, useMemo, useState, type MouseEvent as ReactMouseEvent, type ReactNode, type Ref } from "react";
 
 type DataTableProps = {
   data?: Array<Record<string, any>>;
@@ -110,10 +110,27 @@ export default function DataTable({
   // placed above these caused the hook count to change on empty<->data
   // transitions and crashed the table.
   const [showAll, setShowAll] = useState(false);
+  // Styled, never-clipped cell tooltip. A single fixed-position element is
+  // positioned from the hovered cell's rect (delegation), so it escapes the
+  // table's overflow:auto wrapper that would clip a CSS pseudo-element.
+  const [tip, setTip] = useState<{ text: string; x: number; y: number } | null>(null);
   const defaultMax = 500;
   const effectiveMax = maxRows === 0 ? undefined : maxRows ?? defaultMax;
   const visibleRows = !showAll && effectiveMax ? rows.slice(0, effectiveMax) : rows;
   const columns = useMemo(() => buildColumns(visibleRows), [visibleRows]);
+
+  const onCellOver = useCallback((event: ReactMouseEvent<HTMLTableElement>) => {
+    const cell = (event.target as HTMLElement)?.closest?.("td[data-tip]") as HTMLElement | null;
+    const text = cell?.getAttribute("data-tip") || "";
+    if (!cell || !text) {
+      setTip((prev) => (prev ? null : prev));
+      return;
+    }
+    const rect = cell.getBoundingClientRect();
+    setTip({ text, x: rect.left + rect.width / 2, y: rect.top });
+  }, []);
+
+  const clearTip = useCallback(() => setTip(null), []);
 
   if (!rows.length) {
     return <div className="forecast-muted">{emptyLabel}</div>;
@@ -126,7 +143,7 @@ export default function DataTable({
 
   return (
     <div className={`table-wrap ${className ?? ""}`.trim()} ref={wrapperRef}>
-      <table className="table">
+      <table className="table" onMouseOver={onCellOver} onMouseLeave={clearTip}>
         <thead>
           <tr>
             {columns.map((col) => (
@@ -138,7 +155,7 @@ export default function DataTable({
           {visibleRows.map((row, idx) => (
             <tr key={`${idx}-${columns[0] || "row"}`}>
               {columns.map((col) => (
-                <td key={col} data-col={col} title={(row as any)?.__tooltips?.[col] ?? ""}>
+                <td key={col} data-col={col} data-tip={(row as any)?.__tooltips?.[col] ?? ""}>
                   {rawNumberCols.has(col) && typeof row?.[col] === "number"
                     ? row?.[col]
                     : formatCell(row?.[col], col)}
@@ -158,6 +175,15 @@ export default function DataTable({
           >
             {showAll ? "Show fewer rows" : "Show all rows"}
           </button>
+        </div>
+      ) : null}
+      {tip ? (
+        <div
+          className="app-tooltip app-tooltip--cell"
+          role="tooltip"
+          style={{ left: tip.x, top: tip.y }}
+        >
+          {tip.text}
         </div>
       ) : null}
     </div>

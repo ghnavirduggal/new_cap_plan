@@ -26,6 +26,19 @@
   --rail_text: #ecf3ff;
   --sb-dur: 1s;
   --sb-ease: cubic-bezier(.2,.7,.1,1);
+  /* Additive polish tokens — derived from the existing palette (no new hues).
+     Shadows reuse the slate ink (#0f172a); the focus ring reuses the primary
+     blue (#2563eb). These give consistent depth, motion and focus affordances
+     across primitives without changing the color scheme. */
+  --shadow-sm: 0 1px 2px rgba(15, 23, 42, 0.06), 0 1px 3px rgba(15, 23, 42, 0.08);
+  --shadow-md: 0 4px 12px rgba(15, 23, 42, 0.08), 0 2px 4px rgba(15, 23, 42, 0.06);
+  --shadow-lg: 0 12px 32px rgba(15, 23, 42, 0.12), 0 4px 10px rgba(15, 23, 42, 0.08);
+  --radius-sm: 8px;
+  --radius-lg: 16px;
+  --ring: 0 0 0 3px rgba(37, 99, 235, 0.22);
+  --ring-danger: 0 0 0 3px rgba(220, 38, 38, 0.20);
+  --ease: cubic-bezier(.2, .7, .1, 1);
+  --tdur: 150ms;
 }
 html { 
   zoom: var(--ui-zoom); 
@@ -40,11 +53,65 @@ body {
   font-family: Inter, system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
   color: var(--text);
   background: var(--bg);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  text-rendering: optimizeLegibility;
 }
 
 a {
   color: inherit;
   text-decoration: none;
+}
+
+/* Keyboard focus affordance for interactive elements that don't define their
+   own (links, icon buttons, summaries). Mouse clicks are unaffected. */
+a:focus-visible,
+button:focus-visible,
+summary:focus-visible,
+[role="button"]:focus-visible,
+[tabindex]:focus-visible {
+  outline: none;
+  box-shadow: var(--ring);
+  border-radius: var(--radius-sm);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+    scroll-behavior: auto !important;
+  }
+}
+
+/* Slim, unobtrusive scrollbars for the app's many scroll areas (tables,
+   panels, menus). Neutral greys only — no scheme change. */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: #cbd5e1 transparent;
+}
+
+*::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+*::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+*::-webkit-scrollbar-thumb {
+  background: #cbd5e1;
+  border-radius: 999px;
+  border: 2px solid transparent;
+  background-clip: padding-box;
+}
+
+*::-webkit-scrollbar-thumb:hover {
+  background: #94a3b8;
+  background-clip: padding-box;
 }
 
 .app-shell {
@@ -154,11 +221,23 @@ a {
   transition: all 0.2s ease;
 }
 
-.nav-item.active,
 .nav-item:hover {
   background: #fff;
   color: var(--primary);
-  box-shadow: var(--shadow);
+  box-shadow: var(--shadow-sm);
+}
+
+/* Active page is visually distinct from a mere hover: blue-tinted fill, a
+   left accent bar and bolder weight, so the current location reads instantly. */
+.nav-item.active {
+  background: #eaf1fd;
+  color: var(--primary);
+  box-shadow: inset 3px 0 0 var(--primary);
+  font-weight: 700;
+}
+
+.nav-item.active:hover {
+  background: #e2ecfc;
 }
 
 .nav-icon {
@@ -210,21 +289,46 @@ a {
 
 .crumbs-line {
   display: flex;
-  align-items: end;
+  align-items: center;
   gap: 8px;
-  font-size: 16px;
-  color: #1f6feb;
-  cursor: pointer;
+  font-size: 15px;
+}
+
+.crumbs-links {
+  display: inline-flex;
+  align-items: center;
+  flex-wrap: wrap;
+  /* Separators (" / " text nodes) inherit this muted tone; the links below
+     override it back to blue, so the slashes recede and the crumbs pop. */
+  color: #94a3b8;
 }
 
 .crumbs-link {
-  color: #1f6feb;
+  color: var(--primary);
   text-decoration: none;
   font-weight: 600;
+  padding: 2px 6px;
+  border-radius: 6px;
+  transition: background var(--tdur) var(--ease), color var(--tdur) var(--ease);
+}
+
+.crumbs-link:hover {
+  background: #eaf1fd;
+  color: #1a5fd0;
+}
+
+/* The last crumb is the current page — render it as ink, not a link, so the
+   user instantly sees where they are. */
+.crumbs-label {
+  color: var(--text);
+  font-weight: 700;
+  padding: 2px 4px;
 }
 
 .crumb-icon {
   font-size: 18px;
+  display: inline-flex;
+  align-items: center;
 }
 
 .page-title {
@@ -286,6 +390,39 @@ a {
   border-radius: 10px;
   padding: 10px 12px;
   font-size: 14px;
+  background: #fff;
+  color: var(--text);
+  transition: border-color var(--tdur) var(--ease), box-shadow var(--tdur) var(--ease);
+}
+
+.input:hover,
+.select:hover,
+.textarea:hover {
+  border-color: #cbd5e1;
+}
+
+.input:focus,
+.select:focus,
+.textarea:focus,
+.input:focus-visible,
+.select:focus-visible,
+.textarea:focus-visible {
+  outline: none;
+  border-color: var(--primary);
+  box-shadow: var(--ring);
+}
+
+.input::placeholder,
+.textarea::placeholder {
+  color: #9aa6b6;
+}
+
+.input:disabled,
+.select:disabled,
+.textarea:disabled {
+  background: #f4f6f9;
+  color: var(--muted);
+  cursor: not-allowed;
 }
 
 .multi-select {
@@ -364,17 +501,75 @@ a {
   font-weight: 600;
   cursor: pointer;
   font-size: 14px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  line-height: 1.2;
+  transition: background var(--tdur) var(--ease), border-color var(--tdur) var(--ease),
+    box-shadow var(--tdur) var(--ease), transform var(--tdur) var(--ease), filter var(--tdur) var(--ease);
+}
+
+.btn:active {
+  transform: translateY(1px);
+}
+
+.btn:focus-visible {
+  outline: none;
+  box-shadow: var(--ring);
+}
+
+.btn:disabled,
+.btn[disabled] {
+  opacity: 0.55;
+  cursor: not-allowed;
+  transform: none;
+  box-shadow: none;
 }
 
 .btn-primary {
   background: var(--primary);
   color: #fff;
+  box-shadow: 0 1px 2px rgba(31, 111, 235, 0.25);
+}
+
+.btn-primary:hover {
+  filter: brightness(0.94);
+  box-shadow: 0 4px 12px rgba(31, 111, 235, 0.28);
+}
+
+.btn-primary:focus-visible {
+  box-shadow: var(--ring), 0 1px 2px rgba(31, 111, 235, 0.25);
 }
 
 .btn-light {
   background: #ffffff;
   border: 1px solid var(--border);
   color: var(--text);
+}
+
+.btn-light:hover {
+  background: #f8fafc;
+  border-color: #cbd5e1;
+}
+
+.btn-danger:hover {
+  filter: brightness(0.94);
+  box-shadow: 0 4px 12px rgba(220, 38, 38, 0.26);
+}
+
+.btn-danger:focus-visible {
+  box-shadow: var(--ring-danger);
+}
+
+.btn-success:hover {
+  filter: brightness(0.94);
+  box-shadow: 0 4px 12px rgba(21, 128, 61, 0.26);
+}
+
+.btn-outline:hover {
+  background: #f8fafc;
+  border-color: #cbd5e1;
 }
 
 .btn-danger {
@@ -478,6 +673,21 @@ a {
   min-width: 90px;
   text-align: center;
   background: #585858;
+  letter-spacing: 0.02em;
+}
+
+/* Row hover — subtle highlight that also keeps the sticky first column in sync
+   (uses the existing blue family, no new hue). */
+.table tbody tr {
+  transition: background var(--tdur) var(--ease);
+}
+
+.table tbody tr:hover td {
+  background: #f4f8ff;
+}
+
+.table tbody tr:hover td:first-child {
+  background: #eaf1fd;
 }
 
 .table-wrap {
@@ -547,23 +757,82 @@ a {
 }
 
 .toast {
+  position: relative;
   background: #ffffff;
   border: 1px solid var(--border);
   border-radius: 12px;
-  padding: 10px 12px;
-  min-width: 220px;
-  box-shadow: var(--shadow);
+  padding: 12px 14px 12px 12px;
+  min-width: 260px;
+  max-width: 380px;
+  box-shadow: var(--shadow-lg);
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   gap: 10px;
+  overflow: hidden;
+  animation: toast-in 220ms var(--ease);
+}
+
+/* Leading status icon — a coloured circular badge with a glyph, set per type.
+   Pure CSS so the toast markup stays unchanged. */
+.toast::before {
+  content: "";
+  flex: 0 0 auto;
+  width: 22px;
+  height: 22px;
+  margin-top: 1px;
+  border-radius: 999px;
+  background-size: 13px 13px;
+  background-repeat: no-repeat;
+  background-position: center;
+}
+
+/* Auto-dismiss progress bar (matches the 4s timeout in ToastProvider). */
+.toast::after {
+  content: "";
+  position: absolute;
+  left: 0;
+  bottom: 0;
+  height: 3px;
+  width: 100%;
+  transform-origin: left;
+  animation: toast-progress 4s linear forwards;
+  opacity: 0.7;
+}
+
+@keyframes toast-in {
+  from { opacity: 0; transform: translateX(16px) scale(0.98); }
+  to { opacity: 1; transform: translateX(0) scale(1); }
+}
+
+@keyframes toast-progress {
+  from { transform: scaleX(1); }
+  to { transform: scaleX(0); }
 }
 
 .toast-success {
-  border-left: 6px solid #16a34a;
+  border-left: 4px solid #16a34a;
+}
+
+.toast-success::before {
+  background-color: #16a34a;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='white' stroke-width='3.5' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpolyline points='20 6 9 17 4 12'/%3E%3C/svg%3E");
+}
+
+.toast-success::after {
+  background: #16a34a;
 }
 
 .toast-error {
-  border-left: 6px solid #ef4444;
+  border-left: 4px solid #ef4444;
+}
+
+.toast-error::before {
+  background-color: #ef4444;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='white' stroke-width='3.5' stroke-linecap='round' stroke-linejoin='round'%3E%3Cline x1='18' y1='6' x2='6' y2='18'/%3E%3Cline x1='6' y1='6' x2='18' y2='18'/%3E%3C/svg%3E");
+}
+
+.toast-error::after {
+  background: #ef4444;
 }
 
 .global-loader {
@@ -621,21 +890,136 @@ a {
 }
 
 .toast-warning {
-  border-left: 6px solid #f59e0b;
+  border-left: 4px solid #f59e0b;
+}
+
+.toast-warning::before {
+  background-color: #f59e0b;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='white' stroke-width='3' stroke-linecap='round' stroke-linejoin='round'%3E%3Cline x1='12' y1='8' x2='12' y2='13'/%3E%3Cline x1='12' y1='17' x2='12.01' y2='17'/%3E%3C/svg%3E");
+}
+
+.toast-warning::after {
+  background: #f59e0b;
 }
 
 .toast-message {
   font-size: 13px;
+  line-height: 1.45;
   color: #0f172a;
   flex: 1;
+  padding-top: 2px;
 }
 
 .toast-close {
   border: none;
   background: transparent;
   cursor: pointer;
-  font-size: 16px;
-  color: #64748b;
+  font-size: 14px;
+  line-height: 1;
+  color: #94a3b8;
+  width: 22px;
+  height: 22px;
+  border-radius: 6px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  transition: background var(--tdur) var(--ease), color var(--tdur) var(--ease);
+}
+
+.toast-close:hover {
+  background: #f1f5f9;
+  color: #475569;
+}
+
+/* ---- Tooltips -------------------------------------------------------------
+   Styled dark tooltip used in two ways:
+   1. .app-tooltip — a JS-positioned (position:fixed) element for table cells,
+      so it is never clipped by the table's overflow:auto wrapper.
+   2. [data-tooltip] — a pure-CSS utility for simple, non-clipped triggers
+      (icons, buttons, labels): add data-tooltip="text" to any element. */
+.app-tooltip {
+  position: fixed;
+  z-index: 9999;
+  transform: translate(-50%, calc(-100% - 10px));
+  max-width: 280px;
+  padding: 7px 10px;
+  border-radius: 8px;
+  background: #0f172a;
+  color: #f8fafc;
+  font-size: 12px;
+  line-height: 1.45;
+  font-weight: 500;
+  white-space: pre-line;
+  box-shadow: var(--shadow-lg);
+  pointer-events: none;
+  animation: tip-in 120ms var(--ease);
+}
+
+.app-tooltip::after {
+  content: "";
+  position: absolute;
+  left: 50%;
+  top: 100%;
+  transform: translateX(-50%);
+  border: 5px solid transparent;
+  border-top-color: #0f172a;
+}
+
+@keyframes tip-in {
+  from { opacity: 0; transform: translate(-50%, calc(-100% - 4px)); }
+  to { opacity: 1; transform: translate(-50%, calc(-100% - 10px)); }
+}
+
+[data-tooltip] {
+  position: relative;
+}
+
+[data-tooltip]::before,
+[data-tooltip]::after {
+  position: absolute;
+  left: 50%;
+  bottom: calc(100% + 8px);
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity var(--tdur) var(--ease), transform var(--tdur) var(--ease);
+  transform: translate(-50%, 4px);
+  z-index: 9999;
+}
+
+[data-tooltip]::before {
+  content: attr(data-tooltip);
+  max-width: 260px;
+  width: max-content;
+  padding: 7px 10px;
+  border-radius: 8px;
+  background: #0f172a;
+  color: #f8fafc;
+  font-size: 12px;
+  font-weight: 500;
+  line-height: 1.45;
+  white-space: pre-line;
+  box-shadow: var(--shadow-lg);
+}
+
+[data-tooltip]::after {
+  content: "";
+  bottom: calc(100% + 3px);
+  border: 5px solid transparent;
+  border-top-color: #0f172a;
+}
+
+[data-tooltip]:hover::before,
+[data-tooltip]:hover::after,
+[data-tooltip]:focus-visible::before,
+[data-tooltip]:focus-visible::after {
+  opacity: 1;
+  transform: translate(-50%, 0);
+}
+
+[data-tooltip][data-tooltip=""]::before,
+[data-tooltip][data-tooltip=""]::after {
+  display: none;
 }
 
 .distribution-input {
@@ -835,6 +1219,15 @@ a {
   display: grid;
   gap: 6px;
   min-height: 120px;
+  box-shadow: var(--shadow-sm);
+  transition: transform var(--tdur) var(--ease), box-shadow var(--tdur) var(--ease),
+    border-color var(--tdur) var(--ease);
+}
+
+.kpi-card:hover {
+  transform: translateY(-2px);
+  box-shadow: var(--shadow-md);
+  border-color: #cbd5e1;
 }
 
 .kpi-title {
@@ -2648,10 +3041,13 @@ a {
   position: fixed;
   inset: 0;
   background: rgba(0, 0, 0, 0.6);
+  -webkit-backdrop-filter: blur(3px);
+  backdrop-filter: blur(3px);
   display: flex;
   align-items: center;
   justify-content: center;
   z-index: 9999;
+  animation: ws-fade-in 160ms var(--ease);
 }
 
 .ws-modal {
@@ -2662,6 +3058,18 @@ a {
   overflow: hidden;
   display: flex;
   flex-direction: column;
+  box-shadow: var(--shadow-lg);
+  animation: ws-modal-in 180ms var(--ease);
+}
+
+@keyframes ws-fade-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+@keyframes ws-modal-in {
+  from { opacity: 0; transform: translateY(8px) scale(0.985); }
+  to { opacity: 1; transform: translateY(0) scale(1); }
 }
 
 .ws-modal-sm {
@@ -2939,6 +3347,16 @@ a {
   border-bottom-left-radius: 8px;
   box-shadow: 0 0 6px rgba(15, 23, 42, 0.15);
   font-size: 13px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  transition: background var(--tdur) var(--ease), box-shadow var(--tdur) var(--ease),
+    color var(--tdur) var(--ease);
+}
+
+.plan-options-toggle:hover {
+  background: var(--primary);
+  color: #fff;
+  box-shadow: -2px 0 12px rgba(31, 111, 235, 0.3);
 }
 
 .plan-options-panel {
@@ -2949,13 +3367,13 @@ a {
   height: 100%;
   background: var(--panel);
   border-left: 1px solid var(--border);
-  box-shadow: -6px 0 18px rgba(15, 23, 42, 0.1);
+  box-shadow: var(--shadow-lg);
   padding: 16px;
   display: flex;
   flex-direction: column;
   gap: 16px;
   z-index: 1040;
-  transition: right 0.2s ease;
+  transition: right 0.28s var(--ease);
   overflow-y: auto;
 }
 
