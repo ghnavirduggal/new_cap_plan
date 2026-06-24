@@ -337,7 +337,11 @@ def normalize_timeseries_rows(kind: str, rows: list[dict]) -> pd.DataFrame:
     else:
         out["date"] = pd.NaT
     if interval_col:
-        out["interval"] = df[interval_col].astype(str).str.strip()
+        iv = df[interval_col].astype(str).str.strip()
+        # Normalize empty/placeholder intervals to NULL so a "nan"/"NaT" string
+        # and a real NULL don't become two distinct rows (same date) that later
+        # SUM-double-count. Keeps row_hash and both read paths consistent.
+        out["interval"] = iv.where(~iv.str.lower().isin(["nan", "nat", "none", ""]), None)
     else:
         out["interval"] = None
 
@@ -652,6 +656,24 @@ def preview_timeseries_rows(kind: str, scope_key: str, rows: list[dict]) -> dict
     }
 
 
+def _norm_interval_key(series: pd.Series) -> pd.Series:
+    """Canonicalize interval values for de-duplication.
+
+    Maps every empty/placeholder representation (NULL/NaN/NaT and the strings
+    "nan"/"NaT"/"None"/"NaN"/"<NA>") to "" so a NULL-interval row and a
+    "nan"-string-interval row for the same date collapse to ONE row (matching
+    the batch SQL DISTINCT ON) instead of double-counting in SUM rollups.
+    fillna("") must run before astype(str): on pandas 3.x astype(str) of None
+    yields float NaN, not the string "None".
+    """
+    return (
+        series.fillna("")
+        .astype(str)
+        .str.strip()
+        .replace({"nan": "", "NaT": "", "None": "", "NaN": "", "<NA>": ""})
+    )
+
+
 def load_timeseries_any(
     kind: str,
     scopes: list[str],
@@ -756,7 +778,7 @@ def load_timeseries_any(
                 cur = conn.cursor()
                 cur.execute(
                     f"""
-                    SELECT DISTINCT ON (scope_key_norm, date, interval)
+                    SELECT DISTINCT ON (scope_key_norm, date, CASE WHEN TRIM(COALESCE(interval, '')) IN ('', 'nan', 'NaT', 'None', 'NaN') THEN '' ELSE TRIM(interval) END)
                         scope_key,
                         scope_key_norm,
                         date,
@@ -767,7 +789,7 @@ def load_timeseries_any(
                         items
                     FROM timeseries_entries
                     WHERE {where}
-                    ORDER BY scope_key_norm, date, interval NULLS FIRST, created_at DESC
+                    ORDER BY scope_key_norm, date, CASE WHEN TRIM(COALESCE(interval, '')) IN ('', 'nan', 'NaT', 'None', 'NaN') THEN '' ELSE TRIM(interval) END, created_at DESC
                     """,
                     tuple(params),
                 )
@@ -831,13 +853,7 @@ def load_timeseries_any(
                 pass
             if "date" in df.columns:
                 if "interval" in df.columns:
-                    interval_norm = (
-                        df["interval"]
-                        .astype(str)
-                        .replace("nan", "")
-                        .replace("NaT", "")
-                        .str.strip()
-                    )
+                    interval_norm = _norm_interval_key(df["interval"])
                     df["__interval_norm"] = interval_norm
                     df = df.drop_duplicates(subset=["date", "__interval_norm"], keep="last").drop(columns=["__interval_norm"])
                 else:
@@ -864,13 +880,7 @@ def load_timeseries_any(
                 merged = pd.concat([df, df_csv], ignore_index=True)
                 merged["_order"] = range(len(merged))
                 if "interval" in merged.columns:
-                    interval_norm = (
-                        merged["interval"]
-                        .astype(str)
-                        .replace("nan", "")
-                        .replace("NaT", "")
-                        .str.strip()
-                    )
+                    interval_norm = _norm_interval_key(merged["interval"])
                     merged["__interval_norm"] = interval_norm
                     merged = merged.sort_values("_order").drop_duplicates(
                         subset=["date", "__interval_norm"], keep="last"
@@ -930,13 +940,7 @@ def load_timeseries_any(
                     pass
                 if "date" in df_prefix.columns:
                     if "interval" in df_prefix.columns:
-                        interval_norm = (
-                            df_prefix["interval"]
-                            .astype(str)
-                            .replace("nan", "")
-                            .replace("NaT", "")
-                            .str.strip()
-                        )
+                        interval_norm = _norm_interval_key(df_prefix["interval"])
                         df_prefix["__interval_norm"] = interval_norm
                         df_prefix = df_prefix.drop_duplicates(subset=["date", "__interval_norm"], keep="last").drop(columns=["__interval_norm"])
                     else:
