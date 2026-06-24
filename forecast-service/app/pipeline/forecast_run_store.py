@@ -4,7 +4,7 @@ import hashlib
 from typing import Any, Optional
 
 import pandas as pd
-from psycopg.types.json import Json
+from psycopg2.extras import Json
 
 from app.pipeline.postgres import db_conn, has_dsn, ensure_forecast_schema
 from app.pipeline.ops_store import normalize_scope_key

@@ -9,6 +9,6 @@ xgboost
 prophet
 plotly
 openpyxl
-psycopg[binary]
+psycopg2-binary
 dash
 xlsxwriter
