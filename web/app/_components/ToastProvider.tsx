@@ -55,7 +55,7 @@ export default function ToastProvider({ children }: { children: ReactNode }) {
               aria-label="Dismiss notification"
               onClick={() => removeToast(toast.id)}
             >
-              x
+              ×
             </button>
           </div>
         ))}

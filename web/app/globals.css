@@ -289,21 +289,46 @@ summary:focus-visible,
 
 .crumbs-line {
   display: flex;
-  align-items: end;
+  align-items: center;
   gap: 8px;
-  font-size: 16px;
-  color: #1f6feb;
-  cursor: pointer;
+  font-size: 15px;
+}
+
+.crumbs-links {
+  display: inline-flex;
+  align-items: center;
+  flex-wrap: wrap;
+  /* Separators (" / " text nodes) inherit this muted tone; the links below
+     override it back to blue, so the slashes recede and the crumbs pop. */
+  color: #94a3b8;
 }
 
 .crumbs-link {
-  color: #1f6feb;
+  color: var(--primary);
   text-decoration: none;
   font-weight: 600;
+  padding: 2px 6px;
+  border-radius: 6px;
+  transition: background var(--tdur) var(--ease), color var(--tdur) var(--ease);
+}
+
+.crumbs-link:hover {
+  background: #eaf1fd;
+  color: #1a5fd0;
+}
+
+/* The last crumb is the current page — render it as ink, not a link, so the
+   user instantly sees where they are. */
+.crumbs-label {
+  color: var(--text);
+  font-weight: 700;
+  padding: 2px 4px;
 }
 
 .crumb-icon {
   font-size: 18px;
+  display: inline-flex;
+  align-items: center;
 }
 
 .page-title {
@@ -732,23 +757,82 @@ summary:focus-visible,
 }
 
 .toast {
+  position: relative;
   background: #ffffff;
   border: 1px solid var(--border);
   border-radius: 12px;
-  padding: 10px 12px;
-  min-width: 220px;
-  box-shadow: var(--shadow);
+  padding: 12px 14px 12px 12px;
+  min-width: 260px;
+  max-width: 380px;
+  box-shadow: var(--shadow-lg);
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   gap: 10px;
+  overflow: hidden;
+  animation: toast-in 220ms var(--ease);
+}
+
+/* Leading status icon — a coloured circular badge with a glyph, set per type.
+   Pure CSS so the toast markup stays unchanged. */
+.toast::before {
+  content: "";
+  flex: 0 0 auto;
+  width: 22px;
+  height: 22px;
+  margin-top: 1px;
+  border-radius: 999px;
+  background-size: 13px 13px;
+  background-repeat: no-repeat;
+  background-position: center;
+}
+
+/* Auto-dismiss progress bar (matches the 4s timeout in ToastProvider). */
+.toast::after {
+  content: "";
+  position: absolute;
+  left: 0;
+  bottom: 0;
+  height: 3px;
+  width: 100%;
+  transform-origin: left;
+  animation: toast-progress 4s linear forwards;
+  opacity: 0.7;
+}
+
+@keyframes toast-in {
+  from { opacity: 0; transform: translateX(16px) scale(0.98); }
+  to { opacity: 1; transform: translateX(0) scale(1); }
+}
+
+@keyframes toast-progress {
+  from { transform: scaleX(1); }
+  to { transform: scaleX(0); }
 }
 
 .toast-success {
-  border-left: 6px solid #16a34a;
+  border-left: 4px solid #16a34a;
+}
+
+.toast-success::before {
+  background-color: #16a34a;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='white' stroke-width='3.5' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpolyline points='20 6 9 17 4 12'/%3E%3C/svg%3E");
+}
+
+.toast-success::after {
+  background: #16a34a;
 }
 
 .toast-error {
-  border-left: 6px solid #ef4444;
+  border-left: 4px solid #ef4444;
+}
+
+.toast-error::before {
+  background-color: #ef4444;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='white' stroke-width='3.5' stroke-linecap='round' stroke-linejoin='round'%3E%3Cline x1='18' y1='6' x2='6' y2='18'/%3E%3Cline x1='6' y1='6' x2='18' y2='18'/%3E%3C/svg%3E");
+}
+
+.toast-error::after {
+  background: #ef4444;
 }
 
 .global-loader {
@@ -806,21 +890,136 @@ summary:focus-visible,
 }
 
 .toast-warning {
-  border-left: 6px solid #f59e0b;
+  border-left: 4px solid #f59e0b;
+}
+
+.toast-warning::before {
+  background-color: #f59e0b;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='white' stroke-width='3' stroke-linecap='round' stroke-linejoin='round'%3E%3Cline x1='12' y1='8' x2='12' y2='13'/%3E%3Cline x1='12' y1='17' x2='12.01' y2='17'/%3E%3C/svg%3E");
+}
+
+.toast-warning::after {
+  background: #f59e0b;
 }
 
 .toast-message {
   font-size: 13px;
+  line-height: 1.45;
   color: #0f172a;
   flex: 1;
+  padding-top: 2px;
 }
 
 .toast-close {
   border: none;
   background: transparent;
   cursor: pointer;
-  font-size: 16px;
-  color: #64748b;
+  font-size: 14px;
+  line-height: 1;
+  color: #94a3b8;
+  width: 22px;
+  height: 22px;
+  border-radius: 6px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  transition: background var(--tdur) var(--ease), color var(--tdur) var(--ease);
+}
+
+.toast-close:hover {
+  background: #f1f5f9;
+  color: #475569;
+}
+
+/* ---- Tooltips -------------------------------------------------------------
+   Styled dark tooltip used in two ways:
+   1. .app-tooltip — a JS-positioned (position:fixed) element for table cells,
+      so it is never clipped by the table's overflow:auto wrapper.
+   2. [data-tooltip] — a pure-CSS utility for simple, non-clipped triggers
+      (icons, buttons, labels): add data-tooltip="text" to any element. */
+.app-tooltip {
+  position: fixed;
+  z-index: 9999;
+  transform: translate(-50%, calc(-100% - 10px));
+  max-width: 280px;
+  padding: 7px 10px;
+  border-radius: 8px;
+  background: #0f172a;
+  color: #f8fafc;
+  font-size: 12px;
+  line-height: 1.45;
+  font-weight: 500;
+  white-space: pre-line;
+  box-shadow: var(--shadow-lg);
+  pointer-events: none;
+  animation: tip-in 120ms var(--ease);
+}
+
+.app-tooltip::after {
+  content: "";
+  position: absolute;
+  left: 50%;
+  top: 100%;
+  transform: translateX(-50%);
+  border: 5px solid transparent;
+  border-top-color: #0f172a;
+}
+
+@keyframes tip-in {
+  from { opacity: 0; transform: translate(-50%, calc(-100% - 4px)); }
+  to { opacity: 1; transform: translate(-50%, calc(-100% - 10px)); }
+}
+
+[data-tooltip] {
+  position: relative;
+}
+
+[data-tooltip]::before,
+[data-tooltip]::after {
+  position: absolute;
+  left: 50%;
+  bottom: calc(100% + 8px);
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity var(--tdur) var(--ease), transform var(--tdur) var(--ease);
+  transform: translate(-50%, 4px);
+  z-index: 9999;
+}
+
+[data-tooltip]::before {
+  content: attr(data-tooltip);
+  max-width: 260px;
+  width: max-content;
+  padding: 7px 10px;
+  border-radius: 8px;
+  background: #0f172a;
+  color: #f8fafc;
+  font-size: 12px;
+  font-weight: 500;
+  line-height: 1.45;
+  white-space: pre-line;
+  box-shadow: var(--shadow-lg);
+}
+
+[data-tooltip]::after {
+  content: "";
+  bottom: calc(100% + 3px);
+  border: 5px solid transparent;
+  border-top-color: #0f172a;
+}
+
+[data-tooltip]:hover::before,
+[data-tooltip]:hover::after,
+[data-tooltip]:focus-visible::before,
+[data-tooltip]:focus-visible::after {
+  opacity: 1;
+  transform: translate(-50%, 0);
+}
+
+[data-tooltip][data-tooltip=""]::before,
+[data-tooltip][data-tooltip=""]::after {
+  display: none;
 }
 
 .distribution-input {
