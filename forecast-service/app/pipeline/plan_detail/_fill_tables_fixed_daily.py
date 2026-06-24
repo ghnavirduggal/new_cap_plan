@@ -863,6 +863,10 @@ def _fill_tables_fixed_daily(ptype, pid, _fw_cols_unused, _tick, whatif=None):
     # For voice/chat/outbound the base FTE is an Erlang sumproduct rollup; the
     # weekly module applies the same linear scaling to the rolled-up FTE for
     # what-if (backlog is Back-Office-only), so we stay consistent here.
+    # Base shrink fraction for the channel — shrink_delta is ADDITIVE percentage
+    # points on top of this (e.g. base 30% + 5 -> 35%, productive 70% -> 65%),
+    # not a multiplier, so the FTE scaling is base-aware.
+    wf_base_shr = _planned_shrink(_settings, ch)
     if vol_delta or aht_delta or shrink_delta or (is_bo and backlog_enabled):
         for d in day_ids:
             base_f = float(m_fte_f.get(d, 0.0) or 0.0)
@@ -881,9 +885,11 @@ def _fill_tables_fixed_daily(ptype, pid, _fw_cols_unused, _tick, whatif=None):
             # 3) what-if AHT/SUT delta on active days
             if active and aht_delta:
                 base_f *= (1.0 + aht_delta / 100.0)
-            # 4) what-if shrink delta on active days (more shrink → more FTE)
+            # 4) what-if shrink delta on active days (additive points on base)
             if active and shrink_delta:
-                base_f /= max(0.1, 1.0 - (shrink_delta / 100.0))
+                prod0 = max(0.01, 1.0 - wf_base_shr)
+                prod1 = max(0.01, prod0 - shrink_delta / 100.0)
+                base_f *= prod0 / prod1
             m_fte_f[d] = base_f
             # Reflect the volume dial in the displayed Forecast row too, so the
             # grid and the required FTE stay consistent.

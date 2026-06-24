@@ -1210,6 +1210,19 @@ def _fill_tables_fixed_monthly(ptype, pid, fw_cols, _tick, whatif=None):
     req_m_budgeted = _daily_to_monthly(req_daily_budgeted, is_bo=is_bo_ch)
     # What-If: adjust forecast requirements by volume, AHT and shrink deltas
     # Apply to future months only when no explicit window is set
+    def _wf_shr_frac(val, fb=0.30):
+        try:
+            x = float(val)
+            return x / 100.0 if x > 1.0 else x
+        except Exception:
+            return fb
+    _ch_wf = str(ch_first or "").strip().lower()
+    _wf_skey = {
+        "back office": "bo_shrinkage_pct", "bo": "bo_shrinkage_pct",
+        "chat": "chat_shrinkage_pct", "outbound": "ob_shrinkage_pct",
+        "ob": "ob_shrinkage_pct", "voice": "voice_shrinkage_pct",
+    }.get(_ch_wf, "shrinkage_pct")
+    _wf_base_shr_m = _wf_shr_frac(settings.get(_wf_skey, settings.get("shrinkage_pct")))
     if vol_delta or shrink_delta or aht_delta:
         for mid in list(req_m_forecast.keys()):
             if not _wf_active_month(mid):
@@ -1221,8 +1234,10 @@ def _fill_tables_fixed_monthly(ptype, pid, fw_cols, _tick, whatif=None):
                 # Approximate: FTE requirement scales ~linearly with AHT/SUT
                 v *= (1.0 + aht_delta / 100.0)
             if shrink_delta:
-                denom = max(0.1, 1.0 - (shrink_delta / 100.0))
-                v /= denom
+                # Additive percentage points on the base shrink, not a multiplier.
+                prod0 = max(0.01, 1.0 - _wf_base_shr_m)
+                prod1 = max(0.01, prod0 - shrink_delta / 100.0)
+                v *= prod0 / prod1
             req_m_forecast[mid] = v
     # ---- Interval supply from global roster_long (monthly avg per interval) ----
     ivl_min = int(float(settings.get("interval_minutes", 30)) or 30)
@@ -3062,7 +3077,10 @@ def _fill_tables_fixed_monthly(ptype, pid, fw_cols, _tick, whatif=None):
             fte = ((vol * sut) / 3600.0) / denom
             try:
                 if _wf_active_month(mm) and shrink_delta:
-                    fte /= max(0.1, 1.0 - (shrink_delta / 100.0))
+                    # Additive points on this month's base shrink (sh_frac).
+                    _p0 = max(0.01, 1.0 - sh_frac)
+                    _p1 = max(0.01, _p0 - shrink_delta / 100.0)
+                    fte *= _p0 / _p1
             except Exception:
                 pass
             upper_df.loc[upper_df["metric"] == "FTE Required @ Forecast Volume", mm] = fte

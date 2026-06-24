@@ -2021,22 +2021,10 @@ def _fill_tables_fixed(ptype, pid, fw_cols, _tick, whatif=None, grain: str = 'we
     req_w_tactical = _daily_to_weekly(req_daily_tactical)
     req_w_budgeted = _daily_to_weekly(req_daily_budgeted)
 
-    # What-If: adjust forecast requirements by volume, AHT and shrink deltas
-    if vol_delta or shrink_delta or aht_delta:
-        for w in list(req_w_forecast.keys()):
-            if not _wf_active(w):
-                continue
-            v = float(req_w_forecast[w])
-            if vol_delta:
-                v *= (1.0 + vol_delta / 100.0)
-            if aht_delta:
-                # Approximate: FTE requirement scales ~linearly with AHT
-                v *= (1.0 + aht_delta / 100.0)
-            if shrink_delta:
-                # Approximate impact: scale by 1/(1 - delta)
-                denom = max(0.1, 1.0 - (shrink_delta / 100.0))
-                v /= denom
-            req_w_forecast[w] = v
+    # NOTE: the what-if deltas are applied to req_w_forecast at the FINAL
+    # re-apply block below (after the weekly recompute + interval override).
+    # An earlier delta block here was dead — the recompute always overwrote it —
+    # so it was removed to avoid confusion.
 
     # ---- Interval supply from global roster_long (if available) ----
     schedule_supply_avg = {}
@@ -2969,8 +2957,11 @@ def _fill_tables_fixed(ptype, pid, fw_cols, _tick, whatif=None, grain: str = 'we
                 # Approximate: FTE requirement scales ~linearly with AHT.
                 v *= (1.0 + aht_delta / 100.0)
             if shrink_delta:
-                denom = max(0.1, 1.0 - (shrink_delta / 100.0))
-                v /= denom
+                # Additive percentage points on the base shrink (base 30% + 5
+                # -> 35%, productive 70% -> 65%), not a multiplier.
+                prod0 = max(0.01, 1.0 - planned_shrink_fraction)
+                prod1 = max(0.01, prod0 - shrink_delta / 100.0)
+                v *= prod0 / prod1
             req_w_forecast[w] = v
 
     # ---- Back Office: fold backlog carryover into the required FTE ----
