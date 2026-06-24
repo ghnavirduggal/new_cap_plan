@@ -65,6 +65,15 @@ async function authHeaders(): Promise<Record<string, string>> {
   return token ? { Authorization: `Bearer ${token}` } : {};
 }
 
+// Drop the cached session token (and any client-readable session cookie) so a
+// signed-out tab can't keep making authenticated calls until the next reload.
+export function clearAuthToken(): void {
+  tokenPromise = null;
+  if (typeof document !== "undefined") {
+    document.cookie = "session_token=; Path=/; Max-Age=0; SameSite=Strict";
+  }
+}
+
 async function fetchWithAuth(input: string, init: RequestInit): Promise<Response> {
   const withAuth = async (): Promise<Response> => {
     const headers = { ...(init.headers as Record<string, string>), ...(await authHeaders()) };
