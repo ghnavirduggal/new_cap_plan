@@ -4930,3 +4930,33 @@ summary:focus-visible,
   background: rgba(16, 185, 129, 0.07);
   font-weight: 600;
 }
+
+/* Projected attrition card (shrinkage page) */
+.attr-forecast {
+  margin-top: 16px;
+  padding-top: 12px;
+  border-top: 1px solid var(--border);
+}
+.attr-forecast__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 8px;
+}
+.attr-forecast__head h4 {
+  margin: 0;
+  font-size: 14px;
+  color: #1f2937;
+}
+.attr-forecast__summary {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 14px;
+  font-size: 12px;
+  color: #475569;
+  margin-bottom: 8px;
+}
+.attr-forecast__summary strong {
+  color: #1f2937;
+}
