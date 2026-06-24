@@ -97,6 +97,7 @@ const sections: Section[] = [
     bullets: [
       "Create or duplicate plans, then open Plan Detail.",
       "Plan Detail includes weekly tables, notes, and validation views.",
+      "Risk-Based Staffing (Plan Detail options): required FTE if you staffed to a higher percentile of demand (P50/P75/P90). The demand band comes from the scope's forecast error (a coefficient of variation, estimated from tracked forecast MAPE or set manually); each percentile re-runs the capacity engine with volume scaled by 1 + z·CV.",
       "BA rollups provide summarized capacity views."
     ]
   },

@@ -316,6 +316,22 @@ type ScenarioColumn = {
   upper: Array<Record<string, any>>;
 };
 
+type RiskPercentile = {
+  percentile: string;
+  demand_multiplier: number;
+  vol_delta_pct: number;
+  avg: number | null;
+  peak: number | null;
+};
+
+type RiskBand = {
+  cv: number;
+  cv_source: string;
+  percentiles: RiskPercentile[];
+  baseline_avg: number | null;
+  baseline_peak: number | null;
+};
+
 // Build the what-if overrides payload from the live dial state. Shared by
 // Apply What-If and Save-as-scenario so the two never drift.
 function whatIfToOverrides(w: WhatIfState): Record<string, any> {
@@ -865,6 +881,9 @@ export default function PlanDetailClient({ planId, rollupBa }: PlanDetailClientP
   const [scenarioName, setScenarioName] = useState("");
   const [scenarioCompare, setScenarioCompare] = useState<ScenarioColumn[] | null>(null);
   const [scenarioBusy, setScenarioBusy] = useState(false);
+  const [riskBand, setRiskBand] = useState<RiskBand | null>(null);
+  const [riskBusy, setRiskBusy] = useState(false);
+  const [riskCv, setRiskCv] = useState("");
   const [xskillPreview, setXskillPreview] = useState<WorkforcePreview | null>(null);
   const [xskillLoading, setXskillLoading] = useState(false);
   const [criticalTeamOptions, setCriticalTeamOptions] = useState<SelectOption[]>([]);
@@ -2014,6 +2033,23 @@ export default function PlanDetailClient({ planId, rollupBa }: PlanDetailClientP
       notify("error", error?.message || "Could not compare scenarios.");
     } finally {
       setScenarioBusy(false);
+    }
+  };
+
+  // --- Risk-based staffing (demand percentiles) ---------------------------
+  const handleRiskBand = async () => {
+    if (!planId || isRollup) return;
+    setRiskBusy(true);
+    try {
+      const body: Record<string, any> = { plan_id: planId, percentiles: ["p50", "p75", "p90"] };
+      const cvNum = Number(riskCv);
+      if (riskCv.trim() && Number.isFinite(cvNum) && cvNum > 0) body.cv = cvNum;
+      const res = await apiPost<RiskBand>("/api/planning/plan/risk-band", body);
+      setRiskBand(res);
+    } catch (error: any) {
+      notify("error", error?.message || "Could not compute risk band.");
+    } finally {
+      setRiskBusy(false);
     }
   };
 
@@ -3234,6 +3270,69 @@ export default function PlanDetailClient({ planId, rollupBa }: PlanDetailClientP
                           ))}
                       </tbody>
                     </table>
+                  </div>
+                ) : null}
+              </div>
+            ) : null}
+
+            {!isRollup ? (
+              <div className="plan-options-risk">
+                <h5>Risk-Based Staffing</h5>
+                <p className="plan-scenarios-hint">
+                  Required FTE if you staffed to a higher percentile of demand. The demand band is derived from this
+                  scope&apos;s forecast error (or a manual CV).
+                </p>
+                <div className="plan-risk-controls">
+                  <label>
+                    Demand CV (blank = from forecast accuracy)
+                    <input
+                      className="input"
+                      type="number"
+                      step="0.01"
+                      min={0}
+                      placeholder="e.g. 0.12"
+                      value={riskCv}
+                      onChange={(e) => setRiskCv(e.target.value)}
+                    />
+                  </label>
+                  <button type="button" className="btn btn-primary" onClick={handleRiskBand} disabled={riskBusy}>
+                    Compute risk band
+                  </button>
+                </div>
+                {riskBand?.percentiles?.length ? (
+                  <div className="plan-risk-result">
+                    <div className="plan-scenarios-hint">
+                      CV {riskBand.cv} ({riskBand.cv_source})
+                    </div>
+                    <div className="table-wrap">
+                      <table className="table plan-risk-table">
+                        <thead>
+                          <tr>
+                            <th>Percentile</th>
+                            <th className="num">Demand ×</th>
+                            <th className="num">Req FTE (avg)</th>
+                            <th className="num">Req FTE (peak)</th>
+                            <th className="num">vs P50 (peak)</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {riskBand.percentiles.map((p) => {
+                            const basePeak = riskBand.baseline_peak;
+                            const delta =
+                              p.peak !== null && basePeak !== null ? Math.round((p.peak - basePeak) * 10) / 10 : null;
+                            return (
+                              <tr key={p.percentile} className={p.percentile === "p50" ? "" : "plan-risk-row--upper"}>
+                                <td>{p.percentile.toUpperCase()}</td>
+                                <td className="num">{p.demand_multiplier.toFixed(2)}</td>
+                                <td className="num">{p.avg ?? "—"}</td>
+                                <td className="num">{p.peak ?? "—"}</td>
+                                <td className="num">{delta === null ? "—" : delta > 0 ? `+${delta}` : delta}</td>
+                              </tr>
+                            );
+                          })}
+                        </tbody>
+                      </table>
+                    </div>
                   </div>
                 ) : null}
               </div>
