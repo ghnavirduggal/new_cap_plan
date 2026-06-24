@@ -3073,17 +3073,18 @@ def _fill_tables_fixed(ptype, pid, fw_cols, _tick, whatif=None, grain: str = 'we
         pass
 
     # ---- BvA ----
-    # Align Weekly Budgeted FTE with the same calculation used for
-    # 'FTE Required @ Forecast Volume' to avoid discrepancies.
+    # Budgeted FTE = the genuine budgeted-volume requirement (budget AHT/SUT),
+    # NOT the what-if-adjusted forecast — a budget baseline must not move when a
+    # what-if dial changes. Actual FTE uses the shrink-adjusted actual so it
+    # matches the Upper table's 'FTE Required @ Actual Volume' and the daily/
+    # monthly grains. Variance = Actual - Budgeted.
     for w in week_ids:
         if w not in bva.columns:
             bva[w] = pd.Series(np.nan, index=bva.index, dtype="float64")
         elif not pd.api.types.is_float_dtype(bva[w].dtype):
             bva[w] = pd.to_numeric(bva[w], errors="coerce").astype("float64")
-        # Use weekly forecast requirement for Budgeted FTE to match
-        # 'FTE Required @ Forecast Volume'.
-        bud = float(req_w_forecast.get(w, 0.0))
-        act = float(req_w_actual.get(w,   0.0))
+        bud = float(req_w_budgeted.get(w, 0.0))
+        act = float(req_w_actual_adj.get(w, 0.0))
         bva.loc[bva["metric"] == "Budgeted FTE (#)", w] = bud
         bva.loc[bva["metric"] == "Actual FTE (#)",   w] = act
         bva.loc[bva["metric"] == "Variance (#)",     w] = act - bud
