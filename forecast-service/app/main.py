@@ -101,6 +101,7 @@ from app.pipeline.plan_detail_engine import (
 )
 from app.pipeline.plan_detail.calc_engine import mark_plan_dirty as mark_plan_detail_dirty, mark_plan_dirty_deps as mark_plan_detail_dirty_deps, dep_snapshot_all
 from app.pipeline import scenario_store
+from app.pipeline import monte_carlo as monte_carlo_mod
 from app.pipeline import risk_band as risk_band_mod
 from app.pipeline import accuracy_store
 from app.pipeline import hiring_solver
@@ -2904,6 +2905,108 @@ def apply_hiring_plan(payload: dict, request: Request):
     except Exception:
         pass
     return {"status": "applied", "added": len(new_rows), "rows": df_to_records(load_nh_classes(int(plan_id)))}
+
+
+# --- Monte Carlo demand simulation -----------------------------------------
+# Distribution of required FTE (and coverage probability) under uncertain demand.
+# A small required-FTE response curve over volume multipliers is computed via the
+# capacity engine, then demand draws are simulated and interpolated off the curve.
+
+_MC_MULTIPLIERS = [0.7, 0.8, 0.9, 1.0, 1.1, 1.2, 1.3, 1.4]
+
+
+def _avg_required_and_supply(upper_rows: list[dict]) -> tuple[Optional[float], Optional[float]]:
+    """Mean weekly required FTE (= supply − over/under) and mean supply."""
+    def _row(*needles):
+        for r in upper_rows or []:
+            if isinstance(r, dict) and all(n in str(r.get("metric") or "").lower() for n in needles):
+                return r
+        return None
+
+    ou = _row("over", "mtp") or _row("over/under")
+    sup = _row("projected supply")
+    if not ou:
+        return None, None
+    weeks = [k for k in ou.keys() if k != "metric"]
+
+    def _n(v):
+        try:
+            return float(str(v).replace(",", "").rstrip("%"))
+        except (TypeError, ValueError):
+            return None
+
+    reqs, sups = [], []
+    for w in weeks:
+        ouv = _n(ou.get(w))
+        supv = _n(sup.get(w)) if sup else None
+        if supv is not None:
+            sups.append(supv)
+            if ouv is not None:
+                reqs.append(max(0.0, supv - ouv))
+    avg_req = sum(reqs) / len(reqs) if reqs else None
+    avg_sup = sum(sups) / len(sups) if sups else None
+    return avg_req, avg_sup
+
+
+@app.post("/api/planning/plan/monte-carlo")
+def plan_monte_carlo(payload: dict, request: Request):
+    if not isinstance(payload, dict):
+        raise HTTPException(status_code=400, detail="Monte Carlo payload must be a JSON object.")
+    plan_id = payload.get("plan_id")
+    if not plan_id:
+        raise HTTPException(status_code=400, detail="plan_id is required.")
+    plan = _authorize_plan_access(plan_id, request)
+
+    # Resolve demand CV: param > this scope's tracked forecast MAPE > default 12%.
+    cv = None
+    cv_source = "default"
+    try:
+        cv = float(payload.get("cv")) if payload.get("cv") is not None else None
+    except (TypeError, ValueError):
+        cv = None
+    if cv is not None:
+        cv_source = "manual"
+    else:
+        scope = str(plan.get("business_area") or plan.get("vertical") or "global")
+        for sc in (scope, "global"):
+            try:
+                lb = accuracy_store.leaderboard(sc)
+            except Exception:
+                lb = {}
+            models = lb.get("models") or []
+            if models:
+                mape = (models[0].get("metrics") or {}).get("mape")
+                if mape is None and models[0].get("primary_metric") == "mape":
+                    mape = models[0].get("primary_value")
+                try:
+                    if mape is not None and float(mape) > 0:
+                        cv = float(mape) / 100.0
+                        cv_source = f"forecast accuracy MAPE (scope={sc})"
+                        break
+                except (TypeError, ValueError):
+                    pass
+    if cv is None:
+        cv = 0.12
+
+    # Build the required-FTE response curve and the baseline supply.
+    curve: list[tuple[float, float]] = []
+    supply_level: Optional[float] = None
+    for m in _MC_MULTIPLIERS:
+        upper = _scenario_upper_rows(int(plan_id), {"vol_delta": (m - 1.0) * 100.0})
+        req, sup = _avg_required_and_supply(upper)
+        if req is not None:
+            curve.append((m, req))
+        if abs(m - 1.0) < 1e-9 and sup is not None:
+            supply_level = sup
+    if not curve:
+        return {"status": "no_data", "reason": "No required-FTE data for this plan."}
+
+    draws = payload.get("draws", 2000)
+    result = monte_carlo_mod.simulate(curve, supply_level, cv, draws=draws)
+    result["status"] = "ok"
+    result["cv_source"] = cv_source
+    result["response_curve"] = [{"multiplier": m, "required": round(r, 1)} for m, r in curve]
+    return sanitize_for_json(result)
 
 
 @app.post("/api/planning/plan/compare")
