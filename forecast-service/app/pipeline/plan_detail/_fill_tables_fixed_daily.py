@@ -21,6 +21,7 @@ from ._calc import (
     _fill_tables_fixed,
     get_cached_consolidated_calcs,
 )
+from capacity_core import service_level as _erlang_service_level
 
 
 def _to_frac(value) -> float:
@@ -775,8 +776,20 @@ def _fill_tables_fixed_daily(ptype, pid, _fw_cols_unused, _tick, whatif=None):
     except Exception:
         pass
 
-        # Proxy Service Level as Supply/Required (capped to 100%)
-        # Required FTE: Actual for past/today; Forecast for future
+    # Back Office Service Level. (This block was previously mis-indented inside
+    # the except above, so it only ran on error — now it runs on the normal
+    # path.) Two methods, chosen by the Settings BO capacity model:
+    #   • erlang  -> a true Erlang service level at the supplied agent count;
+    #   • tat/linear -> the coverage proxy min(100, supply/required*100).
+    # Voice/chat/OB already get a real interval Erlang SL via src_calc.
+    if is_bo:
+        bo_model_sl = str(_settings.get("bo_capacity_model", "tat")).lower()
+        T_sec = float(_settings.get("sl_seconds", 20) or 20.0)
+        bo_hpd = float(_settings.get("bo_hours_per_day", _settings.get("hours_per_fte", 8.0)) or 8.0)
+        day_sec = max(1.0, bo_hpd * 3600.0)
+        # Local daily volume maps (volF/volA are built further below).
+        _vol_f_sl = _daily_sum(dfF, weight_col_upload)
+        _vol_a_sl = _daily_sum(dfA, weight_col_upload)
         for d in day_ids:
             try:
                 dd = pd.to_datetime(d).date()
@@ -784,10 +797,24 @@ def _fill_tables_fixed_daily(ptype, pid, _fw_cols_unused, _tick, whatif=None):
                 dd = None
             req = float(((m_fte_a.get(d) if (dd is not None and dd <= today) else m_fte_f.get(d)) or m_fte_a.get(d) or 0.0))
             sup = float(m_supply.get(d, 0.0) or 0.0)
-            if req <= 0:
-                m_sl[d] = 100.0 if sup > 0 else 0.0
+            if bo_model_sl == "erlang":
+                # Offered load for the day = items*SUT/working-seconds; agents =
+                # supplied productive FTE for the day.
+                items = float(_vol_f_sl.get(d, 0.0) or _vol_a_sl.get(d, 0.0) or 0.0)
+                sut = max(1e-6, _sut_for_day(d))
+                traffic = (items * sut) / day_sec
+                agents = sup * float(_settings.get("util_bo", 0.85) or 0.85)
+                try:
+                    sl = _erlang_service_level(traffic, int(np.ceil(agents)) if agents > 0 else 0, sut, T_sec)
+                    m_sl[d] = float(min(100.0, max(0.0, sl * 100.0)))
+                except Exception:
+                    m_sl[d] = 100.0 if (sup > 0 and req <= 0) else (0.0 if req > 0 else 0.0)
             else:
-                m_sl[d] = float(min(100.0, max(0.0, (sup / req) * 100.0)))
+                # Coverage proxy: how much of the required FTE the supply covers.
+                if req <= 0:
+                    m_sl[d] = 100.0 if sup > 0 else 0.0
+                else:
+                    m_sl[d] = float(min(100.0, max(0.0, (sup / req) * 100.0)))
 
     # Compute variance rows (MTP≈Forecast, Tactical, Budgeted)
     # Budgeted FTE via budget AHT applied to Forecast intervals when possible
