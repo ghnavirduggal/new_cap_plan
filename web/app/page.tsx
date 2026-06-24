@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import React from "react";
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import AppShell from "./_components/AppShell";
 import Sparkline from "./_components/Sparkline";
 import { apiGet, apiPost } from "../lib/api";
@@ -110,6 +110,8 @@ type UserInfo = {
   name?: string;
   email?: string;
   photo_url?: string;
+  key?: string;
+  brid?: string;
 };
 
 
@@ -371,6 +373,9 @@ export default function HomePage() {
   const [insightSummary, setInsightSummary] = useState("");
   const [activities, setActivities] = useState<ActivityItem[]>([]);
   const [currentUser, setCurrentUser] = useState<UserInfo | null>(null);
+  // Resolve user identifiers (BRID/email/name as stamped on owner / created_by /
+  // activity actor) to display name + photo so they render as people, not IDs.
+  const [userDisplay, setUserDisplay] = useState<Record<string, { name?: string; photo?: string }>>({});
   const [selectedBa, setSelectedBa] = useState("");
   const [selectedSba, setSelectedSba] = useState("");
   const [selectedChannel, setSelectedChannel] = useState("");
@@ -467,6 +472,57 @@ export default function HomePage() {
       active = false;
     };
   }, []);
+
+  // Resolve user identifiers shown as owner / created_by / activity actor to a
+  // display name + photo. The signed-in user's live profile (from /api/user)
+  // wins so their own rows update immediately when they edit their Profile;
+  // everyone else is resolved server-side via /api/users/display (which reads
+  // persisted profiles + the headcount directory). Falls back to the raw id.
+  const resolveUser = useCallback(
+    (id?: string): { name: string; photo: string } => {
+      const k = String(id || "").trim();
+      const meKeys = [currentUser?.key, currentUser?.brid, currentUser?.name, currentUser?.email]
+        .map((s) => String(s || "").trim().toLowerCase())
+        .filter(Boolean);
+      const isMe = k !== "" && meKeys.includes(k.toLowerCase());
+      let name = "";
+      let photo = "";
+      if (isMe) {
+        name = String(currentUser?.name || currentUser?.email || k).trim();
+        photo = String(currentUser?.photo_url || "").trim();
+      }
+      if (!name) name = String(userDisplay[k]?.name || k || "system").trim();
+      if (!photo) photo = String(userDisplay[k]?.photo || "").trim();
+      if (!photo) photo = `https://ui-avatars.com/api/?name=${encodeURIComponent(name || "User")}`;
+      return { name, photo };
+    },
+    [currentUser, userDisplay]
+  );
+  const activityIdentity = resolveUser;
+
+  // Batch-resolve every owner / actor id surfaced on the page.
+  useEffect(() => {
+    const keys = new Set<string>();
+    plans.forEach((p) => {
+      const o = String(p.owner || p.created_by || "").trim();
+      if (o) keys.add(o);
+    });
+    activities.forEach((a) => {
+      const u = String(a.user || "").trim();
+      if (u) keys.add(u);
+    });
+    const list = Array.from(keys);
+    if (!list.length) return;
+    let active = true;
+    apiPost<Record<string, { name?: string; photo?: string }>>("/api/users/display", { keys: list })
+      .then((map) => {
+        if (active && map && typeof map === "object") setUserDisplay((prev) => ({ ...prev, ...map }));
+      })
+      .catch(() => {});
+    return () => {
+      active = false;
+    };
+  }, [plans, activities]);
 
   useEffect(() => {
     let active = true;
@@ -583,18 +639,18 @@ export default function HomePage() {
           const staffingValue = metricValue(
             upper,
             [
-            "FTE Over/Under MTP Vs Actual",
+            "FTE Over/Under vs MTP",
             "FTE Over/Under (#)",
-            "FTE Over/Under Budgeted Vs Actual"
+            "FTE Over/Under vs Budgeted"
             ],
             lastActualCol || undefined
           );
           const staffingDelta = metricDelta(
             upper,
             [
-            "FTE Over/Under MTP Vs Actual",
+            "FTE Over/Under vs MTP",
             "FTE Over/Under (#)",
-            "FTE Over/Under Budgeted Vs Actual"
+            "FTE Over/Under vs Budgeted"
             ],
             lastActualCol,
             prevActualCol
@@ -648,7 +704,7 @@ export default function HomePage() {
               status: computeStatus("Staffing Gap", staffingDelta),
               trend: metricSeries(
                 upper,
-                ["FTE Over/Under MTP Vs Actual", "FTE Over/Under (#)", "FTE Over/Under Budgeted Vs Actual"],
+                ["FTE Over/Under vs MTP", "FTE Over/Under (#)", "FTE Over/Under vs Budgeted"],
                 actualColumns
               )
             },
@@ -800,151 +856,90 @@ export default function HomePage() {
           }
           setOpsItems(ops);
 
-          const dateCols = extractDateColumns(fw);
-          const lastCol = lastActualCol || dateCols[dateCols.length - 1];
+          // ---- Intelligent staffing-gap driver attribution ----
+          // Convert each driver's week-over-week move into a common unit — its
+          // estimated FTE impact on the gap (gap = Supply - Required). A negative
+          // FTE impact widens the shortfall. This makes %, contacts, seconds and
+          // headcount changes directly comparable, instead of ranking raw
+          // magnitudes in mismatched units (where volume always dominated).
+          const num = (rows: Array<Record<string, any>>, keys: string[], col?: string | null) =>
+            toNumber(metricValue(rows, keys, col || undefined));
+          const fmt0 = (n: number) => (Math.abs(n) >= 100 ? n.toFixed(0) : n.toFixed(1));
 
-          const metricChange = (
-            rows: Array<Record<string, any>>,
-            keys: string[],
-            currentCol?: string | null,
-            previousCol?: string | null,
-            addKeys?: string[]
-          ) => {
-            const current = toNumber(metricValue(rows, keys, currentCol || undefined));
-            const previous = toNumber(metricValue(rows, keys, previousCol || undefined));
-            if (current === null || previous === null) return null;
-            let curr = current;
-            let prev = previous;
-            if (addKeys && addKeys.length) {
-              // Effective volume includes carried-over backlog (Back Office sizes
-              // capacity on Forecast + Backlog). Missing backlog counts as 0.
-              curr += toNumber(metricValue(rows, addKeys, currentCol || undefined)) ?? 0;
-              prev += toNumber(metricValue(rows, addKeys, previousCol || undefined)) ?? 0;
-            }
-            return curr - prev;
-          };
-
-          const driversSpec: Array<{
-            title: string;
-            rows: Array<Record<string, any>>;
-            keys: string[];
-            addKeys?: string[];
-            worseIf: "increase" | "decrease";
-            suffix: string;
-          }> = [
-            {
-              title: "Shrinkage",
-              rows: shr,
-              keys: ["Overall Shrinkage %", "Planned Shrinkage %"],
-              worseIf: "increase" as const,
-              suffix: "%"
-            },
-            {
-              title: "Attrition",
-              rows: attr,
-              keys: ["Actual Attrition %", "Planned Attrition %"],
-              worseIf: "increase" as const,
-              suffix: "%"
-            },
-            {
-              title: "Volume",
-              rows: fw,
-              // Effective workload that drives capacity. Back Office carries the
-              // previous period's backlog into the forecast (Forecast + Backlog),
-              // so backlog is added on top of the base volume rather than picked
-              // as an alternative to it.
-              keys: ["Forecast", "Actual Volume"],
-              addKeys: ["Backlog (Items)"],
-              worseIf: "increase" as const,
-              suffix: "calls"
-            },
-            {
-              title: "AHT/SUT",
-              rows: fw,
-              keys: ["AHT", "Average Handle Time", "AHT (sec)", "SUT", "SUT (sec)", "Service Time"],
-              worseIf: "increase" as const,
-              suffix: "sec"
-            },
-            {
-              title: "Service Level",
-              rows: upper,
-              keys: ["Projected Service Level"],
-              worseIf: "decrease" as const,
-              suffix: "%"
-            }
+          const reqKeys = [
+            "FTE Required @ Actual Volume",
+            "FTE Required @ Forecast Volume",
+            "FTE Required (#)",
+            "Billable FTE Required (#)"
           ];
+          let baseReq = num(upper, reqKeys, lastActualCol);
+          if (baseReq === null || Math.abs(baseReq) < 1e-6) baseReq = num(upper, reqKeys, prevActualCol);
+          const R = baseReq ?? 0;
+          const supply = num(upper, ["Projected Supply HC"], lastActualCol) ?? 0;
 
-          const driverChanges = driversSpec
-            .map((spec) => {
-              const delta = metricChange(spec.rows, spec.keys, lastActualCol, prevActualCol, spec.addKeys);
-              if (delta === null) return null;
-              const isWorse =
-                spec.worseIf === "increase" ? delta > 0 : spec.worseIf === "decrease" ? delta < 0 : false;
-              return {
-                title: spec.title,
-                delta,
-                isWorse,
-                suffix: spec.suffix
-              };
-            })
-            .filter(Boolean) as Array<{ title: string; delta: number; isWorse: boolean; suffix: string }>;
+          const impacts: Array<{ title: string; fte: number; detail: string }> = [];
 
-          const worstDrivers = driverChanges
-            .filter((item) => item.isWorse)
-            .sort((a, b) => Math.abs(b.delta) - Math.abs(a.delta))
-            .slice(0, 3);
-
-          if (staffingDelta !== null && staffingDelta < 0 && worstDrivers.length) {
-            const summary = worstDrivers
-              .map((item) => `${item.title} ${formatDelta(item.delta, item.suffix)}`)
-              .join(", ");
-            setInsightSummary(`Staffing gap worsened last week. Drivers: ${summary}.`);
-          } else if (staffingDelta !== null && staffingDelta < 0) {
-            setInsightSummary("Staffing gap worsened last week. Driver data unavailable for this scope.");
-          } else if (staffingDelta !== null && staffingDelta >= 0) {
-            setInsightSummary("Staffing gap improved last week. No adverse drivers detected.");
-          } else {
-            setInsightSummary("Staffing gap trend unavailable for the latest actual week.");
+          // Volume: required FTE scales ~linearly with effective volume.
+          const volNew = num(fw, ["Forecast", "Actual Volume"], lastActualCol);
+          const volOld = num(fw, ["Forecast", "Actual Volume"], prevActualCol);
+          if (R && volOld && volNew !== null && volOld !== 0) {
+            const dR = R * ((volNew - volOld) / volOld);
+            if (Math.abs(dR) > 0.05) impacts.push({ title: "Volume", fte: -dR, detail: `${fmt0(volOld)} → ${fmt0(volNew)} contacts` });
+          }
+          // AHT/SUT: required FTE scales ~linearly with handle time.
+          const ahtNew = num(fw, ["AHT", "Average Handle Time", "AHT (sec)", "SUT", "SUT (sec)", "Service Time"], lastActualCol);
+          const ahtOld = num(fw, ["AHT", "Average Handle Time", "AHT (sec)", "SUT", "SUT (sec)", "Service Time"], prevActualCol);
+          if (R && ahtOld && ahtNew !== null && ahtOld !== 0) {
+            const dR = R * ((ahtNew - ahtOld) / ahtOld);
+            if (Math.abs(dR) > 0.05) impacts.push({ title: "AHT/SUT", fte: -dR, detail: `${fmt0(ahtOld)} → ${fmt0(ahtNew)} sec` });
+          }
+          // Shrinkage: required FTE ∝ 1 / (1 - shrink).
+          const sNew = (num(shr, ["Overall Shrinkage %", "Planned Shrinkage %"], lastActualCol) ?? 0) / 100;
+          const sOld = (num(shr, ["Overall Shrinkage %", "Planned Shrinkage %"], prevActualCol) ?? 0) / 100;
+          if (R && (sNew || sOld)) {
+            const dR = R * ((1 - sOld) / Math.max(0.01, 1 - sNew) - 1);
+            if (Math.abs(dR) > 0.05) impacts.push({ title: "Shrinkage", fte: -dR, detail: `${(sOld * 100).toFixed(1)}% → ${(sNew * 100).toFixed(1)}%` });
+          }
+          // Attrition: extra (annualized) attrition removes supply; weekly share ≈ /52.
+          const aNew = (num(attr, ["Actual Attrition %", "Planned Attrition %"], lastActualCol) ?? 0) / 100;
+          const aOld = (num(attr, ["Actual Attrition %", "Planned Attrition %"], prevActualCol) ?? 0) / 100;
+          if (supply && (aNew || aOld)) {
+            const dSupply = -((aNew - aOld) / 52) * supply;
+            if (Math.abs(dSupply) > 0.05) impacts.push({ title: "Attrition", fte: dSupply, detail: `${(aOld * 100).toFixed(1)}% → ${(aNew * 100).toFixed(1)}%` });
+          }
+          // Hiring: actual starts below plan reduce supply vs plan.
+          const plannedNH = num(nh, ["Planned New Hire HC (#)"], lastActualCol) ?? 0;
+          const actualNH = num(nh, ["Actual New Hire HC (#)"], lastActualCol) ?? 0;
+          if ((plannedNH || actualNH) && Math.abs(actualNH - plannedNH) > 0.05) {
+            impacts.push({ title: "Hiring", fte: actualNH - plannedNH, detail: `${fmt0(actualNH)} of ${fmt0(plannedNH)} starts` });
           }
 
-          const driverCandidates = [
-            "Shrinkage",
-            "Training",
-            "Backlog (Items)",
-            "Forecast",
-            "Actual Volume",
-            "Billable FTE Required",
-            "Billable Hours",
-            "Billable Transactions"
-          ];
-          const drivers = fw
-            .filter((row) =>
-              driverCandidates.some((key) => String(row?.metric || "").toLowerCase() === key.toLowerCase())
-            )
-            .map((row) => {
-              const raw = lastCol ? toNumber(row?.[lastCol]) : null;
-              const metricName = String(row?.metric || "");
-              let suffix = "";
-              if (metricName.toLowerCase().includes("%")) suffix = "%";
-              else if (metricName.toLowerCase().includes("fte")) suffix = "FTE";
-              else if (metricName.toLowerCase().includes("volume") || metricName.toLowerCase().includes("forecast")) suffix = "calls";
-              return {
-                title: metricName,
-                metric: lastCol ? `Week ${lastCol} Actual` : "Latest",
-                value: raw === null ? "-" : `${raw >= 0 ? "+" : ""}${raw.toFixed(2)}`,
-                suffix
-              };
-            })
-            .sort((a, b) => Math.abs(toNumber(b.value) ?? 0) - Math.abs(toNumber(a.value) ?? 0))
-            .slice(0, 3);
-          const insightDrivers = worstDrivers.length
-            ? worstDrivers.map((item) => ({
-                title: item.title,
-                metric: prevActualCol ? `Δ vs ${prevActualCol}` : "Δ vs prior week",
-                value: formatDelta(item.delta),
-                suffix: item.suffix
-              }))
-            : drivers;
+          const ranked = impacts.slice().sort((a, b) => Math.abs(b.fte) - Math.abs(a.fte));
+          const adverse = ranked.filter((d) => d.fte < 0);
+          const totalAdverse = adverse.reduce((s, d) => s + d.fte, 0);
+
+          if (adverse.length) {
+            const lead = adverse
+              .slice(0, 3)
+              .map((d) => `${d.title} ${formatDelta(d.fte, "FTE")} (${d.detail})`)
+              .join(", ");
+            const dir = staffingDelta !== null && staffingDelta >= 0 ? "held despite" : "pressured by";
+            setInsightSummary(`Staffing gap ${dir} ~${fmt0(Math.abs(totalAdverse))} FTE of adverse pressure last week. Top drivers: ${lead}.`);
+          } else if (ranked.length) {
+            const best = ranked[0];
+            setInsightSummary(`No adverse staffing-gap drivers last week. Largest favourable mover: ${best.title} ${formatDelta(best.fte, "FTE")} (${best.detail}).`);
+          } else if (staffingDelta !== null && staffingDelta < 0) {
+            setInsightSummary("Staffing gap worsened last week, but driver data is unavailable for this scope.");
+          } else {
+            setInsightSummary("Staffing gap is stable. No material drivers detected this week.");
+          }
+
+          const insightDrivers = ranked.slice(0, 3).map((d) => ({
+            title: d.title,
+            metric: d.detail,
+            value: `${d.fte >= 0 ? "+" : ""}${d.fte.toFixed(1)}`,
+            suffix: "FTE"
+          }));
           setTopDrivers(insightDrivers);
 
     };
@@ -1245,7 +1240,7 @@ export default function HomePage() {
                           <td>{timeAgo(plan.updated_at)}</td>
                           <td>{formatRange(plan.start_week, plan.end_week)}</td>
                           <td>{plan.plan_type || plan.status || "Forecast"}</td>
-                          <td>{plan.owner || plan.created_by || "-"}</td>
+                          <td>{plan.owner || plan.created_by ? resolveUser(plan.owner || plan.created_by).name : "-"}</td>
                           <td>
                             {plan.id ? (
                               <Link className="btn btn-primary" href={`/plan/${plan.id}`}>
@@ -1320,7 +1315,9 @@ export default function HomePage() {
                   marginTop: "0.5rem"
                 }}
               >
-                {activities.map((act) => (
+                {activities.map((act) => {
+                  const who = activityIdentity(act.user);
+                  return (
                   <div
                     key={act.id}
                     style={{
@@ -1335,8 +1332,9 @@ export default function HomePage() {
                     <div style={{ display: "flex", alignItems: "center", gap: "0.5rem" }}>
                       {/* User photo */}
                       <img
-                        src={act.photoUrl}
-                        alt={act.user}
+                        src={who.photo}
+                        alt={who.name}
+                        referrerPolicy="no-referrer"
                         style={{
                           width: "32px",
                           height: "32px",
@@ -1346,7 +1344,7 @@ export default function HomePage() {
                       />
                       <div>
                         <div style={{ fontWeight: 600 }}>
-                          {act.user} <span style={{ fontWeight: 400 }}>{act.action}</span>
+                          {who.name} <span style={{ fontWeight: 400 }}>{act.action}</span>
                         </div>
                         <div style={{ fontSize: "0.75rem", color: "#666" }}>{act.time}</div>
                       </div>
@@ -1370,7 +1368,8 @@ export default function HomePage() {
                       {act.plan} · {act.range}
                     </div>
                   </div>
-                ))}
+                  );
+                })}
                 {!activities.length ? (
                   <div className="home-empty">No recent activity yet.</div>
                 ) : null}

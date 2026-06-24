@@ -343,12 +343,17 @@ def voice_requirements_interval(voice_df: pd.DataFrame, settings: dict) -> pd.Da
     for row in uniq.itertuples(index=False):
         calls = float(row.calls or 0.0)
         aht = float(row.aht_sec or 0.0)
-        calls_per_hour = calls
-        traffic = offered_load_erlangs(calls, aht, 60)
-        agents = fractional_agents(target_sl, target_sec, calls_per_hour, aht)
-        sl = service_level(traffic, int(math.ceil(agents)) if agents > 0 else 0, aht, target_sec)
-        occ = (traffic / agents) if agents > 0 else 0.0
-        avg_asa = asa(traffic, int(math.ceil(agents)) if agents > 0 else 0, aht)
+        # Consistent Erlang solve on the TRUE interval (calls is the arrival
+        # count in one interval, A = calls*AHT/ivl_sec). min_agents enforces the
+        # occupancy cap and returns agents/SL/occupancy on the same basis.
+        traffic = offered_load_erlangs(calls, aht, ivl_min_default)
+        if calls > 0 and aht > 0:
+            agents_int, sl, occ, avg_asa = min_agents(
+                int(round(calls)), int(round(aht)), ivl_min_default, target_sl, target_sec, occ_cap
+            )
+            agents = float(agents_int)
+        else:
+            agents, sl, occ, avg_asa = 0.0, 0.0, 0.0, 0.0
         metrics.append((row.calls, row.aht_sec, traffic, agents, sl, occ, avg_asa))
 
     metrics_df = pd.DataFrame(

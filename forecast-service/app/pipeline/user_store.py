@@ -119,6 +119,63 @@ def get_user_profile(user_key: str, email: str = "", name: str = "") -> dict:
     }
 
 
+def get_user_display_map(keys: list) -> dict:
+    """Resolve a batch of user identifiers (BRID / email / name keys, as stamped
+    on plan owner / created_by / activity actor) to a display name and photo.
+
+    Prefers the user's own persisted profile edit (user_profiles, so it reflects
+    Profile updates), then the headcount directory name, then the raw key. Used
+    so owners/actors render as the person's name instead of an opaque BRID.
+    """
+    out: dict = {}
+    uniq: list[str] = []
+    seen = set()
+    for k in keys or []:
+        s = str(k or "").strip()
+        if s and s.lower() not in seen:
+            seen.add(s.lower())
+            uniq.append(s)
+    if not uniq or not has_dsn():
+        return {k: {"name": k, "photo": ""} for k in uniq}
+    ensure_user_schema()
+    persisted: dict = {}
+    org_names: dict = {}
+    with db_conn() as conn:
+        cur = conn.cursor()
+        # Persisted profile edits keyed by user_key (case-insensitive).
+        cur.execute(
+            "SELECT user_key, display_name, photo_url FROM user_profiles "
+            "WHERE lower(user_key) = ANY(%s)",
+            ([k.lower() for k in uniq],),
+        )
+        for uk, dn, ph in cur.fetchall():
+            persisted[str(uk).lower()] = {"name": (dn or "").strip(), "photo": (ph or "").strip()}
+        # Directory names keyed by BRID (case-insensitive).
+        try:
+            cur.execute(
+                "SELECT lower(brid), payload FROM headcount_entries "
+                "WHERE lower(brid) = ANY(%s)",
+                ([k.lower() for k in uniq],),
+            )
+            for brid_l, payload in cur.fetchall():
+                payload = payload or {}
+                nm = ""
+                for n in ("Name", "Full Name", "Employee Name", "name"):
+                    if payload.get(n) not in (None, ""):
+                        nm = str(payload[n]).strip()
+                        break
+                if nm:
+                    org_names[str(brid_l)] = nm
+        except Exception:
+            pass
+    for k in uniq:
+        kl = k.lower()
+        p = persisted.get(kl, {})
+        name = p.get("name") or org_names.get(kl) or k
+        out[k] = {"name": name, "photo": p.get("photo", "")}
+    return out
+
+
 def update_user_profile(
     user_key: str,
     *,

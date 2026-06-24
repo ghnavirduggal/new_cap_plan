@@ -1791,6 +1791,29 @@ summary:focus-visible,
   color: #24324a;
 }
 
+.help-fab {
+  position: fixed;
+  right: 24px;
+  bottom: 24px;
+  z-index: 50;
+  height: 42px;
+  padding: 0 16px;
+  border-radius: 999px;
+  border: 1px solid #dbe4f3;
+  background: #1f6feb;
+  color: #fff;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  box-shadow: 0 6px 18px rgba(31, 111, 235, 0.32);
+  transition: transform 0.15s ease, box-shadow 0.15s ease, opacity 0.2s ease;
+}
+
+.help-fab:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 10px 24px rgba(31, 111, 235, 0.4);
+}
+
 .help-card p {
   margin: 4px 0 10px;
   color: #4b5563;

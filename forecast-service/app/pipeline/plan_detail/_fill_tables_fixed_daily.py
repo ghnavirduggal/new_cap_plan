@@ -10,7 +10,7 @@ from plan_store import get_plan
 from cap_store import resolve_settings
 from cap_db import load_df
 from ._grain_cols import day_cols_for_weeks
-from ._common import _week_span, _canon_scope, _monday, get_plan_meta, _load_ts_with_fallback, _assemble_voice, _assemble_chat, _assemble_ob, _assemble_bo
+from ._common import _week_span, _canon_scope, _monday, get_plan_meta, _load_ts_with_fallback, _assemble_voice, _assemble_chat, _assemble_ob, _assemble_bo, _learning_curve_for_week
 from ._calc import (
     _ivl_seconds,
     _voice_interval_calc,
@@ -19,8 +19,70 @@ from ._calc import (
     _daily_from_intervals,
     _bo_daily_calc,
     _fill_tables_fixed,
+    _nh_effective_count,
     get_cached_consolidated_calcs,
 )
+from capacity_core import service_level as _erlang_service_level
+
+
+def _ramp_factor_by_week(pid, weeks, settings: dict, sup_w: dict) -> dict:
+    """Per-week effective/raw supply ratio capturing new-hire ramp drag, so the
+    daily grain applies learning-curve productivity to its capacity/SL like the
+    weekly/monthly grains do. Returns 1.0 for every week when there are no new-hire
+    classes (the common case), giving zero behavioural change for those plans.
+
+    effective_agents = supply + nest_eff + (sda_eff - sda_heads), matching the
+    weekly model (nesting precedes production so it is additive; SDA agents are
+    already counted at full headcount in supply, so only their shortfall applies).
+    """
+    week_ids = [str(_monday(w)) for w in weeks]
+    factors = {w: 1.0 for w in week_ids}
+    try:
+        classes = load_df(f"plan_{pid}_nh_classes")
+    except Exception:
+        classes = None
+    if not isinstance(classes, pd.DataFrame) or classes.empty:
+        return factors
+    from collections import defaultdict
+
+    def _w(d):
+        t = pd.to_datetime(d, errors="coerce")
+        return None if pd.isna(t) else str(_monday(t.date()))
+
+    nest: dict = defaultdict(lambda: defaultdict(float))
+    sda: dict = defaultdict(lambda: defaultdict(float))
+    sda_weeks = int(float(settings.get("sda_weeks", settings.get("default_sda_weeks", 0)) or 0))
+    for _, r in classes.iterrows():
+        n = _nh_effective_count(r, pt_fte_ratio=settings.get("pt_fte_ratio", 0.5))
+        if n <= 0:
+            continue
+        ns = _w(r.get("nesting_start")); ne = _w(r.get("nesting_end")); ps = _w(r.get("production_start"))
+        if ns and ne:
+            for i, w in enumerate([w for w in week_ids if ns <= w <= ne], start=1):
+                nest[w][i] += n
+        if ps and sda_weeks > 0:
+            for i, w in enumerate([w for w in week_ids if w >= ps][:sda_weeks], start=1):
+                sda[w][i] += n
+
+    def _eff(buckets_w, prod, uplift):
+        tot = 0.0
+        for age, cnt in (buckets_w or {}).items():
+            p = (float(prod[age - 1]) / 100.0) if age - 1 < len(prod) else 0.0
+            u = (float(uplift[age - 1]) / 100.0) if age - 1 < len(uplift) else 0.0
+            tot += float(cnt) * (p / max(0.05, 1.0 + u))
+        return tot
+
+    for w in week_ids:
+        sup = float(sup_w.get(w, 0.0) or 0.0)
+        if sup <= 0 and not (nest.get(w) or sda.get(w)):
+            continue
+        lc = _learning_curve_for_week(settings, None, w)
+        nest_eff = _eff(nest.get(w), lc.get("nesting_prod_pct", []), lc.get("nesting_aht_uplift_pct", []))
+        sda_eff = _eff(sda.get(w), lc.get("sda_prod_pct", []), lc.get("sda_aht_uplift_pct", []))
+        sda_heads = float(sum((sda.get(w) or {}).values()))
+        agents_eff = sup + nest_eff + (sda_eff - sda_heads)
+        factors[w] = (agents_eff / sup) if sup > 0 else 1.0
+    return factors
 
 
 def _to_frac(value) -> float:
@@ -709,6 +771,16 @@ def _fill_tables_fixed_daily(ptype, pid, _fw_cols_unused, _tick, whatif=None):
     except Exception:
         pass
 
+    # Capacity-effective supply: apply new-hire learning-curve ramp drag per week
+    # (matching weekly/monthly). m_supply stays the raw headcount for the displayed
+    # "Projected Supply HC" row; m_supply_cap feeds PHC / Service Level. Ramp factor
+    # is 1.0 (no change) for plans with no new-hire classes.
+    try:
+        _ramp_w = _ramp_factor_by_week(pid, locals().get("weeks", []) or _week_span(plan.get("start_week"), plan.get("end_week")), _settings, locals().get("sup_w", {}))
+    except Exception:
+        _ramp_w = {}
+    m_supply_cap = {d: float(m_supply.get(d, 0.0)) * float(_ramp_w.get(str(_monday(d)), 1.0)) for d in day_ids}
+
     # Prepare daily AHT/SUT maps used for BO calcs (computed here to avoid unbound refs)
     try:
         ahtF = _daily_weighted_aht(dfF, weight_col_upload)
@@ -756,7 +828,7 @@ def _fill_tables_fixed_daily(ptype, pid, _fw_cols_unused, _tick, whatif=None):
             # PHC = Supply FTE (per-day) * productive seconds per day / SUT_seconds
             for d in day_ids:
                 sut = max(1e-6, _sut_for_day(d))
-                sup_fte = float(m_supply.get(d, 0.0) or 0.0)
+                sup_fte = float(m_supply_cap.get(d, 0.0) or 0.0)  # ramp-adjusted for capacity
                 m_phc[d] = float((sup_fte * productive_sec) / sut)
 
     # Linear PHC (non-Erlang) when interval PHC is missing: use FTE @ Forecast and AHT/SUT.
@@ -775,19 +847,45 @@ def _fill_tables_fixed_daily(ptype, pid, _fw_cols_unused, _tick, whatif=None):
     except Exception:
         pass
 
-        # Proxy Service Level as Supply/Required (capped to 100%)
-        # Required FTE: Actual for past/today; Forecast for future
+    # Back Office Service Level. (This block was previously mis-indented inside
+    # the except above, so it only ran on error — now it runs on the normal
+    # path.) Two methods, chosen by the Settings BO capacity model:
+    #   • erlang  -> a true Erlang service level at the supplied agent count;
+    #   • tat/linear -> the coverage proxy min(100, supply/required*100).
+    # Voice/chat/OB already get a real interval Erlang SL via src_calc.
+    if is_bo:
+        bo_model_sl = str(_settings.get("bo_capacity_model", "tat")).lower()
+        T_sec = float(_settings.get("sl_seconds", 20) or 20.0)
+        bo_hpd = float(_settings.get("bo_hours_per_day", _settings.get("hours_per_fte", 8.0)) or 8.0)
+        day_sec = max(1.0, bo_hpd * 3600.0)
+        # Local daily volume maps (volF/volA are built further below).
+        _vol_f_sl = _daily_sum(dfF, weight_col_upload)
+        _vol_a_sl = _daily_sum(dfA, weight_col_upload)
         for d in day_ids:
             try:
                 dd = pd.to_datetime(d).date()
             except Exception:
                 dd = None
             req = float(((m_fte_a.get(d) if (dd is not None and dd <= today) else m_fte_f.get(d)) or m_fte_a.get(d) or 0.0))
-            sup = float(m_supply.get(d, 0.0) or 0.0)
-            if req <= 0:
-                m_sl[d] = 100.0 if sup > 0 else 0.0
+            sup = float(m_supply_cap.get(d, 0.0) or 0.0)  # ramp-adjusted for capacity/SL
+            if bo_model_sl == "erlang":
+                # Offered load for the day = items*SUT/working-seconds; agents =
+                # supplied productive FTE for the day.
+                items = float(_vol_f_sl.get(d, 0.0) or _vol_a_sl.get(d, 0.0) or 0.0)
+                sut = max(1e-6, _sut_for_day(d))
+                traffic = (items * sut) / day_sec
+                agents = sup * float(_settings.get("util_bo", 0.85) or 0.85)
+                try:
+                    sl = _erlang_service_level(traffic, int(np.ceil(agents)) if agents > 0 else 0, sut, T_sec)
+                    m_sl[d] = float(min(100.0, max(0.0, sl * 100.0)))
+                except Exception:
+                    m_sl[d] = 100.0 if (sup > 0 and req <= 0) else (0.0 if req > 0 else 0.0)
             else:
-                m_sl[d] = float(min(100.0, max(0.0, (sup / req) * 100.0)))
+                # Coverage proxy: how much of the required FTE the supply covers.
+                if req <= 0:
+                    m_sl[d] = 100.0 if sup > 0 else 0.0
+                else:
+                    m_sl[d] = float(min(100.0, max(0.0, (sup / req) * 100.0)))
 
     # Compute variance rows (MTP≈Forecast, Tactical, Budgeted)
     # Budgeted FTE via budget AHT applied to Forecast intervals when possible
@@ -843,12 +941,17 @@ def _fill_tables_fixed_daily(ptype, pid, _fw_cols_unused, _tick, whatif=None):
             base_req = float(m_fte_f.get(d, 0.0) or 0.0)
             req_queue_vals.append((base_req * (qval / fval)) if fval > 0 else 0.0)
 
-    # Apply backlog carryover to next day's forecast (Back Office only)
+    # Apply backlog carryover to next day's forecast (Back Office only).
+    # Only carry into the current/future days; carrying onto an already-completed
+    # day would stack backlog against that day's actuals.
     backlog_carryover = bool((whatif or {}).get("backlog_carryover", True))
+    _bk_today_d = str(pd.Timestamp("today").date())
     if backlog_carryover and is_bo and backlog_enabled:
         for i in range(len(day_ids) - 1):
             cur_d = day_ids[i]
             nxt_d = day_ids[i + 1]
+            if str(nxt_d) < _bk_today_d:
+                continue  # destination day already completed; do not stack backlog
             add = float(backlog_map.get(cur_d, 0.0) or 0.0)
             if add:
                 volF[nxt_d] = float(volF.get(nxt_d, 0.0) or 0.0) + add
@@ -863,45 +966,53 @@ def _fill_tables_fixed_daily(ptype, pid, _fw_cols_unused, _tick, whatif=None):
     # For voice/chat/outbound the base FTE is an Erlang sumproduct rollup; the
     # weekly module applies the same linear scaling to the rolled-up FTE for
     # what-if (backlog is Back-Office-only), so we stay consistent here.
+    # Base shrink fraction for the channel — shrink_delta is ADDITIVE percentage
+    # points on top of this (e.g. base 30% + 5 -> 35%, productive 70% -> 65%),
+    # not a multiplier, so the FTE scaling is base-aware.
+    wf_base_shr = _planned_shrink(_settings, ch)
     if vol_delta or aht_delta or shrink_delta or (is_bo and backlog_enabled):
         for d in day_ids:
             base_f = float(m_fte_f.get(d, 0.0) or 0.0)
             if base_f == 0.0:
                 continue
-            base_v = float(volF_base.get(d, 0.0) or 0.0)
-            eff_v = float(volF.get(d, 0.0) or 0.0)
+            base_v = float(volF_base.get(d, 0.0) or 0.0)   # raw forecast (pre-backlog)
+            eff_v = float(volF.get(d, 0.0) or 0.0)          # raw forecast + carried backlog
+            backlog_v = max(0.0, eff_v - base_v)
             active = _wf_active_day(d)
-            # 1) Forecast + Backlog: scale by effective/raw volume (BO only;
-            #    voice/chat/ob keep ratio == 1 since volF is uncarried there).
-            if base_v > 0 and eff_v != base_v:
-                base_f *= (eff_v / base_v)
-            # 2) what-if volume delta on active days (forecast portion)
-            if active and vol_delta:
-                base_f *= (1.0 + vol_delta / 100.0)
+            # 1+2) Effective workload = forecast (scaled by the what-if volume dial
+            #      on active days) + carried backlog. The carried backlog is a fixed
+            #      prior-period item count and must NOT be amplified by vol_delta.
+            fc_v = base_v * (1.0 + vol_delta / 100.0) if (active and vol_delta) else base_v
+            eff_total = fc_v + backlog_v
+            if base_v > 0 and eff_total != base_v:
+                base_f *= (eff_total / base_v)
             # 3) what-if AHT/SUT delta on active days
             if active and aht_delta:
                 base_f *= (1.0 + aht_delta / 100.0)
-            # 4) what-if shrink delta on active days (more shrink → more FTE)
+            # 4) what-if shrink delta on active days (additive points on base)
             if active and shrink_delta:
-                base_f /= max(0.1, 1.0 - (shrink_delta / 100.0))
+                prod0 = max(0.01, 1.0 - wf_base_shr)
+                prod1 = max(0.01, prod0 - shrink_delta / 100.0)
+                base_f *= prod0 / prod1
             m_fte_f[d] = base_f
-            # Reflect the volume dial in the displayed Forecast row too, so the
-            # grid and the required FTE stay consistent.
+            # Reflect the volume dial in the displayed Forecast row too (scaled
+            # forecast + unscaled backlog), so the grid and required FTE stay consistent.
             if active and vol_delta:
-                volF[d] = eff_v * (1.0 + vol_delta / 100.0)
+                volF[d] = eff_total
 
-    # Variance rows use the effective (post backlog + what-if) FTE @ Forecast.
-    var_mtp = [ (m_fte_f.get(c, 0.0) - m_fte_a.get(c, 0.0)) for c in day_ids ]
-    var_tac = [ (m_fte_t.get(c, 0.0) - m_fte_a.get(c, 0.0)) for c in day_ids ]
-    var_bud = [ (m_fte_b.get(c, 0.0) - m_fte_a.get(c, 0.0)) for c in day_ids ]
+    # FTE Over/Under = Projected Supply - Required @ scenario (positive => surplus).
+    # Required @ scenario uses the effective (post backlog + what-if) FTE.
+    var_mtp = [ (m_supply.get(c, 0.0) - m_fte_f.get(c, 0.0)) for c in day_ids ]
+    var_tac = [ (m_supply.get(c, 0.0) - m_fte_t.get(c, 0.0)) for c in day_ids ]
+    var_bud = [ (m_supply.get(c, 0.0) - m_fte_b.get(c, 0.0)) for c in day_ids ]
 
     # Build the upper DataFrame
     upper_payload = {
         "FTE Required @ Forecast Volume":   [m_fte_f.get(c, 0.0) for c in day_ids],
         "FTE Required @ Actual Volume":     [m_fte_a.get(c, 0.0) for c in day_ids],
-        "FTE Over/Under MTP Vs Actual":     var_mtp,
-        "FTE Over/Under Tactical Vs Actual":var_tac,
-        "FTE Over/Under Budgeted Vs Actual":var_bud,
+        "FTE Over/Under vs MTP":     var_mtp,
+        "FTE Over/Under vs Tactical":var_tac,
+        "FTE Over/Under vs Budgeted":var_bud,
         "Projected Supply HC":              [m_supply.get(c, 0.0) for c in day_ids],
         "Projected Handling Capacity (#)":  [m_phc.get(c, 0.0) for c in day_ids],
         "Projected Service Level":          [m_sl.get(c, 0.0) for c in day_ids],

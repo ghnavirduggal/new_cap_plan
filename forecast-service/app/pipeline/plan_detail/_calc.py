@@ -259,21 +259,30 @@ def _week_label(d) -> str | None:
     return pd.Timestamp(monday).normalize().date().isoformat()
 
 
-def _nh_effective_count(row) -> int:
+def _nh_effective_count(row, pt_fte_ratio: float = 0.5) -> int:
     """
     Effective class size:
-      - If billable_hc > 0 ? use it.
-      - Else Full-Time ? grads_needed
-      - Else Part-Time ? ceil(grads_needed / 2)
+      - If billable_hc > 0 -> use it.
+      - Else Full-Time -> grads_needed
+      - Else Part-Time -> round(grads_needed * pt_fte_ratio)
+
+    pt_fte_ratio is configurable (Settings: pt_fte_ratio, default 0.5 = two PT
+    heads ~= one FTE). All branches round to nearest for a consistent rounding
+    direction (previously billable/FT truncated while PT used ceil).
     """
     billable = pd.to_numeric(row.get("billable_hc"), errors="coerce")
     if pd.notna(billable) and billable > 0:
-        return int(billable)
+        return int(round(float(billable)))
 
     grads = int(pd.to_numeric(row.get("grads_needed"), errors="coerce") or 0)
     emp   = str(row.get("emp_type", "")).strip().lower()
     if emp == "part-time":
-        return int(math.ceil(grads / 2.0))
+        try:
+            ratio = float(pt_fte_ratio)
+        except Exception:
+            ratio = 0.5
+        ratio = ratio if ratio > 0 else 0.5
+        return int(round(grads * ratio))
     return int(grads)
 
 
@@ -510,20 +519,30 @@ def _voice_interval_calc(ivl_df: pd.DataFrame, settings: dict, ivl_min: int) -> 
                 hi = mid - 1
         return float(lo)
 
+    # Occupancy cap as a fraction (settings may store 0.85 or 85).
+    occ_cap_f = _safe_float(occ_cap, 0.85)
+    if occ_cap_f > 1.0:
+        occ_cap_f /= 100.0
+    ivl_minutes = int(round(ivl_sec / 60.0)) or 30
+
     rows = []
     for _, r in df.iterrows():
         calls = _safe_float(r.get("volume"), 0.0)
         aht   = _safe_float(r.get("aht_sec"), 0.0)
-        # Treat interval uploads as hourly call rate for Erlang (matches Excel usage)
-        calls_per_hour = calls * (3600.0 / ivl_sec) if ivl_sec > 0 else 0.0
-        traffic = offered_load_erlangs(calls, aht, int(ivl_sec / 60.0))
-        N = fractional_agents(target_sl, T_sec, calls_per_hour, aht)
-        # SL uses calls/hour basis (Excel SLA expects calls per hour)
-        calls_per_hour_sl = calls
-        traffic_hr = (calls_per_hour_sl * aht) / ivl_sec if aht > 0 else 0.0
-        sl = service_level(traffic_hr, int(math.ceil(N)) if N > 0 else 0, aht, T_sec)
-        occ = (traffic / N) if N > 0 else 0.0
-        _asa = asa(traffic, int(math.ceil(N)) if N > 0 else 0, aht)
+        # ONE consistent Erlang solve on the TRUE interval (e.g. 30 min): the
+        # interval's call count is the arrival volume, and agents / SL /
+        # occupancy all come from that same offered load A = calls*AHT/ivl_sec.
+        # min_agents also enforces the occupancy cap (staffs up until occ<=cap),
+        # so voice required FTE respects max occupancy like back office does.
+        calls_round = int(round(calls))
+        aht_round = int(round(aht))
+        if calls_round > 0 and aht_round > 0:
+            N_int, sl, occ, _asa = min_agents(
+                calls_round, aht_round, ivl_minutes, target_sl, T_sec, occ_cap_f
+            )
+            N = float(N_int)
+        else:
+            N, sl, occ = 0.0, 0.0, 0.0
         staff_sec = N * ivl_sec
         # Store per-hour capacity for rollups; interval view displays per-hour
         phc = math.floor(_call_capacity_per_hour(N, aht) * (ivl_sec / 3600.0))
@@ -615,23 +634,39 @@ def _bo_daily_calc(bo_df: pd.DataFrame, settings: dict, channel: str | None = No
     df["date"] = pd.to_datetime(df["date"]).dt.date
     ch = str(channel or "").strip().lower()
     is_bo = ch in ("back office", "bo", "backoffice")
+    is_chat = ch.startswith("chat") or ch in ("messageus", "message us")
+    is_ob   = ch.startswith("outbound") or ch in ("ob", "out bound")
     hrs = _safe_float(
         settings.get("bo_hours_per_day", settings.get("hours_per_fte", 8.0)) if is_bo else settings.get("hours_per_fte", 8.0),
         8.0,
     )
-    shrink = _to_frac(settings.get("bo_shrinkage_pct", settings.get("shrinkage_pct", 0.30)))
     util   = _safe_float(settings.get("util_bo", 0.85), 0.85)
-    # BO linear FTE formula includes utilization in denominator.
-    if is_bo:
-        denom_tat = max(1e-6, hrs * 3600.0 * (1.0 - shrink) * util)
+    # Channel-appropriate Erlang inputs (SL target, SL seconds, occupancy cap,
+    # shrinkage, and chat concurrency). Outbound and Chat ALWAYS use Erlang;
+    # Back Office honours the bo_capacity_model setting (tat/linear vs erlang).
+    conc = 1.0
+    if is_chat:
+        shrink  = _to_frac(settings.get("chat_shrinkage_pct", settings.get("shrinkage_pct", 0.30)))
+        target  = _safe_float(settings.get("chat_target_sl", settings.get("target_sl", 0.80)), 0.80)
+        T_sec   = _safe_float(settings.get("chat_sl_seconds", settings.get("sl_seconds", 20)), 20.0)
+        occ_cap = settings.get("occupancy_cap_chat", settings.get("util_chat", settings.get("occupancy_cap_voice", settings.get("occupancy_cap", 0.85))))
+        conc    = max(0.1, _safe_float(settings.get("chat_concurrency", 1.5), 1.5))
+    elif is_ob:
+        shrink  = _to_frac(settings.get("ob_shrinkage_pct", settings.get("shrinkage_pct", 0.30)))
+        target  = _safe_float(settings.get("ob_target_sl", settings.get("target_sl", 0.80)), 0.80)
+        T_sec   = _safe_float(settings.get("ob_sl_seconds", settings.get("sl_seconds", 20)), 20.0)
+        occ_cap = settings.get("occupancy_cap_ob", settings.get("util_ob", settings.get("occupancy_cap_voice", settings.get("occupancy_cap", 0.85))))
     else:
-        denom_tat = max(1e-6, hrs * 3600.0 * (1.0 - shrink) * util)
+        shrink  = _to_frac(settings.get("bo_shrinkage_pct", settings.get("shrinkage_pct", 0.30)))
+        target  = _safe_float(settings.get("target_sl", 0.80), 0.80)
+        T_sec   = _safe_float(settings.get("sl_seconds", 20), 20.0)
+        occ_cap = settings.get("occupancy_cap_voice", settings.get("occupancy_cap", 0.85))
+    denom_tat = max(1e-6, hrs * 3600.0 * (1.0 - shrink) * util)
 
     model = str(settings.get("bo_capacity_model", "tat")).lower()
-    target = _safe_float(settings.get("target_sl", 0.80), 0.80)
-    T_sec  = _safe_float(settings.get("sl_seconds", 20), 20.0)
-    cov_min = int(round(_safe_float(settings.get("bo_hours_per_day", hrs), hrs) * 60.0))
-    occ_cap = settings.get("occupancy_cap_voice", settings.get("occupancy_cap", 0.85))
+    if is_chat or is_ob:
+        model = "erlang"  # contact channels are SL-driven, never TAT-linear
+    cov_min = int(round(hrs * 60.0))
 
     rows = []
     for _, r in df.iterrows():
@@ -642,13 +677,11 @@ def _bo_daily_calc(bo_df: pd.DataFrame, settings: dict, channel: str | None = No
             phc = None  # optional with roster; handled in views if needed
             slp = None  # proxy handled in views if needed
         else:
-            N, sl, occ, _asa = min_agents(items, aht, cov_min, target, T_sec, occ_cap)
-            erlang_shrink = _to_frac(
-                settings.get("bo_shrinkage_pct", settings.get("shrinkage_pct", 0.30)) if is_bo else settings.get("shrinkage_pct", 0.30)
-            )
-            denom_erlang = max(1e-6, hrs * 3600.0 * (1.0 - erlang_shrink))
+            aht_eff = (aht / conc) if (is_chat and conc > 0) else aht
+            N, sl, occ, _asa = min_agents(items, aht_eff, cov_min, target, T_sec, occ_cap)
+            denom_erlang = max(1e-6, hrs * 3600.0 * (1.0 - shrink))
             fte = (N * cov_min * 60.0) / denom_erlang
-            phc = (N * cov_min * 60.0) / max(1e-6, aht) if aht > 0 else 0.0
+            phc = (N * cov_min * 60.0) / max(1e-6, aht_eff) if aht_eff > 0 else 0.0
             slp = sl*100.0
         rows.append({
             "date": r["date"], "program": r.get("program","Back Office"),
@@ -669,35 +702,32 @@ def _daily_from_intervals(ivl_df: pd.DataFrame, settings: dict, weight_col: str)
     df = ivl_df.copy()
     df["date"] = pd.to_datetime(df["date"]).dt.date
     shrink = _to_frac(settings.get("shrinkage_pct", 0.30))
-    denom_shr = max(1e-6, (1.0 - shrink))
-    if "agents_req" in df.columns:
-        df["fte_ivl"] = pd.to_numeric(df["agents_req"], errors="coerce").fillna(0.0) / denom_shr
+    hrs    = _safe_float(settings.get("hours_per_fte", 8.0), 8.0)
+    # True SUMPRODUCT denominator: one productive FTE-day of seconds.
+    denom  = max(1e-6, hrs * 3600.0 * (1.0 - shrink))
+    # Staff-seconds per interval = agents_req * interval_seconds. The interval
+    # calc already stores this as 'staff_seconds'; fall back to agents_req*ivl_sec.
+    if "staff_seconds" in df.columns:
+        df["_staff_sec"] = pd.to_numeric(df["staff_seconds"], errors="coerce").fillna(0.0)
     else:
-        hrs    = _safe_float(settings.get("hours_per_fte", 8.0), 8.0)
-        denom  = max(1e-6, hrs*3600.0 * (1.0 - shrink))
-        df["fte_ivl"] = pd.to_numeric(df.get("staff_seconds"), errors="coerce").fillna(0.0) / denom
+        ivl_sec = float(_ivl_seconds(settings.get("interval_minutes", settings.get("interval_minutes", 30))))
+        df["_staff_sec"] = pd.to_numeric(df.get("agents_req"), errors="coerce").fillna(0.0) * ivl_sec
     g = df.groupby(["date","program"], as_index=False)
     day = g.agg({
-        "fte_ivl":"sum",
+        "_staff_sec":"sum",
         "phc":"sum",
-        "service_level": lambda s: 0.0,  # placeholder
-        weight_col:"sum"
+        weight_col:"sum",
     })
-    # Recompute SL as weighted avg by weight_col
+    # True sumproduct daily FTE: total staff-seconds across the day / one productive FTE-day.
+    day["fte_req"] = day["_staff_sec"] / denom
+    # SL is a level metric -> volume-weighted average across the day's intervals.
     sl_rows = []
     for (d,p), grp in df.groupby(["date","program"]):
-        w = grp[weight_col].astype(float).values.tolist()
-        sls = grp["service_level"].astype(float).values.tolist()
+        w = pd.to_numeric(grp[weight_col], errors="coerce").fillna(0.0).values.tolist()
+        sls = pd.to_numeric(grp["service_level"], errors="coerce").fillna(0.0).values.tolist()
         sl_rows.append((d,p,_weighted_avg(sls, w)))
     sl_df = pd.DataFrame(sl_rows, columns=["date","program","service_level"])
-    day = day.drop(columns=["service_level"]).merge(sl_df, on=["date","program"], how="left")
-    fte_rows = []
-    for (d,p), grp in df.groupby(["date","program"]):
-        w = pd.to_numeric(grp[weight_col], errors="coerce").fillna(0.0).values.tolist()
-        f = pd.to_numeric(grp["fte_ivl"], errors="coerce").fillna(0.0).values.tolist()
-        fte_rows.append((d, p, _weighted_avg(f, w) if sum(w) > 0 else float(sum(f))))
-    fte_df = pd.DataFrame(fte_rows, columns=["date","program","fte_req"])
-    day = day.drop(columns=["fte_ivl"]).merge(fte_df, on=["date","program"], how="left")
+    day = day.merge(sl_df, on=["date","program"], how="left")
     # Preserve aggregated load for weighting at higher grains
     day = day.rename(columns={weight_col: "arrival_load"})
     return day[["date","program","fte_req","phc","service_level","arrival_load"]].sort_values(["date","program"])
@@ -1185,7 +1215,7 @@ def _fill_tables_fixed(ptype, pid, fw_cols, _tick, whatif=None, grain: str = 'we
                if (k or "").strip().lower().startswith("volume") else
                ["Billable Hours","AHT/SUT","Shrinkage","Training"] if (k or "").strip().lower().startswith("billable hours") else ["Billable Txns","AHT/SUT","Efficiency","Shrinkage"] if (k or "").strip().lower().startswith("fte based billable") else
                ["Billable FTE Required","Shrinkage","Training"]),
-        "upper": (["FTE Required @ Forecast Volume","FTE Required @ Actual Volume","FTE Over/Under MTP Vs Actual","FTE Over/Under Tactical Vs Actual","FTE Over/Under Budgeted Vs Actual","Projected Supply HC","Projected Handling Capacity (#)","Projected Service Level"]
+        "upper": (["FTE Required @ Forecast Volume","FTE Required @ Actual Volume","FTE Over/Under vs MTP","FTE Over/Under vs Tactical","FTE Over/Under vs Budgeted","Projected Supply HC","Projected Handling Capacity (#)","Projected Service Level"]
                   if (k or "").strip().lower().startswith("volume") else
                   ["Billable FTE Required (#)","Headcount Required With Shrinkage (#)","FTE Over/Under (#)"] if (k or "").strip().lower().startswith("billable hours") else
                   ["Billable Transactions","FTE Required (#)","FTE Over/Under (#)"] if (k or "").strip().lower().startswith("fte based billable") else
@@ -1684,9 +1714,16 @@ def _fill_tables_fixed(ptype, pid, fw_cols, _tick, whatif=None, grain: str = 'we
         backlog_w = backlog_w_local
 
     # ---- Apply Backlog carryover (Back Office only): add previous week's backlog to next week's BO forecast ----
+    # Only carry into the current/future weeks. Stacking a past week's backlog
+    # onto an already-completed next week would double-count against that week's
+    # actuals and distort its (now historical) Projected SL / Handling Capacity,
+    # since weekly_demand_bo already holds actual demand for past weeks.
+    _bk_today_w = _monday(dt.date.today()).isoformat()
     if backlog_carryover and str(ch_first).strip().lower() in ("back office", "bo") and backlog_w and backlog_enabled:
         for i in range(len(week_ids) - 1):
             cur_w = week_ids[i]; nxt_w = week_ids[i+1]
+            if str(nxt_w) < _bk_today_w:
+                continue  # destination week already completed; do not stack backlog
             add = float(backlog_w.get(cur_w, 0.0) or 0.0)
             if add:
                 weekly_demand_bo[nxt_w] = float(weekly_demand_bo.get(nxt_w, 0.0)) + add
@@ -2013,22 +2050,10 @@ def _fill_tables_fixed(ptype, pid, fw_cols, _tick, whatif=None, grain: str = 'we
     req_w_tactical = _daily_to_weekly(req_daily_tactical)
     req_w_budgeted = _daily_to_weekly(req_daily_budgeted)
 
-    # What-If: adjust forecast requirements by volume, AHT and shrink deltas
-    if vol_delta or shrink_delta or aht_delta:
-        for w in list(req_w_forecast.keys()):
-            if not _wf_active(w):
-                continue
-            v = float(req_w_forecast[w])
-            if vol_delta:
-                v *= (1.0 + vol_delta / 100.0)
-            if aht_delta:
-                # Approximate: FTE requirement scales ~linearly with AHT
-                v *= (1.0 + aht_delta / 100.0)
-            if shrink_delta:
-                # Approximate impact: scale by 1/(1 - delta)
-                denom = max(0.1, 1.0 - (shrink_delta / 100.0))
-                v /= denom
-            req_w_forecast[w] = v
+    # NOTE: the what-if deltas are applied to req_w_forecast at the FINAL
+    # re-apply block below (after the weekly recompute + interval override).
+    # An earlier delta block here was dead — the recompute always overwrote it —
+    # so it was removed to avoid confusion.
 
     # ---- Interval supply from global roster_long (if available) ----
     schedule_supply_avg = {}
@@ -2240,7 +2265,7 @@ def _fill_tables_fixed(ptype, pid, fw_cols, _tick, whatif=None, grain: str = 'we
             return pd.Timestamp(monday).normalize().date().isoformat()
 
         for _, r in df.iterrows():
-            n = _nh_effective_count(r)
+            n = _nh_effective_count(r, pt_fte_ratio=settings.get("pt_fte_ratio", 0.5))
             if n <= 0: continue
             ns = _w(r.get("nesting_start")); ne = _w(r.get("nesting_end")); ps = _w(r.get("production_start"))
             if ns and ne:
@@ -2256,6 +2281,15 @@ def _fill_tables_fixed(ptype, pid, fw_cols, _tick, whatif=None, grain: str = 'we
     classes_df = load_df(f"plan_{pid}_nh_classes")
     nest_buckets, sda_buckets = _weekly_buckets_from_classes(classes_df, week_ids)
 
+    # SDA agents already appear at full (1.0) headcount in projected_supply from
+    # their production_start week, so their ramp contribution must be the SHORTFALL
+    # vs a full head, not an additional partial head. Subtract the SDA head count
+    # for the week from the SDA effective-agents term: net = sda_eff - sda_heads
+    # makes each SDA agent count as (effective - 1.0), i.e. effective overall.
+    # (Nesting precedes production_start and is NOT in supply, so it stays additive.)
+    def _sda_heads_in_week(w) -> float:
+        return float(sum((sda_buckets.get(w, {}) or {}).values()))
+
     wk_train_in_phase = {w: 0 for w in week_ids}
     wk_nest_in_phase  = {w: 0 for w in week_ids}
     if isinstance(classes_df, pd.DataFrame) and not classes_df.empty:
@@ -2263,7 +2297,7 @@ def _fill_tables_fixed(ptype, pid, fw_cols, _tick, whatif=None, grain: str = 'we
         def _between(w, w_start, w_end) -> bool:
             return (w_start is not None) and (w_end is not None) and (w_start <= w <= w_end)
         for _, r in c.iterrows():
-            n_eff = _nh_effective_count(r)
+            n_eff = _nh_effective_count(r, pt_fte_ratio=settings.get("pt_fte_ratio", 0.5))
             w_ts = _week_label(r.get("training_start"))
             w_te = _week_label(r.get("training_end"))
             w_ns = _week_label(r.get("nesting_start"))
@@ -2961,8 +2995,11 @@ def _fill_tables_fixed(ptype, pid, fw_cols, _tick, whatif=None, grain: str = 'we
                 # Approximate: FTE requirement scales ~linearly with AHT.
                 v *= (1.0 + aht_delta / 100.0)
             if shrink_delta:
-                denom = max(0.1, 1.0 - (shrink_delta / 100.0))
-                v /= denom
+                # Additive percentage points on the base shrink (base 30% + 5
+                # -> 35%, productive 70% -> 65%), not a multiplier.
+                prod0 = max(0.01, 1.0 - planned_shrink_fraction)
+                prod1 = max(0.01, prod0 - shrink_delta / 100.0)
+                v *= prod0 / prod1
             req_w_forecast[w] = v
 
     # ---- Back Office: fold backlog carryover into the required FTE ----
@@ -3053,17 +3090,18 @@ def _fill_tables_fixed(ptype, pid, fw_cols, _tick, whatif=None, grain: str = 'we
         pass
 
     # ---- BvA ----
-    # Align Weekly Budgeted FTE with the same calculation used for
-    # 'FTE Required @ Forecast Volume' to avoid discrepancies.
+    # Budgeted FTE = the genuine budgeted-volume requirement (budget AHT/SUT),
+    # NOT the what-if-adjusted forecast — a budget baseline must not move when a
+    # what-if dial changes. Actual FTE uses the shrink-adjusted actual so it
+    # matches the Upper table's 'FTE Required @ Actual Volume' and the daily/
+    # monthly grains. Variance = Actual - Budgeted.
     for w in week_ids:
         if w not in bva.columns:
             bva[w] = pd.Series(np.nan, index=bva.index, dtype="float64")
         elif not pd.api.types.is_float_dtype(bva[w].dtype):
             bva[w] = pd.to_numeric(bva[w], errors="coerce").astype("float64")
-        # Use weekly forecast requirement for Budgeted FTE to match
-        # 'FTE Required @ Forecast Volume'.
-        bud = float(req_w_forecast.get(w, 0.0))
-        act = float(req_w_actual.get(w,   0.0))
+        bud = float(req_w_budgeted.get(w, 0.0))
+        act = float(req_w_actual_adj.get(w, 0.0))
         bva.loc[bva["metric"] == "Budgeted FTE (#)", w] = bud
         bva.loc[bva["metric"] == "Actual FTE (#)",   w] = act
         bva.loc[bva["metric"] == "Variance (#)",     w] = act - bud
@@ -3274,12 +3312,13 @@ def _fill_tables_fixed(ptype, pid, fw_cols, _tick, whatif=None, grain: str = 'we
                     if login_f is not None: p *= login_f
                     denom = (1.0 + u)
                     if aht_m is not None:   denom *= aht_m
-                    total += float(cnt) * (p / max(1.0, denom))
+                    total += float(cnt) * (p / max(0.05, denom))
                 return total
 
             nest_eff = eff_from_buckets(nest_buckets, lc["nesting_prod_pct"], lc["nesting_aht_uplift_pct"])
             sda_eff  = eff_from_buckets(sda_buckets,  lc["sda_prod_pct"],     lc["sda_aht_uplift_pct"])
             # Use base agents (pre-shrink) for CallCapacity
+            sda_eff = sda_eff - _sda_heads_in_week(w)  # SDA already full in supply
             eff_agents = max(1.0, (agents_prod + nest_eff + sda_eff))
             # Overtime: treat as equivalent agents based on hours per FTE and workdays/week
             try:
@@ -3336,10 +3375,10 @@ def _fill_tables_fixed(ptype, pid, fw_cols, _tick, whatif=None, grain: str = 'we
                     if login_f is not None: p *= login_f
                     denom = (1.0 + u)
                     if aht_m is not None:   denom *= aht_m
-                    total += float(cnt) * (p / max(1.0, denom))
+                    total += float(cnt) * (p / max(0.05, denom))
                 return total
 
-            agents_eff = max(1.0, float(projected_supply.get(w, 0.0)) + eff(nest_buckets, lc["nesting_prod_pct"], lc["nesting_aht_uplift_pct"]) + eff(sda_buckets, lc["sda_prod_pct"], lc["sda_aht_uplift_pct"]))
+            agents_eff = max(1.0, float(projected_supply.get(w, 0.0)) + eff(nest_buckets, lc["nesting_prod_pct"], lc["nesting_aht_uplift_pct"]) + (eff(sda_buckets, lc["sda_prod_pct"], lc["sda_aht_uplift_pct"]) - _sda_heads_in_week(w)))
             if bo_model == "tat":
                 shr_add = (shrink_delta / 100.0) if (_wf_active(w) and shrink_delta) else 0.0
                 eff_shr = min(0.99, max(0.0, bo_shr_base + shr_add))
@@ -3382,9 +3421,9 @@ def _fill_tables_fixed(ptype, pid, fw_cols, _tick, whatif=None, grain: str = 'we
                     if login_f is not None: p *= login_f
                     denom = (1.0 + u)
                     if aht_m is not None:   denom *= aht_m
-                    total += float(cnt) * (p / max(1.0, denom))
+                    total += float(cnt) * (p / max(0.05, denom))
                 return total
-            agents_eff = max(1.0, (float(projected_supply.get(w, 0.0)) + eff_ob(nest_buckets, lc["nesting_prod_pct"], lc["nesting_aht_uplift_pct"]) + eff_ob(sda_buckets, lc["sda_prod_pct"], lc["sda_aht_uplift_pct"])) * ob_util)
+            agents_eff = max(1.0, (float(projected_supply.get(w, 0.0)) + eff_ob(nest_buckets, lc["nesting_prod_pct"], lc["nesting_aht_uplift_pct"]) + (eff_ob(sda_buckets, lc["sda_prod_pct"], lc["sda_aht_uplift_pct"]) - _sda_heads_in_week(w))) * ob_util)
             ivl_min_ob = int(float(sw.get("ob_interval_minutes", sw.get("interval_minutes", 30)) or 30))
             ivl_sec_ob = max(60, ivl_min_ob * 60)
             base_aht = _metric_for_capacity(wk_aht_sut_actual, wk_aht_sut_forecast, w)
@@ -3415,9 +3454,9 @@ def _fill_tables_fixed(ptype, pid, fw_cols, _tick, whatif=None, grain: str = 'we
                     if login_f is not None: p *= login_f
                     denom = (1.0 + u)
                     if aht_m is not None:   denom *= aht_m
-                    total += float(cnt) * (p / max(1.0, denom))
+                    total += float(cnt) * (p / max(0.05, denom))
                 return total
-            agents_eff = max(1.0, (float(projected_supply.get(w, 0.0)) + eff_ch(nest_buckets, lc["nesting_prod_pct"], lc["nesting_aht_uplift_pct"]) + eff_ch(sda_buckets, lc["sda_prod_pct"], lc["sda_aht_uplift_pct"])) * chat_util)
+            agents_eff = max(1.0, (float(projected_supply.get(w, 0.0)) + eff_ch(nest_buckets, lc["nesting_prod_pct"], lc["nesting_aht_uplift_pct"]) + (eff_ch(sda_buckets, lc["sda_prod_pct"], lc["sda_aht_uplift_pct"]) - _sda_heads_in_week(w))) * chat_util)
             ivl_min_ch = int(float(sw.get("chat_interval_minutes", sw.get("interval_minutes", 30)) or 30))
             ivl_sec_ch = max(60, ivl_min_ch * 60)
             base_aht = _metric_for_capacity(wk_aht_sut_actual, wk_aht_sut_forecast, w)
@@ -3462,11 +3501,11 @@ def _fill_tables_fixed(ptype, pid, fw_cols, _tick, whatif=None, grain: str = 'we
                     if login_f is not None: p *= login_f
                     denom = (1.0 + u)
                     if aht_m is not None:   denom *= aht_m
-                    total += float(cnt) * (p / max(1.0, denom))
+                    total += float(cnt) * (p / max(0.05, denom))
                 return total
 
             nest_eff = eff_from_buckets(nest_buckets, lc["nesting_prod_pct"], lc["nesting_aht_uplift_pct"])
-            sda_eff  = eff_from_buckets(sda_buckets,  lc["sda_prod_pct"],     lc["sda_aht_uplift_pct"])
+            sda_eff  = eff_from_buckets(sda_buckets,  lc["sda_prod_pct"],     lc["sda_aht_uplift_pct"]) - _sda_heads_in_week(w)
             agents_prod = schedule_supply_avg.get(w, None)
             if agents_prod is None or agents_prod <= 0:
                 agents_prod = float(projected_supply.get(w, 0.0))
@@ -3670,9 +3709,9 @@ def _fill_tables_fixed(ptype, pid, fw_cols, _tick, whatif=None, grain: str = 'we
                         if login_f is not None: p *= login_f
                         denom = (1.0 + u)
                         if aht_m is not None:   denom *= aht_m
-                        total += float(cnt) * (p / max(1.0, denom))
+                        total += float(cnt) * (p / max(0.05, denom))
                     return total
-                agents_eff = max(1.0, (float(projected_supply.get(w, 0.0)) + eff(nest_buckets, lc["nesting_prod_pct"], lc["nesting_aht_uplift_pct"]) + eff(sda_buckets, lc["sda_prod_pct"], lc["sda_aht_uplift_pct"])) * util_bo)
+                agents_eff = max(1.0, (float(projected_supply.get(w, 0.0)) + eff(nest_buckets, lc["nesting_prod_pct"], lc["nesting_aht_uplift_pct"]) + (eff(sda_buckets, lc["sda_prod_pct"], lc["sda_aht_uplift_pct"]) - _sda_heads_in_week(w))) * util_bo)
                 sl_frac = _erlang_sl(items_per_ivl, max(1.0, float(sut)), agents_eff, sl_seconds, ivl_sec)
                 proj_sl[w] = 100.0 * sl_frac
         elif ch_low in ("outbound", "ob", "out bound"):
@@ -3821,39 +3860,31 @@ def _fill_tables_fixed(ptype, pid, fw_cols, _tick, whatif=None, grain: str = 'we
     if "FTE Required @ Actual Volume" in spec["upper"]:
         for w in week_ids:
             upper_df.loc[upper_df["metric"] == "FTE Required @ Actual Volume", w] = float(req_w_actual_adj.get(w, 0.0))
-    if "FTE Over/Under MTP Vs Actual" in spec["upper"]:
+    # FTE Over/Under = Projected Supply - Required @ scenario (positive => surplus).
+    if "FTE Over/Under vs MTP" in spec["upper"]:
         for w in week_ids:
             try:
                 mtp = float(pd.to_numeric(upper_df.loc[upper_df["metric"] == "FTE Required @ Forecast Volume", w], errors="coerce").fillna(0.0).iloc[0])
             except Exception:
                 mtp = float(req_w_forecast.get(w, 0.0))
-            try:
-                act = float(pd.to_numeric(upper_df.loc[upper_df["metric"] == "FTE Required @ Actual Volume", w], errors="coerce").fillna(0.0).iloc[0])
-            except Exception:
-                act = float(req_w_actual_adj.get(w, 0.0))
-            upper_df.loc[upper_df["metric"] == "FTE Over/Under MTP Vs Actual", w] = mtp - act
-    if "FTE Over/Under Tactical Vs Actual" in spec["upper"]:
+            sup = float(projected_supply.get(w, 0.0) or 0.0)
+            upper_df.loc[upper_df["metric"] == "FTE Over/Under vs MTP", w] = sup - mtp
+    if "FTE Over/Under vs Tactical" in spec["upper"]:
         for w in week_ids:
             try:
                 tac = float(pd.to_numeric(upper_df.loc[upper_df["metric"] == "FTE Required @ Tactical Volume", w], errors="coerce").fillna(0.0).iloc[0])
             except Exception:
                 tac = float(req_w_tactical.get(w, 0.0))
-            try:
-                act = float(pd.to_numeric(upper_df.loc[upper_df["metric"] == "FTE Required @ Actual Volume", w], errors="coerce").fillna(0.0).iloc[0])
-            except Exception:
-                act = float(req_w_actual_adj.get(w, 0.0))
-            upper_df.loc[upper_df["metric"] == "FTE Over/Under Tactical Vs Actual", w] = tac - act
-    if "FTE Over/Under Budgeted Vs Actual" in spec["upper"]:
+            sup = float(projected_supply.get(w, 0.0) or 0.0)
+            upper_df.loc[upper_df["metric"] == "FTE Over/Under vs Tactical", w] = sup - tac
+    if "FTE Over/Under vs Budgeted" in spec["upper"]:
         for w in week_ids:
             try:
                 bud = float(pd.to_numeric(upper_df.loc[upper_df["metric"] == "FTE Required @ Budgeted Volume", w], errors="coerce").fillna(0.0).iloc[0])
             except Exception:
                 bud = float(req_w_budgeted.get(w, 0.0))
-            try:
-                act = float(pd.to_numeric(upper_df.loc[upper_df["metric"] == "FTE Required @ Actual Volume", w], errors="coerce").fillna(0.0).iloc[0])
-            except Exception:
-                act = float(req_w_actual_adj.get(w, 0.0))
-            upper_df.loc[upper_df["metric"] == "FTE Over/Under Budgeted Vs Actual", w] = bud - act
+            sup = float(projected_supply.get(w, 0.0) or 0.0)
+            upper_df.loc[upper_df["metric"] == "FTE Over/Under vs Budgeted", w] = sup - bud
     if "Projected Supply HC" in spec["upper"]:
         for w in week_ids:
             upper_df.loc[upper_df["metric"] == "Projected Supply HC", w] = projected_supply.get(w, 0.0)

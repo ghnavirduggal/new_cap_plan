@@ -709,9 +709,9 @@ def _fill_tables_fixed_interval(
     default_upper_rows: List[str] = [
         "FTE Required @ Forecast Volume",
         "FTE Required @ Actual Volume",
-        "FTE Over/Under MTP Vs Actual",
-        "FTE Over/Under Tactical Vs Actual",
-        "FTE Over/Under Budgeted Vs Actual",
+        "FTE Over/Under vs MTP",
+        "FTE Over/Under vs Tactical",
+        "FTE Over/Under vs Budgeted",
         "Projected Supply HC",
         "Projected Handling Capacity (#)",
         "Projected Service Level",
@@ -813,9 +813,9 @@ def _fill_tables_fixed_interval(
     m_req_forecast = upper_metric_str.eq("FTE Required @ Forecast Volume")
     m_req_actual = upper_metric_str.eq("FTE Required @ Actual Volume")
     m_over_under = upper_metric_str.eq("FTE Over/Under (#)")
-    m_over_mtp = upper_metric_str.eq("FTE Over/Under MTP Vs Actual")
-    m_over_tac = upper_metric_str.eq("FTE Over/Under Tactical Vs Actual")
-    m_over_budget = upper_metric_str.eq("FTE Over/Under Budgeted Vs Actual")
+    m_over_mtp = upper_metric_str.eq("FTE Over/Under vs MTP")
+    m_over_tac = upper_metric_str.eq("FTE Over/Under vs Tactical")
+    m_over_budget = upper_metric_str.eq("FTE Over/Under vs Budgeted")
     m_supply = upper_metric_str.eq("Projected Supply HC")
     m_cap = upper_metric_str.eq("Projected Handling Capacity (#)")
     m_sl = upper_metric_str.eq("Projected Service Level")
@@ -964,12 +964,10 @@ def _fill_tables_fixed_interval(
             if m_over_under.any():
                 upper.loc[m_over_under, lab] = float(ag) - float(req)
 
+            # FTE Over/Under = Supply (staffed agents) - Required @ scenario.
             if m_over_mtp.any() and (calls_round > 0 or calls_a_round > 0):
-                base = Na if (calls_a_round > 0 and aht_a_round > 0) else 0.0
-                val = (Nf if (calls_round > 0 and aht_round > 0) else 0.0) - float(
-                    base
-                )
-                upper.loc[m_over_mtp, lab] = float(val)
+                nf_req = (Nf if (calls_round > 0 and aht_round > 0) else 0.0)
+                upper.loc[m_over_mtp, lab] = float(ag) - float(nf_req)
 
             if m_over_tac.any() and lab in volT:
                 calls_t = float(volT.get(lab, 0.0))
@@ -980,11 +978,9 @@ def _fill_tables_fixed_interval(
                         float(target_sl), int(T_sec), occ_cap_scaled
                     )
                     Nt = float(Nt) / adj_div
-                    base = Na if (calls_a_round > 0 and aht_a_round > 0) else 0.0
-                    upper.loc[m_over_tac, lab] = float(Nt) - float(base)
+                    upper.loc[m_over_tac, lab] = float(ag) - float(Nt)
 
             if m_over_budget.any() and ahtB_val:
-                base = Na if (calls_a_round > 0 and aht_a_round > 0) else 0.0
                 if calls_round > 0:
                     ahtB_round = int(round(float(ahtB_val)))
                     Nb, _slB, _occB, _asaB = _min_agents_cached(
@@ -994,7 +990,7 @@ def _fill_tables_fixed_interval(
                     Nb = float(Nb) / adj_div
                 else:
                     Nb = 0.0
-                upper.loc[m_over_budget, lab] = float(Nb) - float(base)
+                upper.loc[m_over_budget, lab] = float(ag) - float(Nb)
 
             # Tooltips for required rows
             if m_req_forecast.any() and calls_round > 0 and aht_round > 0:
@@ -1166,12 +1162,10 @@ def _fill_tables_fixed_interval(
                 if m_req_actual.any():
                     upper.loc[m_req_actual, lab] = float(Na)
 
-            # Deltas vs actual + supply row
+            # FTE Over/Under = Supply (staffed agents) - Required @ scenario.
             if m_over_mtp.any() and (items_round > 0 or items_a_round > 0):
-                base = Na if items_a_round > 0 else 0.0
-                upper.loc[m_over_mtp, lab] = float(Nf if items_round > 0 else 0.0) - float(
-                    base
-                )
+                nf_req = float(Nf if items_round > 0 else 0.0)
+                upper.loc[m_over_mtp, lab] = float(ag) - nf_req
             if m_over_tac.any() and lab in volT_map:
                 it = float(volT_map.get(lab, 0.0))
                 it_round = int(round(it))
@@ -1184,13 +1178,10 @@ def _fill_tables_fixed_interval(
                         int(T_sec_chat),
                         occ_cap_scaled_chat,
                     )
-                    base = Na if items_a_round > 0 else 0.0
-                    upper.loc[m_over_tac, lab] = float(Nt) - float(base)
+                    upper.loc[m_over_tac, lab] = float(ag) - float(Nt)
             if m_over_budget.any():
-                base = Na if items_a_round > 0 else 0.0
-                upper.loc[m_over_budget, lab] = float(
-                    Nf if items_round > 0 else 0.0
-                ) - float(base)
+                nf_req = float(Nf if items_round > 0 else 0.0)
+                upper.loc[m_over_budget, lab] = float(ag) - nf_req
             if m_supply.any():
                 upper.loc[m_supply, lab] = float(ag)
 
@@ -1359,12 +1350,10 @@ def _fill_tables_fixed_interval(
                 if m_req_actual.any():
                     upper.loc[m_req_actual, lab] = float(Na)
 
-            # Deltas vs actual + supply row
+            # FTE Over/Under = Supply (staffed agents) - Required @ scenario.
             if m_over_mtp.any() and (calls_round > 0 or calls_a_round > 0):
-                base = Na if calls_a_round > 0 else 0.0
-                upper.loc[m_over_mtp, lab] = float(Nf if calls_round > 0 else 0.0) - float(
-                    base
-                )
+                nf_req = float(Nf if calls_round > 0 else 0.0)
+                upper.loc[m_over_mtp, lab] = float(ag) - nf_req
             if m_over_tac.any() and lab in volT:
                 ct = float(volT.get(lab, 0.0))
                 ct_round = int(round(ct))
@@ -1377,13 +1366,10 @@ def _fill_tables_fixed_interval(
                         int(T_sec_ob),
                         occ_cap_scaled_ob,
                     )
-                    base = Na if calls_a_round > 0 else 0.0
-                    upper.loc[m_over_tac, lab] = float(Nt) - float(base)
+                    upper.loc[m_over_tac, lab] = float(ag) - float(Nt)
             if m_over_budget.any():
-                base = Na if calls_a_round > 0 else 0.0
-                upper.loc[m_over_budget, lab] = float(
-                    Nf if calls_round > 0 else 0.0
-                ) - float(base)
+                nf_req = float(Nf if calls_round > 0 else 0.0)
+                upper.loc[m_over_budget, lab] = float(ag) - nf_req
             if m_supply.any():
                 upper.loc[m_supply, lab] = float(ag)
 

@@ -216,11 +216,25 @@ def _fill_tables_fixed_monthly(ptype, pid, fw_cols, _tick, whatif=None):
     # helper: use the persisted window as an ?active future? flag using month ids too
 
     def _wf_active_month(m):
-        # Default: if no explicit window set, apply what-if only to future months
+        # Apply what-if only to active/future months. With no explicit window,
+        # "active" = strictly future months. With a custom window (stored as week
+        # boundaries), gate by the window converted to month-start ids (inclusive
+        # on both ends) so deltas never leak into past/locked months.
         today_m = pd.to_datetime(dt.date.today()).to_period("M").to_timestamp().date().isoformat()
         if not wf_start and not wf_end:
             return str(m) > today_m
-        # If a custom window is provided (as weeks), keep permissive behavior for now
+        m_ts = pd.to_datetime(m, errors="coerce")
+        if pd.isna(m_ts):
+            return str(m) > today_m
+        m_month = m_ts.to_period("M")
+        if wf_start:
+            s = pd.to_datetime(wf_start, errors="coerce")
+            if pd.notna(s) and m_month < s.to_period("M"):
+                return False
+        if wf_end:
+            e = pd.to_datetime(wf_end, errors="coerce")
+            if pd.notna(e) and m_month > e.to_period("M"):
+                return False
         return True
 
     # helpers for nest overrides (applied when month is in active window)
@@ -443,7 +457,7 @@ def _fill_tables_fixed_monthly(ptype, pid, fw_cols, _tick, whatif=None):
                if (k or "").strip().lower().startswith("volume") else
                ["Billable Hours","AHT/SUT","Shrinkage","Training"] if (k or "").strip().lower().startswith("billable hours") else ["Billable Txns","AHT/SUT","Efficiency","Shrinkage"] if (k or "").strip().lower().startswith("fte based billable") else
                ["Billable FTE Required","Shrinkage","Training"]),
-        "upper": (["FTE Required @ Forecast Volume","FTE Required @ Actual Volume","FTE Over/Under MTP Vs Actual","FTE Over/Under Tactical Vs Actual","FTE Over/Under Budgeted Vs Actual","Projected Supply HC","Projected Handling Capacity (#)","Projected Service Level"]
+        "upper": (["FTE Required @ Forecast Volume","FTE Required @ Actual Volume","FTE Over/Under vs MTP","FTE Over/Under vs Tactical","FTE Over/Under vs Budgeted","Projected Supply HC","Projected Handling Capacity (#)","Projected Service Level"]
                   if (k or "").strip().lower().startswith("volume") else
                   ["Billable FTE Required (#)","Headcount Required With Shrinkage (#)","FTE Over/Under (#)"] if (k or "").strip().lower().startswith("billable hours") else
                   ["Billable Transactions","FTE Required (#)","FTE Over/Under (#)"] if (k or "").strip().lower().startswith("fte based billable") else
@@ -1210,6 +1224,19 @@ def _fill_tables_fixed_monthly(ptype, pid, fw_cols, _tick, whatif=None):
     req_m_budgeted = _daily_to_monthly(req_daily_budgeted, is_bo=is_bo_ch)
     # What-If: adjust forecast requirements by volume, AHT and shrink deltas
     # Apply to future months only when no explicit window is set
+    def _wf_shr_frac(val, fb=0.30):
+        try:
+            x = float(val)
+            return x / 100.0 if x > 1.0 else x
+        except Exception:
+            return fb
+    _ch_wf = str(ch_first or "").strip().lower()
+    _wf_skey = {
+        "back office": "bo_shrinkage_pct", "bo": "bo_shrinkage_pct",
+        "chat": "chat_shrinkage_pct", "outbound": "ob_shrinkage_pct",
+        "ob": "ob_shrinkage_pct", "voice": "voice_shrinkage_pct",
+    }.get(_ch_wf, "shrinkage_pct")
+    _wf_base_shr_m = _wf_shr_frac(settings.get(_wf_skey, settings.get("shrinkage_pct")))
     if vol_delta or shrink_delta or aht_delta:
         for mid in list(req_m_forecast.keys()):
             if not _wf_active_month(mid):
@@ -1221,8 +1248,10 @@ def _fill_tables_fixed_monthly(ptype, pid, fw_cols, _tick, whatif=None):
                 # Approximate: FTE requirement scales ~linearly with AHT/SUT
                 v *= (1.0 + aht_delta / 100.0)
             if shrink_delta:
-                denom = max(0.1, 1.0 - (shrink_delta / 100.0))
-                v /= denom
+                # Additive percentage points on the base shrink, not a multiplier.
+                prod0 = max(0.01, 1.0 - _wf_base_shr_m)
+                prod1 = max(0.01, prod0 - shrink_delta / 100.0)
+                v *= prod0 / prod1
             req_m_forecast[mid] = v
     # ---- Interval supply from global roster_long (monthly avg per interval) ----
     ivl_min = int(float(settings.get("interval_minutes", 30)) or 30)
@@ -1429,7 +1458,7 @@ def _fill_tables_fixed_monthly(ptype, pid, fw_cols, _tick, whatif=None):
             if pd.isna(t): return None
             return pd.Timestamp(t).to_period("M").to_timestamp().date().isoformat()
         for _, r in df.iterrows():
-            n = _nh_effective_count(r)
+            n = _nh_effective_count(r, pt_fte_ratio=settings.get("pt_fte_ratio", 0.5))
             if n <= 0: continue
             ns = _m(r.get("nesting_start")); ne = _m(r.get("nesting_end")); ps = _m(r.get("production_start"))
             if ns and ne:
@@ -1442,6 +1471,32 @@ def _fill_tables_fixed_monthly(ptype, pid, fw_cols, _tick, whatif=None):
                     for i, mm in enumerate(mlist, start=1): sda[mm][i] += n
         return nest, sda
     nest_buckets, sda_buckets = _monthly_buckets_from_classes(classes_df, month_ids)
+
+    # SDA agents already appear at full (1.0) headcount in projected_supply from
+    # their production month, so their ramp term must be the shortfall vs a full
+    # head, not an extra partial head: net = sda_eff - sda_heads -> each SDA agent
+    # nets to (effective - 1.0), i.e. effective overall. Nesting precedes
+    # production and is NOT in supply, so it stays additive.
+    def _sda_heads_in_month(m) -> float:
+        return float(sum((sda_buckets.get(m, {}) or {}).values()))
+
+    # Monthly SDA buckets are aged in MONTHS, but sda_prod_pct / sda_aht_uplift_pct
+    # are per-WEEK ramp profiles. Average each ~4.333-week span into one monthly
+    # value so a month of SDA uses the mean productivity over its weeks rather
+    # than only the first week's value.
+    def _wk_list_to_month(weekly) -> list:
+        weekly = [float(x) for x in (weekly or [])]
+        if len(weekly) <= 1:
+            return weekly
+        wpm = 52.0 / 12.0
+        out, i, n = [], 0.0, len(weekly)
+        while i < n:
+            lo = min(int(round(i)), n - 1)
+            hi = min(int(round(i + wpm)), n)
+            chunk = weekly[lo:hi] or [weekly[lo]]
+            out.append(sum(chunk) / len(chunk))
+            i += wpm
+        return out
     # in-phase counters (peak within month)
     m_train_in_phase = {m: sum(nest_buckets[m].values()) for m in month_ids}  # training ~= nesting buckets prior to prod
     m_nest_in_phase  = {m: sum(nest_buckets[m].values()) for m in month_ids}
@@ -1999,8 +2054,12 @@ def _fill_tables_fixed_monthly(ptype, pid, fw_cols, _tick, whatif=None):
                 # (weekly behavior avoids SC/TTW for Voice so monthly should match)
                 try:
                     base_s = pd.to_numeric(base, errors='coerce')
-                    ov = pd.to_numeric(ooo, errors='coerce') + pd.to_numeric(ino, errors='coerce')
-                    frac = (ov / base_s.replace({0.0: np.nan})).fillna(0.0)
+                    den = base_s.replace({0.0: np.nan})
+                    ooo_frac = (pd.to_numeric(ooo, errors='coerce') / den).fillna(0.0).clip(lower=0.0, upper=1.0)
+                    ino_frac = (pd.to_numeric(ino, errors='coerce') / den).fillna(0.0).clip(lower=0.0, upper=1.0)
+                    # Overall shrink compounds the two components: 1-(1-ooo)(1-ino),
+                    # NOT a simple sum (which would overstate, e.g. 10%+10% -> 20% vs 19%).
+                    frac = 1.0 - (1.0 - ooo_frac) * (1.0 - ino_frac)
                     for t, f in zip(idx_dates, frac):
                         k = str(pd.to_datetime(t).date())
                         if pd.notna(f):
@@ -2631,11 +2690,11 @@ def _fill_tables_fixed_monthly(ptype, pid, fw_cols, _tick, whatif=None):
                     if login_f is not None: p *= login_f
                     denom = (1.0 + u)
                     if aht_m is not None:   denom *= aht_m
-                    total += float(cnt) * (p / max(1.0, denom))
+                    total += float(cnt) * (p / max(0.05, denom))
                 return total
             
             nest_eff = eff_from_buckets(nest_buckets, lc["nesting_prod_pct"], lc["nesting_aht_uplift_pct"])
-            sda_eff  = eff_from_buckets(sda_buckets,  lc["sda_prod_pct"],     lc["sda_aht_uplift_pct"])
+            sda_eff  = eff_from_buckets(sda_buckets,  _wk_list_to_month(lc["sda_prod_pct"]),     _wk_list_to_month(lc["sda_aht_uplift_pct"])) - _sda_heads_in_month(m)
             v_shr_add = (shrink_delta / 100.0) if (_wf_active_month(m) and shrink_delta) else 0.0
             v_eff_shr = min(0.99, max(0.0, voice_shr_base + v_shr_add))
             eff_agents = max(1.0, (agents_prod + nest_eff + sda_eff) * (1.0 - v_eff_shr))
@@ -2704,9 +2763,9 @@ def _fill_tables_fixed_monthly(ptype, pid, fw_cols, _tick, whatif=None):
                     if login_f is not None: p *= login_f
                     denom = (1.0 + u)
                     if aht_m is not None:   denom *= aht_m
-                    total += float(cnt) * (p / max(1.0, denom))
+                    total += float(cnt) * (p / max(0.05, denom))
                 return total
-            agents_eff = max(1.0, float(projected_supply.get(m, 0.0)) + eff(nest_buckets, lc["nesting_prod_pct"], lc["nesting_aht_uplift_pct"]) + eff(sda_buckets, lc["sda_prod_pct"], lc["sda_aht_uplift_pct"]))
+            agents_eff = max(1.0, float(projected_supply.get(m, 0.0)) + eff(nest_buckets, lc["nesting_prod_pct"], lc["nesting_aht_uplift_pct"]) + (eff(sda_buckets, _wk_list_to_month(lc["sda_prod_pct"]), _wk_list_to_month(lc["sda_aht_uplift_pct"])) - _sda_heads_in_month(m)))
             wd = _workdays_in_month(m, is_bo=True)
             if bo_model == "tat":
                 shr_add = (shrink_delta / 100.0) if (_wf_active_month(m) and shrink_delta) else 0.0
@@ -2781,10 +2840,10 @@ def _fill_tables_fixed_monthly(ptype, pid, fw_cols, _tick, whatif=None):
                     if login_f is not None: p *= login_f
                     denom = (1.0 + u)
                     if aht_m is not None:   denom *= aht_m
-                    total += float(cnt) * (p / max(1.0, denom))
+                    total += float(cnt) * (p / max(0.05, denom))
                 return total
             nest_eff = eff_from_buckets(nest_buckets, lc["nesting_prod_pct"], lc["nesting_aht_uplift_pct"])
-            sda_eff  = eff_from_buckets(sda_buckets,  lc["sda_prod_pct"],     lc["sda_aht_uplift_pct"])
+            sda_eff  = eff_from_buckets(sda_buckets,  _wk_list_to_month(lc["sda_prod_pct"]),     _wk_list_to_month(lc["sda_aht_uplift_pct"])) - _sda_heads_in_month(m)
             v_shr_add = (shrink_delta / 100.0) if (_wf_active_month(m) and shrink_delta) else 0.0
             v_eff_shr = min(0.99, max(0.0, voice_shr_base + v_shr_add))
             agents_prod = schedule_supply_avg_m.get(m, None)
@@ -3062,7 +3121,10 @@ def _fill_tables_fixed_monthly(ptype, pid, fw_cols, _tick, whatif=None):
             fte = ((vol * sut) / 3600.0) / denom
             try:
                 if _wf_active_month(mm) and shrink_delta:
-                    fte /= max(0.1, 1.0 - (shrink_delta / 100.0))
+                    # Additive points on this month's base shrink (sh_frac).
+                    _p0 = max(0.01, 1.0 - sh_frac)
+                    _p1 = max(0.01, _p0 - shrink_delta / 100.0)
+                    fte *= _p0 / _p1
             except Exception:
                 pass
             upper_df.loc[upper_df["metric"] == "FTE Required @ Forecast Volume", mm] = fte
@@ -3105,39 +3167,31 @@ def _fill_tables_fixed_monthly(ptype, pid, fw_cols, _tick, whatif=None):
     elif "FTE Required @ Actual Volume" in spec["upper"]:
         for mm in month_ids:
             upper_df.loc[upper_df["metric"] == "FTE Required @ Actual Volume", mm] = float(req_m_actual.get(mm, 0.0))
-    if "FTE Over/Under MTP Vs Actual" in spec["upper"]:
+    # FTE Over/Under = Projected Supply - Required @ scenario (positive => surplus).
+    if "FTE Over/Under vs MTP" in spec["upper"]:
         for mm in month_ids:
             try:
                 mtp = float(pd.to_numeric(upper_df.loc[upper_df["metric"] == "FTE Required @ Forecast Volume", mm], errors="coerce").fillna(0).iloc[0])
             except Exception:
                 mtp = float(req_m_forecast.get(mm, 0.0))
-            try:
-                act = float(pd.to_numeric(upper_df.loc[upper_df["metric"] == "FTE Required @ Actual Volume", mm], errors="coerce").fillna(0).iloc[0])
-            except Exception:
-                act = float(req_m_actual.get(mm, 0.0))
-            upper_df.loc[upper_df["metric"] == "FTE Over/Under MTP Vs Actual", mm] = mtp - act
-    if "FTE Over/Under Tactical Vs Actual" in spec["upper"]:
+            sup = float(projected_supply.get(mm, 0.0) or 0.0)
+            upper_df.loc[upper_df["metric"] == "FTE Over/Under vs MTP", mm] = sup - mtp
+    if "FTE Over/Under vs Tactical" in spec["upper"]:
         for mm in month_ids:
             try:
                 tac = float(pd.to_numeric(upper_df.loc[upper_df["metric"] == "FTE Required @ Tactical Volume", mm], errors="coerce").fillna(0).iloc[0])
             except Exception:
                 tac = float(req_m_tactical.get(mm, 0.0))
-            try:
-                act = float(pd.to_numeric(upper_df.loc[upper_df["metric"] == "FTE Required @ Actual Volume", mm], errors="coerce").fillna(0).iloc[0])
-            except Exception:
-                act = float(req_m_actual.get(mm, 0.0))
-            upper_df.loc[upper_df["metric"] == "FTE Over/Under Tactical Vs Actual", mm] = tac - act
-    if "FTE Over/Under Budgeted Vs Actual" in spec["upper"]:
+            sup = float(projected_supply.get(mm, 0.0) or 0.0)
+            upper_df.loc[upper_df["metric"] == "FTE Over/Under vs Tactical", mm] = sup - tac
+    if "FTE Over/Under vs Budgeted" in spec["upper"]:
         for mm in month_ids:
             try:
                 bud = float(pd.to_numeric(upper_df.loc[upper_df["metric"] == "FTE Required @ Budgeted Volume", mm], errors="coerce").fillna(0).iloc[0])
             except Exception:
                 bud = float(req_m_budgeted.get(mm, 0.0))
-            try:
-                act = float(pd.to_numeric(upper_df.loc[upper_df["metric"] == "FTE Required @ Actual Volume", mm], errors="coerce").fillna(0).iloc[0])
-            except Exception:
-                act = float(req_m_actual.get(mm, 0.0))
-            upper_df.loc[upper_df["metric"] == "FTE Over/Under Budgeted Vs Actual", mm] = bud - act
+            sup = float(projected_supply.get(mm, 0.0) or 0.0)
+            upper_df.loc[upper_df["metric"] == "FTE Over/Under vs Budgeted", mm] = sup - bud
     if "Projected Supply HC" in spec["upper"]:
         for mm in month_ids:
             upper_df.loc[upper_df["metric"] == "Projected Supply HC", mm] = projected_supply.get(mm, 0.0)

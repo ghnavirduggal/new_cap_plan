@@ -681,7 +681,80 @@ export default function PlanDetailClient({ planId, rollupBa }: PlanDetailClientP
   const { setLoading } = useGlobalLoader();
   const { notify } = useToast();
   const [planMeta, setPlanMeta] = useState<PlanRecord | null>(null);
+  // Resolve created_by / updated_by / owner ids (BRID/email) to display names so
+  // the Floating Options panel shows people, not opaque ids. Reads persisted
+  // profiles server-side, so it reflects Profile name updates.
+  const [userNames, setUserNames] = useState<Record<string, string>>({});
+  const userName = useCallback(
+    (id?: string) => {
+      const k = String(id || "").trim();
+      if (!k) return "—";
+      return userNames[k] || k;
+    },
+    [userNames]
+  );
+  useEffect(() => {
+    const list = Array.from(
+      new Set(
+        [planMeta?.created_by, (planMeta as any)?.updated_by, planMeta?.owner]
+          .map((s) => String(s || "").trim())
+          .filter(Boolean)
+      )
+    );
+    if (!list.length) return;
+    let active = true;
+    apiPost<Record<string, { name?: string }>>("/api/users/display", { keys: list })
+      .then((map) => {
+        if (!active || !map || typeof map !== "object") return;
+        const next: Record<string, string> = {};
+        Object.entries(map).forEach(([k, v]) => {
+          next[k] = String((v as { name?: string })?.name || k);
+        });
+        setUserNames((prev) => ({ ...prev, ...next }));
+      })
+      .catch(() => {});
+    return () => {
+      active = false;
+    };
+  }, [planMeta?.created_by, (planMeta as any)?.updated_by, planMeta?.owner]);
+  // Current user, used to stamp new notes with the actual author.
+  const [currentUser, setCurrentUser] = useState<{ key?: string; name?: string; email?: string; brid?: string } | null>(null);
+  useEffect(() => {
+    let active = true;
+    apiGet<{ key?: string; name?: string; email?: string; brid?: string }>("/api/user")
+      .then((u) => {
+        if (active) setCurrentUser(u ?? null);
+      })
+      .catch(() => {
+        if (active) setCurrentUser(null);
+      });
+    return () => {
+      active = false;
+    };
+  }, []);
+  const currentUserKey = String(currentUser?.key || currentUser?.email || currentUser?.name || "").trim();
   const [tables, setTables] = useState<Record<string, Array<Record<string, any>>>>({});
+  // Resolve note authors (stamped with an identity id) to display names.
+  useEffect(() => {
+    const list = Array.from(
+      new Set((tables.notes ?? []).map((n) => String(n?.user || "").trim()).filter(Boolean))
+    );
+    if (!list.length) return;
+    let active = true;
+    apiPost<Record<string, { name?: string }>>("/api/users/display", { keys: list })
+      .then((map) => {
+        if (!active || !map || typeof map !== "object") return;
+        const next: Record<string, string> = {};
+        Object.entries(map).forEach(([k, v]) => {
+          next[k] = String((v as { name?: string })?.name || k);
+        });
+        setUserNames((prev) => ({ ...prev, ...next }));
+      })
+      .catch(() => {});
+    return () => {
+      active = false;
+    };
+  }, [tables.notes]);
   const [upperRows, setUpperRows] = useState<Array<Record<string, any>>>([]);
   const [activeTab, setActiveTab] = useState("fw");
   const [message, setMessage] = useState("");
@@ -1379,7 +1452,8 @@ export default function PlanDetailClient({ planId, rollupBa }: PlanDetailClientP
             return;
           }
           if (res.status !== "ready" || !res.data) {
-            notify("error", "Capacity rollup calculations failed.");
+            const detail = (res as any)?.job?.error ? ` (${(res as any).job.error})` : "";
+            notify("error", `Capacity rollup calculations failed.${detail}`);
             return;
           }
 
@@ -2043,7 +2117,9 @@ export default function PlanDetailClient({ planId, rollupBa }: PlanDetailClientP
     if (!noteText.trim()) return;
     const nextNote = {
       when: new Date().toISOString().slice(0, 10),
-      user: planMeta?.updated_by || planMeta?.owner || "local",
+      // Stamp the note with the actual current user (their identity key), so it
+      // resolves to their profile name on display — not the plan's last editor.
+      user: currentUserKey || planMeta?.updated_by || planMeta?.owner || "local",
       note: noteText.trim()
     };
     const nextNotes = [...(tables.notes ?? []), nextNote];
@@ -2442,7 +2518,8 @@ export default function PlanDetailClient({ planId, rollupBa }: PlanDetailClientP
   };
 
   const renderNotes = () => {
-    const notes = tables.notes ?? [];
+    // Resolve the stored author id to a display name for each note.
+    const notes = (tables.notes ?? []).map((n) => ({ ...n, user: userName(n?.user) }));
     return (
       <div className="plan-notes">
         <div className="plan-notes-input">
@@ -2665,7 +2742,7 @@ export default function PlanDetailClient({ planId, rollupBa }: PlanDetailClientP
               </div>
               <div>
                 <span>Created By</span>
-                <strong>{planMeta?.created_by || "—"}</strong>
+                <strong>{userName(planMeta?.created_by)}</strong>
               </div>
               <div>
                 <span>Created On</span>
@@ -2673,7 +2750,7 @@ export default function PlanDetailClient({ planId, rollupBa }: PlanDetailClientP
               </div>
               <div>
                 <span>Last Updated By</span>
-                <strong>{planMeta?.updated_by || "—"}</strong>
+                <strong>{userName(planMeta?.updated_by)}</strong>
               </div>
               <div>
                 <span>Last Updated On</span>
