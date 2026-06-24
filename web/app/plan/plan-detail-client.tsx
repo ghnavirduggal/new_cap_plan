@@ -9,7 +9,7 @@ import EditableTable from "../_components/EditableTable";
 import MultiSelect from "../_components/MultiSelect";
 import { useGlobalLoader } from "../_components/GlobalLoader";
 import { useToast } from "../_components/ToastProvider";
-import { apiGet, apiPost } from "../../lib/api";
+import { apiGet, apiPost, apiPostRaw } from "../../lib/api";
 import { parseExcelFile } from "../../lib/excel";
 
 type PlanRecord = {
@@ -131,17 +131,6 @@ const NON_GRAIN_TABLES = new Set(["emp", "bulk_files", "notes"]);
 
 const DATE_KEY_RE = /^\d{4}-\d{2}-\d{2}$/;
 const DATE_PREFIX_RE = /^\d{4}-\d{2}-\d{2}/;
-const FORECAST_BASE = (() => {
-  if (typeof window !== "undefined") {
-    return process.env.NEXT_PUBLIC_BROWSER_FORECAST_URL || "";
-  }
-  return (
-    process.env.NEXT_PUBLIC_FORECAST_URL ||
-    process.env.NEXT_PUBLIC_API_URL ||
-    "http://localhost:8080"
-  );
-})();
-
 const ROSTER_COLUMNS = [
   { id: "brid", label: "BRID" },
   { id: "name", label: "Name" },
@@ -1760,15 +1749,10 @@ export default function PlanDetailClient({ planId, rollupBa }: PlanDetailClientP
     if (!planId) return;
     setLoading(true);
     try {
-      const res = await fetch(`${FORECAST_BASE}/api/planning/plan/export`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ plan_id: planId })
-      });
-      if (!res.ok) {
-        const text = await res.text();
-        throw new Error(text || "Export failed.");
-      }
+      // Route through apiPostRaw so the bearer token is attached (a plain
+      // fetch() would 401 whenever AUTH_ENABLED is set). Returns the raw
+      // Response so we can read the binary workbook as a blob.
+      const res = await apiPostRaw("/api/planning/plan/export", { plan_id: planId });
       const blob = await res.blob();
       const url = URL.createObjectURL(blob);
       const link = document.createElement("a");

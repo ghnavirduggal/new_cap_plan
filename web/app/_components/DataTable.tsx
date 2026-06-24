@@ -27,7 +27,8 @@ function isWholeNumberMetric(column?: string) {
 function formatCell(value: any, column?: string): ReactNode {
   if (value === null || value === undefined) return "";
   if (typeof value === "number") {
-    if (!Number.isFinite(value)) return value;
+    // Never surface NaN/Infinity as literal text in a metric cell.
+    if (!Number.isFinite(value)) return "";
     if (isWholeNumberMetric(column)) return Math.round(value).toLocaleString();
     if (Number.isInteger(value)) return value.toLocaleString();
     return value.toLocaleString(undefined, { minimumFractionDigits: 1, maximumFractionDigits: 1 });
