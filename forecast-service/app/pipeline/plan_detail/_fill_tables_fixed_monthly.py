@@ -216,11 +216,25 @@ def _fill_tables_fixed_monthly(ptype, pid, fw_cols, _tick, whatif=None):
     # helper: use the persisted window as an ?active future? flag using month ids too
 
     def _wf_active_month(m):
-        # Default: if no explicit window set, apply what-if only to future months
+        # Apply what-if only to active/future months. With no explicit window,
+        # "active" = strictly future months. With a custom window (stored as week
+        # boundaries), gate by the window converted to month-start ids (inclusive
+        # on both ends) so deltas never leak into past/locked months.
         today_m = pd.to_datetime(dt.date.today()).to_period("M").to_timestamp().date().isoformat()
         if not wf_start and not wf_end:
             return str(m) > today_m
-        # If a custom window is provided (as weeks), keep permissive behavior for now
+        m_ts = pd.to_datetime(m, errors="coerce")
+        if pd.isna(m_ts):
+            return str(m) > today_m
+        m_month = m_ts.to_period("M")
+        if wf_start:
+            s = pd.to_datetime(wf_start, errors="coerce")
+            if pd.notna(s) and m_month < s.to_period("M"):
+                return False
+        if wf_end:
+            e = pd.to_datetime(wf_end, errors="coerce")
+            if pd.notna(e) and m_month > e.to_period("M"):
+                return False
         return True
 
     # helpers for nest overrides (applied when month is in active window)
@@ -2014,8 +2028,12 @@ def _fill_tables_fixed_monthly(ptype, pid, fw_cols, _tick, whatif=None):
                 # (weekly behavior avoids SC/TTW for Voice so monthly should match)
                 try:
                     base_s = pd.to_numeric(base, errors='coerce')
-                    ov = pd.to_numeric(ooo, errors='coerce') + pd.to_numeric(ino, errors='coerce')
-                    frac = (ov / base_s.replace({0.0: np.nan})).fillna(0.0)
+                    den = base_s.replace({0.0: np.nan})
+                    ooo_frac = (pd.to_numeric(ooo, errors='coerce') / den).fillna(0.0).clip(lower=0.0, upper=1.0)
+                    ino_frac = (pd.to_numeric(ino, errors='coerce') / den).fillna(0.0).clip(lower=0.0, upper=1.0)
+                    # Overall shrink compounds the two components: 1-(1-ooo)(1-ino),
+                    # NOT a simple sum (which would overstate, e.g. 10%+10% -> 20% vs 19%).
+                    frac = 1.0 - (1.0 - ooo_frac) * (1.0 - ino_frac)
                     for t, f in zip(idx_dates, frac):
                         k = str(pd.to_datetime(t).date())
                         if pd.notna(f):
