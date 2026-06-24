@@ -5,7 +5,7 @@ import re
 from typing import Optional
 
 import pandas as pd
-from psycopg.types.json import Json
+from psycopg2.extras import Json
 
 from app.pipeline.headcount import load_headcount
 from app.pipeline.postgres import db_conn, ensure_roster_schema, has_dsn
