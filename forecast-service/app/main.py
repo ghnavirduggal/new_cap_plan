@@ -3308,6 +3308,27 @@ def get_attrition_weekly(
     return {"rows": sanitize_for_json(df_to_records(df))}
 
 
+@app.get("/api/forecast/attrition/forecast")
+def get_attrition_forecast(
+    ba: Optional[str] = None,
+    sba: Optional[str] = None,
+    channel: Optional[str] = None,
+    site: Optional[str] = None,
+    horizon: int = 12,
+):
+    """Project the weekly attrition rate forward (level+trend) with a P10/P90 band."""
+    from app.pipeline import attrition_forecast
+
+    scope = None
+    if any(str(v or "").strip() for v in (ba, sba, channel, site)):
+        scope = {"business_area": ba, "sub_business_area": sba, "channel": channel, "site": site}
+    df = load_attrition_weekly(scope=scope)
+    if isinstance(df, pd.DataFrame) and not df.empty:
+        df = df.replace([np.inf, -np.inf], np.nan)
+    rows = df_to_records(df) if isinstance(df, pd.DataFrame) else []
+    return sanitize_for_json(attrition_forecast.project_attrition(rows, horizon=horizon))
+
+
 @app.post("/api/forecast/attrition")
 def save_attrition_weekly_endpoint(payload: dict):
     if not isinstance(payload, dict):
