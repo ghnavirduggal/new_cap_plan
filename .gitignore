@@ -5,3 +5,11 @@ dist
 *.log
 __pycache__
 *.pyc
+
+# Runtime-generated snapshots written into the exports volume at request time
+# (settings saves, dated settings/timeseries snapshots). Per-deployment runtime
+# state, not source. Explicitly-tracked seed files (e.g. exports/headcount.csv)
+# stay tracked because they are already committed.
+forecast-service/exports/settings_global*.json
+forecast-service/exports/timeseries_*.csv
+forecast-service/exports/*_2[0-9][0-9][0-9][0-1][0-9][0-3][0-9]*.json

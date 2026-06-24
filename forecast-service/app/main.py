@@ -2046,7 +2046,15 @@ def export_plan(payload: dict, request: Request):
         upper_rows = []
     from app.pipeline.save import sanitize_export
 
-    with pd.ExcelWriter(buf, engine="xlsxwriter") as xw:
+    # Prefer xlsxwriter; fall back to openpyxl so the export still works if the
+    # primary engine is missing in a given deployment (both are declared deps).
+    try:
+        _xl_engine = "xlsxwriter"
+        import xlsxwriter  # noqa: F401
+    except Exception:
+        _xl_engine = "openpyxl"
+
+    with pd.ExcelWriter(buf, engine=_xl_engine) as xw:
         if upper_rows:
             sanitize_export(pd.DataFrame(upper_rows)).to_excel(xw, sheet_name="upper", index=False)
         for key in keys:
