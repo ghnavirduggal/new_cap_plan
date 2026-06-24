@@ -99,7 +99,7 @@ from app.pipeline.plan_detail_engine import (
     prefetch_plan_detail_grains,
 )
 from app.pipeline.plan_detail.calc_engine import mark_plan_dirty as mark_plan_detail_dirty, mark_plan_dirty_deps as mark_plan_detail_dirty_deps, dep_snapshot_all
-from app.pipeline.ba_rollup_plan import compute_ba_rollup_tables, month_cols_for_ba, week_cols_for_ba
+from app.pipeline.ba_rollup_plan import compute_ba_rollup_tables, invalidate_rollup_cache, month_cols_for_ba, week_cols_for_ba
 from app.pipeline.plan_detail._common import (
     clone_plan,
     current_user_fallback,
@@ -1990,6 +1990,7 @@ def delete_plan_endpoint(payload: dict, request: Request):
     if not plan_id:
         raise HTTPException(status_code=400, detail="plan_id is required.")
     _authorize_plan_access(plan_id, request)
+    invalidate_rollup_cache()
     return delete_plan(int(plan_id))
 
 
@@ -2314,6 +2315,8 @@ def save_plan_table_endpoint(payload: dict, request: Request):
     result = save_plan_table(int(plan_id), str(name), rows)
     if result.get("status") == "locked":
         raise HTTPException(status_code=409, detail="Plan is locked (history).")
+    # A table edit changes the plan's contribution to any BA rollup it belongs to.
+    invalidate_rollup_cache()
     try:
         base = str(name or "").split("_")[0].lower()
         if base in {"notes", "bulk_files"}:

@@ -1,6 +1,10 @@
 from __future__ import annotations
 
-from typing import List, Tuple
+import json
+import os
+import threading
+import time
+from typing import Any, List, Tuple
 
 import pandas as pd
 import dash
@@ -258,7 +262,55 @@ def compute_ba_rollup_monthly_tables(ba: str, fw_cols: list[dict], whatif=None, 
     )
 
 
+# A BA rollup recomputes every child plan's capacity from scratch, so it is the
+# most expensive read in the app. Cache the result for a short, bounded TTL —
+# the endpoint only reads the returned tuple, so sharing it is safe. Staleness
+# is bounded by ROLLUP_CACHE_TTL (default 15s); set to 0 to disable.
+_ROLLUP_CACHE: dict[str, tuple[float, Any]] = {}
+_ROLLUP_CACHE_LOCK = threading.Lock()
+_ROLLUP_CACHE_MAX = 64
+
+
+def _rollup_cache_ttl() -> float:
+    try:
+        return float(os.getenv("ROLLUP_CACHE_TTL", "15") or 15)
+    except (TypeError, ValueError):
+        return 15.0
+
+
+def invalidate_rollup_cache() -> None:
+    with _ROLLUP_CACHE_LOCK:
+        _ROLLUP_CACHE.clear()
+
+
+def _rollup_cache_key(ba, fw_cols, whatif, status_filter, grain) -> str:
+    ids = [c.get("id") for c in (fw_cols or []) if c.get("id") != "metric"]
+    try:
+        whatif_part = json.dumps(whatif, sort_keys=True, default=str)
+    except Exception:
+        whatif_part = repr(whatif)
+    return json.dumps([str(ba), str(status_filter), str(grain), ids, whatif_part], default=str)
+
+
 def compute_ba_rollup_tables(ba: str, fw_cols: list[dict], whatif=None, status_filter: str = "current", grain: str = "week"):
+    ttl = _rollup_cache_ttl()
+    key = None
+    if ttl > 0:
+        key = _rollup_cache_key(ba, fw_cols, whatif, status_filter, grain)
+        with _ROLLUP_CACHE_LOCK:
+            hit = _ROLLUP_CACHE.get(key)
+        if hit is not None and (time.monotonic() - hit[0]) < ttl:
+            return hit[1]
+    result = _compute_ba_rollup_tables_impl(ba, fw_cols, whatif=whatif, status_filter=status_filter, grain=grain)
+    if key is not None:
+        with _ROLLUP_CACHE_LOCK:
+            if len(_ROLLUP_CACHE) >= _ROLLUP_CACHE_MAX:
+                _ROLLUP_CACHE.pop(next(iter(_ROLLUP_CACHE)), None)
+            _ROLLUP_CACHE[key] = (time.monotonic(), result)
+    return result
+
+
+def _compute_ba_rollup_tables_impl(ba: str, fw_cols: list[dict], whatif=None, status_filter: str = "current", grain: str = "week"):
     ids = [c.get("id") for c in fw_cols if c.get("id") != "metric"]
     plans = list_plans(vertical=ba, status_filter=status_filter) or []
     if not plans:
