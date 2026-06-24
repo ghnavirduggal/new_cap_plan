@@ -248,22 +248,29 @@ export default function VolumeSummaryPage() {
       setCappedRatio([]);
       return;
     }
+    // Guard against a stale response (from a previous category) overwriting a
+    // newer one. customBaseVolume is set by the dedicated effect on `seasonality`.
+    let active = true;
     setLoading(true);
     apiPost<any>("/api/forecast/seasonality/build", { ratio_table: ratioRows })
       .then((res) => {
+        if (!active) return;
         setSeasonality(res);
         setCappedRatio(res?.results?.capped || []);
-        if (res?.results?.base_volume && !customBaseVolume) {
-          setCustomBaseVolume(String(res.results.base_volume));
-        }
         saveForecastStore({ seasonality: res });
       })
       .catch((err: any) => {
+        if (!active) return;
         setSeasonality(null);
         setCappedRatio([]);
         notify("warning", err?.message || "Seasonality data not available.");
       })
-      .finally(() => setLoading(false));
+      .finally(() => {
+        if (active) setLoading(false);
+      });
+    return () => {
+      active = false;
+    };
   }, [activeCategory, activeIQ]);
 
   useEffect(() => {
@@ -873,7 +880,7 @@ export default function VolumeSummaryPage() {
         </section>
 
         <div className="forecast-actions-row">
-          <button className="btn btn-primary" type="button" onClick={handleApplyCaps}>
+          <button className="btn btn-primary" type="button" onClick={handleApplyCaps} disabled={loading}>
             Apply Changes
           </button>
         </div>
@@ -932,7 +939,7 @@ export default function VolumeSummaryPage() {
             </section>
 
             <div className="forecast-actions-row">
-              <button className="btn btn-primary" type="button" onClick={handleSaveSmoothed}>
+              <button className="btn btn-primary" type="button" onClick={handleSaveSmoothed} disabled={loading}>
                 Save Changes if any else skip
               </button>
             </div>
@@ -1113,6 +1120,7 @@ export default function VolumeSummaryPage() {
                   className="btn btn-primary"
                   type="button"
                   onClick={handleApplyVolumeSplit}
+                  disabled={loading}
                 >
                   Apply Volume Split to Base Forecast
                 </button>

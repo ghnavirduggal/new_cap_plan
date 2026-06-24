@@ -274,6 +274,7 @@ export default function SettingsClient({
   const [settings, setSettings] = useState<SettingsState>(DEFAULT_SETTINGS);
   const [criticalTeamOptions, setCriticalTeamOptions] = useState<SelectOption[]>([]);
   const [settingsMessage, setSettingsMessage] = useState("");
+  const [settingsLoadFailed, setSettingsLoadFailed] = useState(false);
   const [holidaysRows, setHolidaysRows] = useState<Record<string, any>[]>([]);
   const [holidaysMessage, setHolidaysMessage] = useState("");
   const [headcountRows, setHeadcountRows] = useState<Record<string, any>[]>([]);
@@ -500,8 +501,13 @@ export default function SettingsClient({
       }
       const res = await apiGet<{ settings?: Record<string, any> }>(`/api/forecast/settings?${query.toString()}`);
       applySettings(res.settings || {});
-    } catch {
-      applySettings({});
+      setSettingsLoadFailed(false);
+    } catch (error: any) {
+      // Do NOT reset the form to defaults on a failed read — a subsequent Save
+      // would then overwrite the real saved settings. Flag it and block Save.
+      setSettingsLoadFailed(true);
+      setSettingsMessage("Could not load saved settings — saving is disabled until reload to avoid overwriting them.");
+      notify("error", error?.message || "Could not load saved settings.");
     } finally {
       setLoading(false);
     }
@@ -577,6 +583,10 @@ export default function SettingsClient({
 
   const saveSettings = async () => {
     if (!validateScope()) return;
+    if (settingsLoadFailed) {
+      notify("error", "Settings failed to load for this scope — reload before saving to avoid overwriting saved values.");
+      return;
+    }
     const payload = {
       interval_minutes: settings.intervalMinutes,
       hours_per_fte: settings.hoursPerFte,

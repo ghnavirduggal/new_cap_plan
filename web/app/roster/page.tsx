@@ -275,6 +275,7 @@ export default function RosterPage() {
     const entryKey = longRows.some((row) => row.entry !== undefined) ? "entry" : "value";
     const bridKey = longRows.some((row) => row.BRID !== undefined) ? "BRID" : "brid";
     let edits = 0;
+    const wideEdits: Array<{ brid: string; ms: number; val: string }> = [];
     const next = longRows.map((row) => {
       const dateValue = toDate(row?.date);
       if (!dateValue) return row;
@@ -286,9 +287,42 @@ export default function RosterPage() {
       if ("is_leave" in nextRow) {
         nextRow.is_leave = ["leave", "l", "off", "pto"].includes(String(nextRow[entryKey]).toLowerCase());
       }
+      const brid = String(row?.[bridKey] ?? "");
+      if (brid) wideEdits.push({ brid, ms: dateValue.getTime(), val: String(nextRow[entryKey] ?? "") });
       return nextRow;
     });
     setLongRows(next);
+
+    // Mirror the edits into the wide grid so a later wide-based save doesn't
+    // overwrite them with the pre-edit schedule (wide/long must stay consistent).
+    if (wideEdits.length) {
+      setWideRows((prevWide) => {
+        if (!prevWide.length) return prevWide;
+        const wideBridKey = prevWide.some((r) => r.BRID !== undefined) ? "BRID" : "brid";
+        const byBrid = new Map<string, Map<number, string>>();
+        wideEdits.forEach(({ brid, ms, val }) => {
+          if (!byBrid.has(brid)) byBrid.set(brid, new Map());
+          byBrid.get(brid)!.set(ms, val);
+        });
+        return prevWide.map((wrow) => {
+          const cells = byBrid.get(String(wrow?.[wideBridKey] ?? ""));
+          if (!cells) return wrow;
+          let changed = false;
+          const nrow = { ...wrow };
+          Object.keys(nrow).forEach((col) => {
+            const cd = toDate(col);
+            if (!cd) return;
+            const v = cells.get(cd.getTime());
+            if (v !== undefined && String(nrow[col]) !== v) {
+              nrow[col] = v;
+              changed = true;
+            }
+          });
+          return changed ? nrow : wrow;
+        });
+      });
+    }
+
     if (!edits) {
       setBulkMessage("No matching rows in range.");
     } else if (bulkAction === "blank") {

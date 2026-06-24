@@ -783,7 +783,9 @@ export default function HomePage() {
             {
               title: "Volume",
               rows: fw,
-              keys: ["Forecast", "Actual Volume", "Backlog (Items)"],
+              // A single volume flow — prefer actuals, fall back to forecast.
+              // (Backlog is a stock level, not a flow, so it's excluded here.)
+              keys: ["Actual Volume", "Forecast"],
               worseIf: "increase" as const,
               suffix: "calls"
             },

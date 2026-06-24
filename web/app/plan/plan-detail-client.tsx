@@ -2140,21 +2140,35 @@ export default function PlanDetailClient({ planId, rollupBa }: PlanDetailClientP
         row.current_status = "Terminated";
         row.terminate_date = rosterActionValue.terminate_date || row.terminate_date;
       } else if (rosterAction === "tp") {
+        // Mirror the backend (_callbacks_core.py _apply_transfer/_apply_promo):
+        // the interim-vs-permanent distinction is carried by current_status/
+        // work_status, which the UI previously dropped — so an interim transfer
+        // behaved identically to a permanent one.
+        const applyTransfer = (f: Record<string, any>) => {
+          if (f.biz_area) row.biz_area = f.biz_area;
+          if (f.sub_biz_area) row.sub_biz_area = f.sub_biz_area;
+          if (f.lob) row.lob = f.lob;
+          if (f.site) row.site = f.site;
+          if (f.new_class && f.class_ref) {
+            row.class_ref = f.class_ref;
+            if (f.date_from) row.training_start = f.date_from;
+          }
+          row.current_status = f.transfer_type === "interim" ? "Interim Transfer" : "Transferred";
+          row.work_status = row.current_status;
+        };
+        const applyPromo = (f: Record<string, any>) => {
+          if (f.role) row.role = f.role;
+          row.current_status = f.promo_type === "interim" ? "Promotion (Temp)" : "Promotion";
+          row.work_status = "Production";
+        };
         if (tpTab === "tp-transfer") {
-          row.biz_area = tpForm.biz_area || row.biz_area;
-          row.sub_biz_area = tpForm.sub_biz_area || row.sub_biz_area;
-          row.lob = tpForm.lob || row.lob;
-          row.site = tpForm.site || row.site;
-          if (tpForm.new_class) row.class_ref = tpForm.class_ref || row.class_ref;
+          applyTransfer(tpForm);
         } else if (tpTab === "tp-promo") {
-          row.role = promoForm.role || row.role;
+          applyPromo(promoForm);
         } else if (tpTab === "tp-both") {
-          row.biz_area = twpForm.biz_area || row.biz_area;
-          row.sub_biz_area = twpForm.sub_biz_area || row.sub_biz_area;
-          row.lob = twpForm.lob || row.lob;
-          row.site = twpForm.site || row.site;
-          row.role = twpForm.role || row.role;
-          if (twpForm.new_class) row.class_ref = twpForm.class_ref || row.class_ref;
+          // "Both" reuses the transfer type as the promotion type (backend b_type).
+          applyTransfer(twpForm);
+          applyPromo({ ...twpForm, promo_type: twpForm.transfer_type });
         }
       }
       rows[idx] = row;

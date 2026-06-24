@@ -907,8 +907,8 @@ export default function DailyIntervalPage() {
           ) : (
             <div className="forecast-section-note">Interval forecast skipped (daily-only data source).</div>
           )}
-          {dailyResult?.results?.interval_summary ? (
-            <div className="forecast-muted">{dailyResult.results.interval_summary}</div>
+          {dailyResult?.interval_summary ? (
+            <div className="forecast-muted">{dailyResult.interval_summary}</div>
           ) : null}
         </section>
         ) : null}
@@ -1026,7 +1026,7 @@ export default function DailyIntervalPage() {
               </div>
             </div>
             <div className="forecast-actions-row">
-              <button className="btn btn-primary" type="button" onClick={handlePushToPlan}>
+              <button className="btn btn-primary" type="button" onClick={handlePushToPlan} disabled={loading}>
                 Push forecast to plan
               </button>
             </div>
