@@ -100,6 +100,7 @@ from app.pipeline.plan_detail_engine import (
     prefetch_plan_detail_grains,
 )
 from app.pipeline.plan_detail.calc_engine import mark_plan_dirty as mark_plan_detail_dirty, mark_plan_dirty_deps as mark_plan_detail_dirty_deps, dep_snapshot_all
+from app.pipeline import scenario_store
 from app.pipeline.ba_rollup_plan import compute_ba_rollup_tables, invalidate_rollup_cache, month_cols_for_ba, week_cols_for_ba
 from app.pipeline.plan_detail._common import (
     clone_plan,
@@ -2272,6 +2273,155 @@ def save_plan_whatif(payload: dict, request: Request):
     except Exception:
         pass
     return {"status": "saved", "overrides": overrides}
+
+
+# --- Saved scenarios -------------------------------------------------------
+# A scenario is a named, reusable snapshot of the what-if dials. Unlike the live
+# What-If (a single transient record), scenarios are durable cases a planner can
+# save, re-apply, and compare side by side.
+
+def _scenario_upper_rows(plan_id: int, overrides: dict) -> list[dict]:
+    """Compute the weekly upper-summary rows for a plan under an arbitrary
+    override set, ignoring whatever What-If is currently persisted."""
+    wf = dict(overrides or {})
+    wf["__replace_persisted__"] = True
+    data, status, _meta = compute_plan_detail_tables(int(plan_id), grain="week", whatif=wf)
+    rows: list[dict] = []
+    if status == "ready" and data:
+        rows = data.get("upper") or []
+    if not rows:
+        cached = load_plan_detail_tables(int(plan_id), grain="week")
+        rows = cached.get("upper") or []
+    return rows
+
+
+@app.get("/api/planning/plan/scenarios")
+def get_plan_scenarios(plan_id: int = Query(...), request: Request = None):
+    _authorize_plan_access(plan_id, request)
+    return {"scenarios": scenario_store.list_scenarios(int(plan_id))}
+
+
+@app.post("/api/planning/plan/scenarios")
+def save_plan_scenario(payload: dict, request: Request):
+    if not isinstance(payload, dict):
+        raise HTTPException(status_code=400, detail="Scenario payload must be a JSON object.")
+    plan_id = payload.get("plan_id")
+    if not plan_id:
+        raise HTTPException(status_code=400, detail="plan_id is required.")
+    _authorize_plan_access(plan_id, request)
+    name = str(payload.get("name") or "").strip()
+    if not name:
+        raise HTTPException(status_code=400, detail="Scenario name is required.")
+    overrides = payload.get("overrides") if isinstance(payload.get("overrides"), dict) else {}
+    saved = scenario_store.save_scenario(
+        int(plan_id),
+        scenario_id=payload.get("scenario_id"),
+        name=name,
+        note=str(payload.get("note") or ""),
+        overrides=overrides,
+        start_week=str(payload.get("start_week") or ""),
+        end_week=str(payload.get("end_week") or ""),
+        actor=current_user_fallback(),
+    )
+    try:
+        record_activity(
+            plan_id=int(plan_id),
+            action=f"saved scenario '{name}'",
+            actor=current_user_fallback(),
+            entity_type="scenario",
+            entity_id=str(saved.get("scenario_id") or ""),
+        )
+    except Exception:
+        pass
+    return {"status": "saved", "scenario": saved}
+
+
+@app.post("/api/planning/plan/scenarios/delete")
+def delete_plan_scenario(payload: dict, request: Request):
+    if not isinstance(payload, dict):
+        raise HTTPException(status_code=400, detail="Scenario payload must be a JSON object.")
+    plan_id = payload.get("plan_id")
+    scenario_id = payload.get("scenario_id")
+    if not plan_id or not scenario_id:
+        raise HTTPException(status_code=400, detail="plan_id and scenario_id are required.")
+    _authorize_plan_access(plan_id, request)
+    removed = scenario_store.delete_scenario(int(plan_id), str(scenario_id))
+    return {"status": "deleted" if removed else "not_found"}
+
+
+@app.post("/api/planning/plan/scenarios/apply")
+def apply_plan_scenario(payload: dict, request: Request):
+    """Make a saved scenario the live What-If: writes its overrides + window into
+    the plan's What-If record and triggers a recompute."""
+    if not isinstance(payload, dict):
+        raise HTTPException(status_code=400, detail="Scenario payload must be a JSON object.")
+    plan_id = payload.get("plan_id")
+    scenario_id = payload.get("scenario_id")
+    if not plan_id or not scenario_id:
+        raise HTTPException(status_code=400, detail="plan_id and scenario_id are required.")
+    _authorize_plan_access(plan_id, request)
+    scenario = scenario_store.get_scenario(int(plan_id), str(scenario_id))
+    if not scenario:
+        raise HTTPException(status_code=404, detail="Scenario not found.")
+    rec = {
+        "ts": pd.Timestamp.utcnow().isoformat(timespec="seconds"),
+        "start_week": scenario.get("start_week") or "",
+        "end_week": scenario.get("end_week") or "",
+        "overrides": scenario.get("overrides") or {},
+    }
+    save_df(f"plan_{int(plan_id)}_whatif", pd.DataFrame([rec]))
+    save_plan_meta(int(plan_id), {"last_updated_on": rec["ts"], "last_updated_by": current_user_fallback()})
+    try:
+        mark_plan_detail_dirty_deps(int(plan_id), "whatif")
+        _PRECOMPUTE_EXECUTOR.submit(_precompute_plan_detail, int(plan_id))
+    except Exception:
+        pass
+    try:
+        record_activity(
+            plan_id=int(plan_id),
+            action=f"applied scenario '{scenario.get('name')}'",
+            actor=current_user_fallback(),
+            entity_type="scenario",
+            entity_id=str(scenario_id),
+        )
+    except Exception:
+        pass
+    return {"status": "applied", "overrides": rec["overrides"], "start_week": rec["start_week"], "end_week": rec["end_week"]}
+
+
+@app.post("/api/planning/plan/scenarios/compare")
+def compare_plan_scenarios(payload: dict, request: Request):
+    """Compute the weekly upper summary for a baseline (no dials) plus each
+    requested scenario, side by side, without disturbing the live plan."""
+    if not isinstance(payload, dict):
+        raise HTTPException(status_code=400, detail="Scenario payload must be a JSON object.")
+    plan_id = payload.get("plan_id")
+    if not plan_id:
+        raise HTTPException(status_code=400, detail="plan_id is required.")
+    _authorize_plan_access(plan_id, request)
+    ids = payload.get("scenario_ids")
+    ids = [str(s) for s in ids] if isinstance(ids, list) else None
+    all_scenarios = scenario_store.list_scenarios(int(plan_id))
+    if ids:
+        chosen = [s for s in all_scenarios if s["scenario_id"] in ids]
+    else:
+        chosen = all_scenarios
+    columns = []
+    include_baseline = payload.get("include_baseline", True)
+    if include_baseline:
+        columns.append({"scenario_id": "__baseline__", "name": "Baseline (no dials)", "overrides": {}})
+    for s in chosen:
+        columns.append({"scenario_id": s["scenario_id"], "name": s["name"], "overrides": s.get("overrides") or {}})
+    out = []
+    for col in columns:
+        rows = _scenario_upper_rows(int(plan_id), col["overrides"])
+        out.append({
+            "scenario_id": col["scenario_id"],
+            "name": col["name"],
+            "overrides": col["overrides"],
+            "upper": sanitize_for_json(rows),
+        })
+    return {"columns": out}
 
 
 @app.get("/api/planning/plan/new-hire/classes")

@@ -264,12 +264,13 @@ def _fill_tables_fixed_daily(ptype, pid, _fw_cols_unused, _tick, whatif=None):
                         wf_ovr = _ast.literal_eval(raw)
                     except Exception:
                         wf_ovr = {}
-            if isinstance(wf_ovr, dict):
+            if isinstance(wf_ovr, dict) and not bool((whatif or {}).get("__replace_persisted__")):
                 whatif = dict(whatif or {})
                 whatif.update(wf_ovr)
     except Exception:
         pass
     whatif = dict(whatif or {})
+    whatif.pop("__replace_persisted__", None)
 
     def _wf_f(x, d=0.0):
         try:

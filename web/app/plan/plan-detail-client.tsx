@@ -300,6 +300,72 @@ const WHATIF_DEFAULT: WhatIfState = {
   lockCriticalTeams: []
 };
 
+type SavedScenario = {
+  scenario_id: string;
+  name: string;
+  note?: string;
+  overrides?: Record<string, any>;
+  created_by?: string;
+  updated_ts?: string;
+};
+
+type ScenarioColumn = {
+  scenario_id: string;
+  name: string;
+  overrides?: Record<string, any>;
+  upper: Array<Record<string, any>>;
+};
+
+// Build the what-if overrides payload from the live dial state. Shared by
+// Apply What-If and Save-as-scenario so the two never drift.
+function whatIfToOverrides(w: WhatIfState): Record<string, any> {
+  return {
+    aht_delta: w.ahtDelta,
+    shrink_delta: w.shrinkDelta,
+    attr_delta: w.attrDelta,
+    vol_delta: w.volDelta,
+    backlog_carryover: w.backlogCarryover,
+    rebalance_enabled: w.rebalanceEnabled,
+    cross_skill_efficiency_pct: (Number(w.xskillEfficiencyPct) || WHATIF_DEFAULT.xskillEfficiencyPct) / 100,
+    max_lend_pct: (Number(w.xskillMaxLendPct) || WHATIF_DEFAULT.xskillMaxLendPct) / 100,
+    lock_critical_teams: (w.lockCriticalTeams || []).map((v) => String(v || "").trim()).filter(Boolean)
+  };
+}
+
+// Mean of the numeric (per-week) cells in an upper-summary row, used to give a
+// single comparable number per metric in the scenario compare table.
+function rowNumericAvg(row: Record<string, any>): number | null {
+  const vals = Object.entries(row || {})
+    .filter(([k]) => k !== "metric")
+    .map(([, v]) => Number(v))
+    .filter((n) => Number.isFinite(n));
+  if (!vals.length) return null;
+  return vals.reduce((a, b) => a + b, 0) / vals.length;
+}
+
+function fmtScenarioNum(v: number | null): string {
+  if (v === null || !Number.isFinite(v)) return "—";
+  return v.toLocaleString(undefined, { maximumFractionDigits: 1 });
+}
+
+// Map a stored overrides object back into the dial state (mirror of whatIfToOverrides).
+function overridesToWhatIf(overrides: Record<string, any>): WhatIfState {
+  const o = overrides || {};
+  return {
+    ahtDelta: Number(o.aht_delta ?? 0),
+    shrinkDelta: Number(o.shrink_delta ?? 0),
+    attrDelta: Number(o.attr_delta ?? 0),
+    volDelta: Number(o.vol_delta ?? 0),
+    backlogCarryover: Boolean(o.backlog_carryover ?? true),
+    rebalanceEnabled: Boolean(o.rebalance_enabled ?? true),
+    xskillEfficiencyPct: Math.round(Number(o.cross_skill_efficiency_pct ?? o.xskill_efficiency_pct ?? 0.85) * 100),
+    xskillMaxLendPct: Math.round(Number(o.max_lend_pct ?? o.xskill_max_lend_pct ?? 0.6) * 100),
+    lockCriticalTeams: Array.isArray(o.lock_critical_teams)
+      ? o.lock_critical_teams.map((v: any) => String(v || "").trim()).filter(Boolean)
+      : []
+  };
+}
+
 function formatMetaRow(label: string, value?: string) {
   return (
     <div className="plan-meta-row">
@@ -795,6 +861,10 @@ export default function PlanDetailClient({ planId, rollupBa }: PlanDetailClientP
   const [compareWarning, setCompareWarning] = useState("");
   const [compareResult, setCompareResult] = useState<CompareResult | null>(null);
   const [whatIf, setWhatIf] = useState<WhatIfState>(WHATIF_DEFAULT);
+  const [scenarios, setScenarios] = useState<SavedScenario[]>([]);
+  const [scenarioName, setScenarioName] = useState("");
+  const [scenarioCompare, setScenarioCompare] = useState<ScenarioColumn[] | null>(null);
+  const [scenarioBusy, setScenarioBusy] = useState(false);
   const [xskillPreview, setXskillPreview] = useState<WorkforcePreview | null>(null);
   const [xskillLoading, setXskillLoading] = useState(false);
   const [criticalTeamOptions, setCriticalTeamOptions] = useState<SelectOption[]>([]);
@@ -1807,17 +1877,7 @@ export default function PlanDetailClient({ planId, rollupBa }: PlanDetailClientP
     try {
       await apiPost("/api/planning/plan/whatif", {
         plan_id: planId,
-        overrides: {
-          aht_delta: whatIf.ahtDelta,
-          shrink_delta: whatIf.shrinkDelta,
-          attr_delta: whatIf.attrDelta,
-          vol_delta: whatIf.volDelta,
-          backlog_carryover: whatIf.backlogCarryover,
-          rebalance_enabled: whatIf.rebalanceEnabled,
-          cross_skill_efficiency_pct: (Number(whatIf.xskillEfficiencyPct) || WHATIF_DEFAULT.xskillEfficiencyPct) / 100,
-          max_lend_pct: (Number(whatIf.xskillMaxLendPct) || WHATIF_DEFAULT.xskillMaxLendPct) / 100,
-          lock_critical_teams: (whatIf.lockCriticalTeams || []).map((v) => String(v || "").trim()).filter(Boolean)
-        },
+        overrides: whatIfToOverrides(whatIf),
         action: "apply"
       });
       await refreshAll();
@@ -1849,6 +1909,111 @@ export default function PlanDetailClient({ planId, rollupBa }: PlanDetailClientP
       notify("error", error?.message || "Could not clear what-if.");
     } finally {
       setLoading(false);
+    }
+  };
+
+  // --- Saved scenarios ----------------------------------------------------
+  const loadScenarios = useCallback(async () => {
+    if (!planId || isRollup) return;
+    try {
+      const res = await apiGet<{ scenarios?: SavedScenario[] }>(
+        `/api/planning/plan/scenarios?plan_id=${planId}`
+      );
+      setScenarios(Array.isArray(res.scenarios) ? res.scenarios : []);
+    } catch {
+      /* scenarios are optional; ignore load failures */
+    }
+  }, [planId, isRollup]);
+
+  useEffect(() => {
+    void loadScenarios();
+  }, [loadScenarios]);
+
+  const handleSaveScenario = async () => {
+    if (!planId || isRollup || isLocked) {
+      if (isLocked) notify("warning", "Plan is locked (history).");
+      return;
+    }
+    const name = scenarioName.trim();
+    if (!name) {
+      notify("warning", "Give the scenario a name first.");
+      return;
+    }
+    setScenarioBusy(true);
+    try {
+      await apiPost("/api/planning/plan/scenarios", {
+        plan_id: planId,
+        name,
+        overrides: whatIfToOverrides(whatIf)
+      });
+      setScenarioName("");
+      await loadScenarios();
+      setMessage(`Scenario "${name}" saved.`);
+    } catch (error: any) {
+      notify("error", error?.message || "Could not save scenario.");
+    } finally {
+      setScenarioBusy(false);
+    }
+  };
+
+  const handleApplyScenario = async (scenario: SavedScenario) => {
+    if (!planId || isRollup || isLocked) {
+      if (isLocked) notify("warning", "Plan is locked (history).");
+      return;
+    }
+    setScenarioBusy(true);
+    setLoading(true);
+    try {
+      await apiPost("/api/planning/plan/scenarios/apply", {
+        plan_id: planId,
+        scenario_id: scenario.scenario_id
+      });
+      setWhatIf(overridesToWhatIf(scenario.overrides || {}));
+      await refreshAll();
+      await loadRebalancePreview();
+      setMessage(`Scenario "${scenario.name}" applied.`);
+    } catch (error: any) {
+      notify("error", error?.message || "Could not apply scenario.");
+    } finally {
+      setScenarioBusy(false);
+      setLoading(false);
+    }
+  };
+
+  const handleDeleteScenario = async (scenario: SavedScenario) => {
+    if (!planId || isRollup) return;
+    setScenarioBusy(true);
+    try {
+      await apiPost("/api/planning/plan/scenarios/delete", {
+        plan_id: planId,
+        scenario_id: scenario.scenario_id
+      });
+      setScenarioCompare(null);
+      await loadScenarios();
+    } catch (error: any) {
+      notify("error", error?.message || "Could not delete scenario.");
+    } finally {
+      setScenarioBusy(false);
+    }
+  };
+
+  const handleCompareScenarios = async () => {
+    if (!planId || isRollup) return;
+    if (!scenarios.length) {
+      notify("warning", "Save at least one scenario to compare.");
+      return;
+    }
+    setScenarioBusy(true);
+    try {
+      const res = await apiPost<{ columns?: ScenarioColumn[] }>(
+        "/api/planning/plan/scenarios/compare",
+        { plan_id: planId, include_baseline: true }
+      );
+      setScenarioCompare(Array.isArray(res.columns) ? res.columns : []);
+    } catch (error: any) {
+      notify("error", error?.message || "Could not compare scenarios.");
+    } finally {
+      setScenarioBusy(false);
     }
   };
 
@@ -2957,6 +3122,122 @@ export default function PlanDetailClient({ planId, rollupBa }: PlanDetailClientP
                 </button>
               </div>
             </div>
+
+            {!isRollup ? (
+              <div className="plan-options-scenarios">
+                <h5>Saved Scenarios</h5>
+                <p className="plan-scenarios-hint">
+                  Save the current What-If dials as a named, reusable case — then re-apply or compare them side by side.
+                </p>
+                <div className="plan-scenarios-save">
+                  <input
+                    className="input"
+                    type="text"
+                    placeholder="Scenario name (e.g. Peak season, Downside)"
+                    value={scenarioName}
+                    onChange={(event) => setScenarioName(event.target.value)}
+                    disabled={scenarioBusy || isLocked}
+                  />
+                  <button
+                    type="button"
+                    className="btn btn-primary"
+                    onClick={handleSaveScenario}
+                    disabled={scenarioBusy || isLocked}
+                  >
+                    Save current dials
+                  </button>
+                </div>
+                {scenarios.length ? (
+                  <ul className="plan-scenarios-list">
+                    {scenarios.map((scenario) => (
+                      <li key={scenario.scenario_id} className="plan-scenario-row">
+                        <div className="plan-scenario-meta">
+                          <span className="plan-scenario-name">{scenario.name}</span>
+                          {scenario.updated_ts ? (
+                            <span className="plan-scenario-ts">{String(scenario.updated_ts).slice(0, 10)}</span>
+                          ) : null}
+                        </div>
+                        <div className="plan-scenario-actions">
+                          <button
+                            type="button"
+                            className="btn btn-light btn-sm"
+                            onClick={() => void handleApplyScenario(scenario)}
+                            disabled={scenarioBusy || isLocked}
+                          >
+                            Apply
+                          </button>
+                          <button
+                            type="button"
+                            className="btn btn-light btn-sm"
+                            onClick={() => void handleDeleteScenario(scenario)}
+                            disabled={scenarioBusy}
+                          >
+                            Delete
+                          </button>
+                        </div>
+                      </li>
+                    ))}
+                  </ul>
+                ) : (
+                  <div className="plan-scenarios-empty">No saved scenarios yet.</div>
+                )}
+                {scenarios.length ? (
+                  <div className="plan-scenarios-compare-actions">
+                    <button
+                      type="button"
+                      className="btn btn-light"
+                      onClick={handleCompareScenarios}
+                      disabled={scenarioBusy}
+                    >
+                      Compare scenarios
+                    </button>
+                    {scenarioCompare ? (
+                      <button
+                        type="button"
+                        className="btn btn-light"
+                        onClick={() => setScenarioCompare(null)}
+                      >
+                        Hide compare
+                      </button>
+                    ) : null}
+                  </div>
+                ) : null}
+                {scenarioCompare && scenarioCompare.length ? (
+                  <div className="plan-scenarios-compare table-wrap">
+                    <table className="table">
+                      <thead>
+                        <tr>
+                          <th>Metric (weekly avg)</th>
+                          {scenarioCompare.map((col) => (
+                            <th key={col.scenario_id}>{col.name}</th>
+                          ))}
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {(scenarioCompare[0]?.upper || [])
+                          .map((row) => String(row.metric || ""))
+                          .filter(Boolean)
+                          .map((metric) => (
+                            <tr key={metric}>
+                              <td>{metric}</td>
+                              {scenarioCompare.map((col) => {
+                                const match = (col.upper || []).find(
+                                  (r) => String(r.metric || "") === metric
+                                );
+                                return (
+                                  <td key={col.scenario_id} className="num">
+                                    {fmtScenarioNum(match ? rowNumericAvg(match) : null)}
+                                  </td>
+                                );
+                              })}
+                            </tr>
+                          ))}
+                      </tbody>
+                    </table>
+                  </div>
+                ) : null}
+              </div>
+            ) : null}
 
             <div className="plan-options-debug">
               <div className="plan-options-debug-head">
