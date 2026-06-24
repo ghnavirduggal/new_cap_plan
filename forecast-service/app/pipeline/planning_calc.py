@@ -454,9 +454,13 @@ def _weekly_from_daily(day_df: pd.DataFrame) -> pd.DataFrame:
 
     rows = []
     for (week, program), grp in df.groupby(["week", "program"], as_index=False):
-        fte = pd.to_numeric(grp["fte_req"], errors="coerce").fillna(0.0).sum()
-        phc = pd.to_numeric(grp["phc"], errors="coerce").fillna(0.0).sum()
+        # FTE required is a LEVEL (staff you need), so the week is the volume-
+        # weighted average of the daily levels (not a sum, which would 5-7x the
+        # headcount). Falls back to a simple mean when no arrival_load weights.
+        fte_vals = pd.to_numeric(grp["fte_req"], errors="coerce").fillna(0.0).values.tolist()
         loads = pd.to_numeric(grp["arrival_load"], errors="coerce").fillna(0.0).values.tolist()
+        fte = _weighted_avg(fte_vals, loads) if sum(loads) > 0 else (float(np.mean(fte_vals)) if fte_vals else 0.0)
+        phc = pd.to_numeric(grp["phc"], errors="coerce").fillna(0.0).sum()
         sls = pd.to_numeric(grp["service_level"], errors="coerce").fillna(0.0).values.tolist()
         sl = _weighted_avg(sls, loads) if sum(loads) > 0 else _weighted_avg(sls, [1.0] * len(sls))
         rows.append({"week": week, "program": program, "fte_req": fte, "phc": phc, "service_level": sl})
@@ -475,9 +479,12 @@ def _monthly_from_daily(day_df: pd.DataFrame) -> pd.DataFrame:
 
     rows = []
     for (month, program), grp in df.groupby(["month", "program"], as_index=False):
-        fte = pd.to_numeric(grp["fte_req"], errors="coerce").fillna(0.0).sum()
-        phc = pd.to_numeric(grp["phc"], errors="coerce").fillna(0.0).sum()
+        # FTE required is a LEVEL -> month is the volume-weighted average of the
+        # daily levels (simple mean when no arrival_load weights), not a sum.
+        fte_vals = pd.to_numeric(grp["fte_req"], errors="coerce").fillna(0.0).values.tolist()
         loads = pd.to_numeric(grp["arrival_load"], errors="coerce").fillna(0.0).values.tolist()
+        fte = _weighted_avg(fte_vals, loads) if sum(loads) > 0 else (float(np.mean(fte_vals)) if fte_vals else 0.0)
+        phc = pd.to_numeric(grp["phc"], errors="coerce").fillna(0.0).sum()
         sls = pd.to_numeric(grp["service_level"], errors="coerce").fillna(0.0).values.tolist()
         sl = _weighted_avg(sls, loads) if sum(loads) > 0 else _weighted_avg(sls, [1.0] * len(sls))
         rows.append({"month": month, "program": program, "fte_req": fte, "phc": phc, "service_level": sl})
