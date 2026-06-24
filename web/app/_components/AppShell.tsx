@@ -6,7 +6,7 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 import Sidebar from "./Sidebar";
 import { logPageVisit } from "../../lib/activity";
-import { apiGet } from "../../lib/api";
+import { apiGet, apiPatch } from "../../lib/api";
 
 interface AppShellProps {
   title?: string;
@@ -70,30 +70,19 @@ export default function AppShell({ title, crumbs, crumbIcon, userLabel, crumbLin
     };
   }, [userLabel]);
 
-  // Load any locally-saved profile overrides (photo + display name).
-  useEffect(() => {
-    if (typeof window === "undefined") return;
-    const key = resolvedEmail || resolvedUser;
-    if (!key) return;
-    try {
-      const raw = window.localStorage.getItem(`cap-profile:${key}`);
-      if (raw) {
-        const saved = JSON.parse(raw);
-        if (saved?.photo) setLocalPhoto(String(saved.photo));
-        if (saved?.name) setLocalName(String(saved.name));
-      }
-    } catch {
-      /* ignore corrupt storage */
-    }
-  }, [resolvedEmail, resolvedUser]);
+  const [profileSaving, setProfileSaving] = useState<boolean>(false);
+  const [profileError, setProfileError] = useState<string>("");
 
   const toggleSidebar = () => {
     setCollapsed((prev: boolean) => !prev);
   };
   
-  const effectiveName = localName || resolvedUser || "system";
-  const effectivePhoto = localPhoto || resolvedPhoto;
+  const effectiveName = resolvedUser || "system";
+  const effectivePhoto = resolvedPhoto;
   const initials = (effectiveName || "S").split(/\s+/).map(s => s[0]?.toUpperCase() || "").slice(0, 2).join("");
+  // Preview avatar inside the profile modal uses the in-progress edit buffer.
+  const previewPhoto = localPhoto;
+  const previewInitials = ((localName || effectiveName) || "S").split(/\s+/).map(s => s[0]?.toUpperCase() || "").slice(0, 2).join("");
 
   // Org details captured at onboarding, shown read-only in the profile panel.
   const orgFields: Array<{ label: string; value: string }> = [
@@ -111,19 +100,32 @@ export default function AppShell({ title, crumbs, crumbIcon, userLabel, crumbLin
     reader.readAsDataURL(file);
   };
 
-  const saveProfile = () => {
-    if (typeof window !== "undefined") {
-      const key = resolvedEmail || resolvedUser;
-      try {
-        window.localStorage.setItem(
-          `cap-profile:${key}`,
-          JSON.stringify({ name: localName || resolvedUser, photo: localPhoto })
-        );
-      } catch {
-        /* storage full / disabled — keep in-memory */
-      }
+  const openProfile = () => {
+    setLocalName(resolvedUser);
+    setLocalPhoto(resolvedPhoto);
+    setProfileError("");
+    setMenuOpen(false);
+    setProfileOpen(true);
+  };
+
+  const saveProfile = async () => {
+    setProfileSaving(true);
+    setProfileError("");
+    try {
+      const updated = await apiPatch<Record<string, any>>("/api/user", {
+        name: localName,
+        photo_url: localPhoto
+      });
+      // Reflect the server's persisted truth in the topbar immediately.
+      setResolvedUser((updated?.name || localName || resolvedUser || "system").trim());
+      setResolvedPhoto((updated?.photo_url || "").trim());
+      if (updated && typeof updated === "object") setUserInfo(updated);
+      setProfileOpen(false);
+    } catch (err: any) {
+      setProfileError(err?.message || "Could not save profile.");
+    } finally {
+      setProfileSaving(false);
     }
-    setProfileOpen(false);
   };
 
   const signOut = () => {
@@ -231,16 +233,7 @@ export default function AppShell({ title, crumbs, crumbIcon, userLabel, crumbLin
               <>
                 <div className="user-menu-backdrop" onClick={() => setMenuOpen(false)} />
                 <div className="user-menu" role="menu">
-                  <button
-                    type="button"
-                    className="user-menu-item"
-                    role="menuitem"
-                    onClick={() => {
-                      setLocalName(localName || resolvedUser);
-                      setMenuOpen(false);
-                      setProfileOpen(true);
-                    }}
-                  >
+                  <button type="button" className="user-menu-item" role="menuitem" onClick={openProfile}>
                     <span className="user-menu-icon">👤</span> Profile
                   </button>
                   <button type="button" className="user-menu-item user-menu-item--danger" role="menuitem" onClick={signOut}>
@@ -266,10 +259,10 @@ export default function AppShell({ title, crumbs, crumbIcon, userLabel, crumbLin
               </div>
               <div className="ws-modal-body">
                 <div className="profile-photo-row">
-                  {effectivePhoto ? (
-                    <img src={effectivePhoto} alt={effectiveName} className="profile-photo" />
+                  {previewPhoto ? (
+                    <img src={previewPhoto} alt={localName || effectiveName} className="profile-photo" />
                   ) : (
-                    <div className="profile-photo profile-photo--fallback">{initials}</div>
+                    <div className="profile-photo profile-photo--fallback">{previewInitials}</div>
                   )}
                   <div className="profile-photo-actions">
                     <label className="btn btn-light">
@@ -318,11 +311,12 @@ export default function AppShell({ title, crumbs, crumbIcon, userLabel, crumbLin
                 )}
               </div>
               <div className="ws-modal-footer">
-                <button type="button" className="btn btn-light" onClick={() => setProfileOpen(false)}>
+                {profileError ? <span className="plan-message plan-message--error">{profileError}</span> : null}
+                <button type="button" className="btn btn-light" onClick={() => setProfileOpen(false)} disabled={profileSaving}>
                   Cancel
                 </button>
-                <button type="button" className="btn btn-primary" onClick={saveProfile}>
-                  Save
+                <button type="button" className="btn btn-primary" onClick={saveProfile} disabled={profileSaving}>
+                  {profileSaving ? "Saving…" : "Save"}
                 </button>
               </div>
             </div>

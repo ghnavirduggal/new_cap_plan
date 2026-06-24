@@ -17,6 +17,7 @@ import config_manager
 from app import cap_store, plan_store, security
 from app.cap_store import resolve_settings as resolve_cap_settings
 from app.pipeline import settings_store
+from app.pipeline import user_store
 import os
 import time
 from app.pipeline.headcount import (
@@ -221,6 +222,72 @@ def issue_token(request: Request):
         raise HTTPException(status_code=401, detail="No upstream identity.")
     token = security.mint_jwt(email, secret, ttl_seconds=int(os.getenv("AUTH_TOKEN_TTL", "3600") or 3600))
     return {"token": token, "token_type": "bearer", "email": email}
+
+
+def _user_identity(request: Request) -> tuple[str, str, str]:
+    """Resolve (key, email, name) for the current user. Prefers a verified
+    principal (JWT), then trusted proxy headers, then the process fallback."""
+    email = ""
+    name = ""
+    try:
+        principal = security.principal_from_request(request)
+        email = (getattr(principal, "email", "") or "").strip()
+    except Exception:
+        principal = None
+    if not email:
+        email = (
+            request.headers.get("x-forwarded-email")
+            or request.headers.get("x-email")
+            or request.headers.get("x-user-email")
+            or ""
+        ).strip()
+    name = (
+        request.headers.get("x-forwarded-preferred-username")
+        or request.headers.get("x-forwarded-user")
+        or ""
+    ).strip()
+    key = (email or name or "").strip().lower()
+    if not key:
+        try:
+            key = (current_user_fallback() or "system").strip()
+        except Exception:
+            key = "system"
+        name = name or key
+    return key, email, name
+
+
+@app.get("/api/user")
+def get_user(request: Request):
+    key, email, name = _user_identity(request)
+    try:
+        return sanitize_for_json(user_store.get_user_profile(key, email=email, name=name))
+    except Exception:
+        logger.exception("get_user failed for key=%s", key)
+        return {"key": key, "email": email, "name": name or email or key, "photo_url": ""}
+
+
+@app.patch("/api/user")
+def patch_user(payload: dict, request: Request):
+    if not isinstance(payload, dict):
+        raise HTTPException(status_code=400, detail="Profile payload must be a JSON object.")
+    key, email, name = _user_identity(request)
+    display_name = payload.get("name")
+    photo_url = payload.get("photo_url")
+    # Data-URL photos can balloon; cap here (the body-size middleware also guards).
+    if isinstance(photo_url, str) and len(photo_url) > 3_000_000:
+        raise HTTPException(status_code=413, detail="Profile photo too large (max ~2MB).")
+    try:
+        user_store.update_user_profile(
+            key,
+            display_name=display_name if isinstance(display_name, str) else None,
+            photo_url=photo_url if isinstance(photo_url, str) else None,
+        )
+        return sanitize_for_json(user_store.get_user_profile(key, email=email, name=name))
+    except HTTPException:
+        raise
+    except Exception:
+        logger.exception("patch_user failed for key=%s", key)
+        raise HTTPException(status_code=500, detail="Could not update profile.")
 
 
 def _authorize_plan_access(plan_id, request: Request) -> dict:
