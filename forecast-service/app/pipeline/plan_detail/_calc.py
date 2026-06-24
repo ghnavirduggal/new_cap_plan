@@ -518,20 +518,30 @@ def _voice_interval_calc(ivl_df: pd.DataFrame, settings: dict, ivl_min: int) -> 
                 hi = mid - 1
         return float(lo)
 
+    # Occupancy cap as a fraction (settings may store 0.85 or 85).
+    occ_cap_f = _safe_float(occ_cap, 0.85)
+    if occ_cap_f > 1.0:
+        occ_cap_f /= 100.0
+    ivl_minutes = int(round(ivl_sec / 60.0)) or 30
+
     rows = []
     for _, r in df.iterrows():
         calls = _safe_float(r.get("volume"), 0.0)
         aht   = _safe_float(r.get("aht_sec"), 0.0)
-        # Treat interval uploads as hourly call rate for Erlang (matches Excel usage)
-        calls_per_hour = calls * (3600.0 / ivl_sec) if ivl_sec > 0 else 0.0
-        traffic = offered_load_erlangs(calls, aht, int(ivl_sec / 60.0))
-        N = fractional_agents(target_sl, T_sec, calls_per_hour, aht)
-        # SL uses calls/hour basis (Excel SLA expects calls per hour)
-        calls_per_hour_sl = calls
-        traffic_hr = (calls_per_hour_sl * aht) / ivl_sec if aht > 0 else 0.0
-        sl = service_level(traffic_hr, int(math.ceil(N)) if N > 0 else 0, aht, T_sec)
-        occ = (traffic / N) if N > 0 else 0.0
-        _asa = asa(traffic, int(math.ceil(N)) if N > 0 else 0, aht)
+        # ONE consistent Erlang solve on the TRUE interval (e.g. 30 min): the
+        # interval's call count is the arrival volume, and agents / SL /
+        # occupancy all come from that same offered load A = calls*AHT/ivl_sec.
+        # min_agents also enforces the occupancy cap (staffs up until occ<=cap),
+        # so voice required FTE respects max occupancy like back office does.
+        calls_round = int(round(calls))
+        aht_round = int(round(aht))
+        if calls_round > 0 and aht_round > 0:
+            N_int, sl, occ, _asa = min_agents(
+                calls_round, aht_round, ivl_minutes, target_sl, T_sec, occ_cap_f
+            )
+            N = float(N_int)
+        else:
+            N, sl, occ = 0.0, 0.0, 0.0
         staff_sec = N * ivl_sec
         # Store per-hour capacity for rollups; interval view displays per-hour
         phc = math.floor(_call_capacity_per_hour(N, aht) * (ivl_sec / 3600.0))
