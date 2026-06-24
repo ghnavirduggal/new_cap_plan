@@ -687,35 +687,32 @@ def _daily_from_intervals(ivl_df: pd.DataFrame, settings: dict, weight_col: str)
     df = ivl_df.copy()
     df["date"] = pd.to_datetime(df["date"]).dt.date
     shrink = _to_frac(settings.get("shrinkage_pct", 0.30))
-    denom_shr = max(1e-6, (1.0 - shrink))
-    if "agents_req" in df.columns:
-        df["fte_ivl"] = pd.to_numeric(df["agents_req"], errors="coerce").fillna(0.0) / denom_shr
+    hrs    = _safe_float(settings.get("hours_per_fte", 8.0), 8.0)
+    # True SUMPRODUCT denominator: one productive FTE-day of seconds.
+    denom  = max(1e-6, hrs * 3600.0 * (1.0 - shrink))
+    # Staff-seconds per interval = agents_req * interval_seconds. The interval
+    # calc already stores this as 'staff_seconds'; fall back to agents_req*ivl_sec.
+    if "staff_seconds" in df.columns:
+        df["_staff_sec"] = pd.to_numeric(df["staff_seconds"], errors="coerce").fillna(0.0)
     else:
-        hrs    = _safe_float(settings.get("hours_per_fte", 8.0), 8.0)
-        denom  = max(1e-6, hrs*3600.0 * (1.0 - shrink))
-        df["fte_ivl"] = pd.to_numeric(df.get("staff_seconds"), errors="coerce").fillna(0.0) / denom
+        ivl_sec = float(_ivl_seconds(settings.get("interval_minutes", settings.get("interval_minutes", 30))))
+        df["_staff_sec"] = pd.to_numeric(df.get("agents_req"), errors="coerce").fillna(0.0) * ivl_sec
     g = df.groupby(["date","program"], as_index=False)
     day = g.agg({
-        "fte_ivl":"sum",
+        "_staff_sec":"sum",
         "phc":"sum",
-        "service_level": lambda s: 0.0,  # placeholder
-        weight_col:"sum"
+        weight_col:"sum",
     })
-    # Recompute SL as weighted avg by weight_col
+    # True sumproduct daily FTE: total staff-seconds across the day / one productive FTE-day.
+    day["fte_req"] = day["_staff_sec"] / denom
+    # SL is a level metric -> volume-weighted average across the day's intervals.
     sl_rows = []
     for (d,p), grp in df.groupby(["date","program"]):
-        w = grp[weight_col].astype(float).values.tolist()
-        sls = grp["service_level"].astype(float).values.tolist()
+        w = pd.to_numeric(grp[weight_col], errors="coerce").fillna(0.0).values.tolist()
+        sls = pd.to_numeric(grp["service_level"], errors="coerce").fillna(0.0).values.tolist()
         sl_rows.append((d,p,_weighted_avg(sls, w)))
     sl_df = pd.DataFrame(sl_rows, columns=["date","program","service_level"])
-    day = day.drop(columns=["service_level"]).merge(sl_df, on=["date","program"], how="left")
-    fte_rows = []
-    for (d,p), grp in df.groupby(["date","program"]):
-        w = pd.to_numeric(grp[weight_col], errors="coerce").fillna(0.0).values.tolist()
-        f = pd.to_numeric(grp["fte_ivl"], errors="coerce").fillna(0.0).values.tolist()
-        fte_rows.append((d, p, _weighted_avg(f, w) if sum(w) > 0 else float(sum(f))))
-    fte_df = pd.DataFrame(fte_rows, columns=["date","program","fte_req"])
-    day = day.drop(columns=["fte_ivl"]).merge(fte_df, on=["date","program"], how="left")
+    day = day.merge(sl_df, on=["date","program"], how="left")
     # Preserve aggregated load for weighting at higher grains
     day = day.rename(columns={weight_col: "arrival_load"})
     return day[["date","program","fte_req","phc","service_level","arrival_load"]].sort_values(["date","program"])
