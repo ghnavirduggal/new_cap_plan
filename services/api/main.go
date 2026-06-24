@@ -94,16 +94,17 @@ func main() {
     r.Get("/settings", srv.handleGetSettings)
     r.Post("/settings", srv.handleSaveSettings)
 
-    r.Post("/uploads/timeseries", srv.handleSaveTimeseries)
-    r.Get("/uploads/timeseries", srv.handleGetTimeseries)
-
-    r.Post("/uploads/shrinkage", srv.handleSaveShrinkage)
-    r.Get("/uploads/shrinkage", srv.handleGetShrinkage)
-
-    r.Post("/uploads/attrition", srv.handleSaveAttrition)
-    r.Get("/uploads/attrition", srv.handleGetAttrition)
-
-    r.Post("/forecast/run", srv.handleRunForecast)
+    // NOTE: the web frontend's Next.js rewrites send /api/uploads/* and
+    // /api/forecast/* to the Python forecast-service (the authoritative
+    // implementation), so the Go upload/forecast-run handlers below were never
+    // reached. Their routes are removed to avoid exposing unmaintained,
+    // shadowed endpoints. The handler methods (handleSaveTimeseries,
+    // handleGetTimeseries, handleSaveShrinkage, handleGetShrinkage,
+    // handleSaveAttrition, handleGetAttrition, handleRunForecast) and their
+    // upload-store helpers remain in the file and should be deleted in a
+    // dedicated pass with `go build` available to catch any newly-unused
+    // imports. If instead the Go service is meant to own these paths, drop the
+    // matching rewrites in web/next.config.js.
   })
 
   addr := envOrDefault("API_ADDR", ":8080")
