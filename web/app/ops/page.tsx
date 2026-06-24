@@ -8,8 +8,10 @@ import LineChart from "../_components/LineChart";
 import MultiSelect from "../_components/MultiSelect";
 import PieChart from "../_components/PieChart";
 import WaterfallChart from "../_components/WaterfallChart";
+import Sparkline from "../_components/Sparkline";
 import { useToast } from "../_components/ToastProvider";
 import { apiGet, apiPost } from "../../lib/api";
+import { deriveInsights, kpiTrends, capacityHealth, type Trend } from "./insights";
 
 type OpsOptions = {
   business_areas?: string[];
@@ -86,6 +88,29 @@ function formatSeconds(value?: number) {
   const minutes = Math.floor(total / 60);
   const seconds = total % 60;
   return `${minutes}:${seconds.toString().padStart(2, "0")}`;
+}
+
+// Hoisted to module scope so they aren't redefined (and remounted) every render.
+function LoadingPill({ label }: { label?: string }) {
+  return (
+    <span className="ops-loading-pill">
+      <span className="ops-loading-spinner" />
+      {label ?? "Updating"}
+    </span>
+  );
+}
+
+function DeltaBadge({ trend, goodWhen }: { trend?: Trend; goodWhen?: "up" | "down" }) {
+  if (!trend || trend.direction === "flat") {
+    return <span className="ops-delta ops-delta--flat">— stable</span>;
+  }
+  const up = trend.direction === "up";
+  const good = goodWhen ? (goodWhen === "up" ? up : !up) : true;
+  return (
+    <span className={`ops-delta ${good ? "ops-delta--good" : "ops-delta--bad"}`}>
+      {up ? "▲" : "▼"} {Math.abs(trend.pct).toFixed(0)}% vs prior
+    </span>
+  );
 }
 
 export default function OpsPage() {
@@ -341,12 +366,10 @@ export default function OpsPage() {
     { label: "Site", values: filters.site }
   ].filter((item) => item.values.length);
 
-  const LoadingPill = ({ label }: { label?: string }) => (
-    <span className="ops-loading-pill">
-      <span className="ops-loading-spinner" />
-      {label ?? "Updating"}
-    </span>
-  );
+  // Intelligence layer: ranked insights, KPI trend deltas, and a health score.
+  const smartInsights = useMemo(() => deriveInsights(summary), [summary]);
+  const trends = useMemo(() => kpiTrends(summary), [summary]);
+  const health = useMemo(() => capacityHealth(summary), [summary]);
 
   return (
     <AppShell crumbs="CAP-CONNECT / Ops">
@@ -380,22 +403,47 @@ export default function OpsPage() {
           </div>
           <div className="ops-hero__kpis">
             <div className="stat-card stat-card--teal">
-              <div className="stat-header">Required FTE</div>
+              <div className="ops-kpi-top">
+                <div className="stat-header">Required FTE</div>
+                <DeltaBadge trend={trends.required} goodWhen="down" />
+              </div>
               <div className="ops-kpi-value">{kpisLoading ? "—" : formatNumber(kpis.required_fte)}</div>
+              <div className="ops-kpi-spark">{kpisLoading ? null : <Sparkline points={trends.required.spark} color="#0d9488" />}</div>
               <div className="ops-kpi-sub">Demanded workforce</div>
               {kpisUpdating ? <div className="ops-kpi-loading">Updating…</div> : null}
             </div>
             <div className="stat-card stat-card--blue">
-              <div className="stat-header">Supply FTE</div>
+              <div className="ops-kpi-top">
+                <div className="stat-header">Supply FTE</div>
+                <DeltaBadge trend={trends.supply} goodWhen="up" />
+              </div>
               <div className="ops-kpi-value">{kpisLoading ? "—" : formatNumber(kpis.supply_fte)}</div>
+              <div className="ops-kpi-spark">{kpisLoading ? null : <Sparkline points={trends.supply.spark} color="#2563eb" />}</div>
               <div className="ops-kpi-sub">Roster + hiring supply</div>
               {kpisUpdating ? <div className="ops-kpi-loading">Updating…</div> : null}
             </div>
             <div className={`stat-card ${gapIsSurplus ? "stat-card--green" : "stat-card--red"}`}>
-              <div className="stat-header">{gapLabel}</div>
+              <div className="ops-kpi-top">
+                <div className="stat-header">{gapLabel}</div>
+                <DeltaBadge trend={trends.gap} goodWhen="down" />
+              </div>
               <div className="ops-kpi-value">{kpisLoading ? "—" : formatNumber(absGap)}</div>
-              <div className="ops-kpi-sub">Gap vs required</div>
+              <div className="ops-kpi-spark">{kpisLoading ? null : <Sparkline points={trends.gap.spark} color={gapIsSurplus ? "#16a34a" : "#dc2626"} />}</div>
+              <div className="ops-kpi-sub">{`${formatNumber(coverage)}% coverage`}</div>
               {kpisUpdating ? <div className="ops-kpi-loading">Updating…</div> : null}
+            </div>
+            <div className="stat-card ops-health-card" data-tone={health.tone}>
+              <div className="ops-kpi-top">
+                <div className="stat-header">Capacity Health</div>
+              </div>
+              <div className="ops-health-score">
+                {kpisLoading ? "—" : health.score}
+                <span>/100</span>
+              </div>
+              <div className="ops-health-bar">
+                <span style={{ width: `${kpisLoading ? 0 : health.score}%` }} />
+              </div>
+              <div className="ops-kpi-sub">{kpisLoading ? "Scoring…" : health.label}</div>
             </div>
           </div>
         </section>
@@ -505,6 +553,38 @@ export default function OpsPage() {
                 onChange={(values) => setFilters((prev) => ({ ...prev, site: values }))}
               />
             </div>
+          </div>
+        </section>
+
+        <section className="ops-panel ops-panel--smart">
+          <div className="ops-panel__header">
+            <div>
+              <h2>Smart Insights</h2>
+              <p>Auto-generated reads on staffing health, trends, and concentration risk for the current slice.</p>
+            </div>
+            <div className={`ops-health-chip ops-health-chip--${health.tone}`}>
+              <span className="ops-health-chip__score">{kpisLoading ? "—" : health.score}</span>
+              <span className="ops-health-chip__label">{kpisLoading ? "Scoring" : health.label}</span>
+            </div>
+          </div>
+          <div className="ops-insight-feed">
+            {kpisLoading ? (
+              <div className="ops-insight-empty">Analyzing the current slice…</div>
+            ) : smartInsights.length ? (
+              smartInsights.map((item) => (
+                <div key={item.id} className={`ops-insight-item ops-insight-item--${item.severity}`}>
+                  <span className="ops-insight-item__icon" aria-hidden="true">
+                    {item.icon}
+                  </span>
+                  <div className="ops-insight-item__body">
+                    <div className="ops-insight-item__title">{item.title}</div>
+                    <div className="ops-insight-item__detail">{item.detail}</div>
+                  </div>
+                </div>
+              ))
+            ) : (
+              <div className="ops-insight-empty">No notable signals for this slice — coverage looks steady.</div>
+            )}
           </div>
         </section>
 
