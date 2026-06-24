@@ -6,6 +6,7 @@ import clsx from "clsx";
 
 const navItems = [
   { href: "/forecast", label: "Forecasting", icon: "📈" },
+  { href: "/forecast/accuracy", label: "Forecast Accuracy", icon: "🎯" },
   { href: "/planning", label: "Planning", icon: "📅" },
   { href: "/budget", label: "Budget", icon: "💰" },
   { href: "/ops", label: "Operational Dashboard", icon: "📊" },

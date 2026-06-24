@@ -2888,6 +2888,47 @@ def list_saved_runs():
     return sanitize_for_json({"runs": list_saved_forecasts()})
 
 
+# --- Forecast accuracy tracking -------------------------------------------
+# Phase 1 computes per-model accuracy; these endpoints expose the persisted
+# history + a "which model is winning" leaderboard for a scope.
+
+@app.get("/api/forecast/accuracy")
+def get_forecast_accuracy(scope: str = Query("global")):
+    from app.pipeline import accuracy_store
+
+    return sanitize_for_json(
+        {
+            "scopes": accuracy_store.list_scopes(),
+            "leaderboard": accuracy_store.leaderboard(scope),
+            "history": accuracy_store.load_history(scope),
+        }
+    )
+
+
+@app.post("/api/forecast/accuracy/record")
+def record_forecast_accuracy(payload: dict, request: Request):
+    """Record an accuracy snapshot from a Phase-1 accuracy table. Auth is a no-op
+    unless AUTH_ENABLED; the forecast result-save path also records automatically."""
+    security.require_user(request)
+    if not isinstance(payload, dict):
+        raise HTTPException(status_code=400, detail="Accuracy payload must be a JSON object.")
+    from app.pipeline import accuracy_store
+
+    rows = payload.get("accuracy") if isinstance(payload.get("accuracy"), list) else payload.get("rows")
+    if not isinstance(rows, list) or not rows:
+        raise HTTPException(status_code=400, detail="An 'accuracy' table (list of per-model rows) is required.")
+    scope = payload.get("scope") or payload.get("business_area") or payload.get("forecast_group") or "global"
+    snap = accuracy_store.record_snapshot(
+        str(scope),
+        rows,
+        run_label=str(payload.get("run_label") or ""),
+        actor=current_user_fallback(),
+    )
+    if not snap:
+        raise HTTPException(status_code=422, detail="No usable per-model accuracy metrics found in the table.")
+    return sanitize_for_json({"status": "recorded", "snapshot": snap})
+
+
 @app.get("/api/forecast/saved-runs/{filename}")
 def load_saved_run(filename: str):
     result = load_saved_forecast(filename)

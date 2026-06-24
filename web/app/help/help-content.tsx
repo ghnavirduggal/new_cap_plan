@@ -53,6 +53,7 @@ const sections: Section[] = [
       "Normalized Ratio 1: adjust caps and base volume, then apply changes.",
       "Prophet Smoothing: smooth the series and confirm Normalized Ratio 2.",
       "Phase 1: run multi-model forecasts and review accuracy.",
+      "Forecast Accuracy: after you save forecast results, the Forecast Accuracy page tracks per-model accuracy (accuracy bands / MAPE / WAPE / bias) over time, ranks the models, and highlights the winning model per scope so you can see whether forecasts are improving.",
       "Phase 2: apply best configs and generate final forecast outputs.",
       "Transformation Projects: apply sequential adjustments and save final outputs.",
       "Daily and Interval Forecast: split monthly totals into daily and interval plans."
