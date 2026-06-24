@@ -69,15 +69,6 @@ function formatMonthLabel(dt: Date) {
   return `${month}-${year}`;
 }
 
-function weekStartMonday(dt: Date) {
-  const d = new Date(dt);
-  const day = d.getDay(); // 0=Sun..6=Sat
-  const offset = (day + 6) % 7; // days since Monday
-  d.setDate(d.getDate() - offset);
-  d.setHours(0, 0, 0, 0);
-  return d;
-}
-
 function headerLabel(col: string, dateMode: "auto" | "day" | "month") {
   const trimmed = col.trim();
   if (trimmed.toLowerCase() === "metric") return "Metric";
@@ -86,14 +77,19 @@ function headerLabel(col: string, dateMode: "auto" | "day" | "month") {
     if (!Number.isNaN(dt.getTime())) {
       const today = new Date();
       today.setHours(0, 0, 0, 0);
-      const weekStart = weekStartMonday(today);
-      const weekEnd = new Date(weekStart);
-      weekEnd.setDate(weekEnd.getDate() + 6);
-      const isCurrentWeek = dt >= weekStart && dt <= weekEnd;
-      const tag = dt < weekStart || isCurrentWeek ? "Actual" : "Plan";
+      // Tag each column "Actual" once its period has reached/passed today,
+      // else "Plan". Comparing the period boundary to `today` (rather than a
+      // fixed this-week window) keeps month columns from being mis-tagged and
+      // stops future days within the current week from showing as "Actual".
+      let tag: "Actual" | "Plan";
       if (dateMode === "month") {
+        const monthStart = new Date(today.getFullYear(), today.getMonth(), 1);
+        tag = dt <= monthStart ? "Actual" : "Plan";
         return `${formatMonthLabel(dt)} ${tag}`;
       }
+      // day / week grain: the column id is the day (day grain) or the week's
+      // Monday (week grain); either is "Actual" once it is on/before today.
+      tag = dt <= today ? "Actual" : "Plan";
       return `${trimmed} ${tag}`;
     }
   }

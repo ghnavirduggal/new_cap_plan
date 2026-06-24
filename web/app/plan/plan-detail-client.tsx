@@ -690,6 +690,10 @@ export default function PlanDetailClient({ planId, rollupBa }: PlanDetailClientP
   const computePollRef = useRef<number | null>(null);
   const computeQueueRef = useRef<Promise<void>>(Promise.resolve());
   const tablesReqRef = useRef(0);
+  // Editable tables (attr/ratio/seat) the user has changed but not yet saved.
+  // Protected from being silently clobbered when a background recompute merges
+  // freshly-computed tables over local state.
+  const dirtyEditableKeysRef = useRef<Set<string>>(new Set());
   const [grain, setGrain] = useState("week");
   const [intervalDate, setIntervalDate] = useState("");
   const [upperCollapsed, setUpperCollapsed] = useState(false);
@@ -847,7 +851,9 @@ export default function PlanDetailClient({ planId, rollupBa }: PlanDetailClientP
     filteredRows.forEach((row) => {
       Object.keys(row || {}).forEach((key) => cols.add(key));
     });
-    return Array.from(cols).filter((key) => key.toLowerCase() !== "metric");
+    return Array.from(cols).filter(
+      (key) => key.toLowerCase() !== "metric" && !key.startsWith("__")
+    );
   }, [filteredRows]);
 
   const planName = planMeta?.plan_name || (planId ? `Plan ${planId}` : "Plan Detail");
@@ -1054,6 +1060,13 @@ export default function PlanDetailClient({ planId, rollupBa }: PlanDetailClientP
               if ((prev?.emp?.length ?? 0) > 0 && (next?.emp?.length ?? 0) === 0) {
                 next.emp = prev.emp ?? [];
               }
+              // Keep unsaved edits to editable tables (attr/ratio/seat); a
+              // background recompute must not silently overwrite them.
+              dirtyEditableKeysRef.current.forEach((key) => {
+                if ((prev?.[key]?.length ?? 0) > 0) {
+                  next[key] = prev[key];
+                }
+              });
               return next;
             });
           }
@@ -1318,6 +1331,7 @@ export default function PlanDetailClient({ planId, rollupBa }: PlanDetailClientP
           })
         )
       );
+      dirtyEditableKeysRef.current.clear();
       setMessage("Saved.");
       notify("success", "Plan saved.");
     } catch (error: any) {
@@ -1549,6 +1563,10 @@ export default function PlanDetailClient({ planId, rollupBa }: PlanDetailClientP
   useEffect(() => {
     if (!planId || isRollup) return;
     if (grain === "interval" && !intervalDate) return;
+    // A deliberate grain/interval change reloads tables from the store, so any
+    // unsaved editable edits are intentionally dropped here — clear the dirty
+    // set so they don't get "stuck" protecting stale values after reload.
+    dirtyEditableKeysRef.current.clear();
     void loadTablesWithLoader();
     void warmPlanCompute();
   }, [grain, intervalDate, isRollup, loadTablesWithLoader, warmPlanCompute, planId]);
@@ -1681,6 +1699,9 @@ export default function PlanDetailClient({ planId, rollupBa }: PlanDetailClientP
   }, [nhMessage]);
 
   const handleFilteredChange = (rows: Array<Record<string, any>>) => {
+    if (EDITABLE_TABLES.has(activeConfig.key)) {
+      dirtyEditableKeysRef.current.add(activeConfig.key);
+    }
     if (!viewFrom || !viewTo) {
       setTables((prev) => ({ ...prev, [activeConfig.key]: rows }));
       return;
@@ -1924,7 +1945,7 @@ export default function PlanDetailClient({ planId, rollupBa }: PlanDetailClientP
       setMessage("Roster saved.");
       void computePlanTables();
       window.setTimeout(() => {
-        void loadTablesForGrain("week");
+        void loadTablesForGrain(grain, intervalDate);
       }, 800);
     } catch (error: any) {
       notify("error", error?.message || "Could not save roster.");
@@ -2058,7 +2079,7 @@ export default function PlanDetailClient({ planId, rollupBa }: PlanDetailClientP
       setNhModalOpen(false);
       setNhMessage("New hire class added.");
       await computePlanTables();
-      void loadTablesForGrain("week");
+      void loadTablesForGrain(grain, intervalDate);
     } catch (error: any) {
       setNhMessage(error?.message || "Could not add class.");
     } finally {
@@ -2080,7 +2101,7 @@ export default function PlanDetailClient({ planId, rollupBa }: PlanDetailClientP
       setNhDetailsOpen(false);
       setNhMessage("Selected classes confirmed.");
       await computePlanTables();
-      void loadTablesForGrain("week");
+      void loadTablesForGrain(grain, intervalDate);
     } catch (error: any) {
       setNhMessage(error?.message || "Could not confirm classes.");
     } finally {
