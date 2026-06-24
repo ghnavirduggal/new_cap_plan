@@ -163,10 +163,57 @@ def _max_request_bytes() -> int:
         return 50 * 1024 * 1024
 
 
+def _max_zip_uncompressed_bytes() -> int:
+    try:
+        return int(os.getenv("MAX_ZIP_UNCOMPRESSED_BYTES", str(300 * 1024 * 1024)))
+    except (TypeError, ValueError):
+        return 300 * 1024 * 1024
+
+
+async def _read_upload_capped(file: "UploadFile") -> bytes:
+    """Read an uploaded file in chunks, aborting past the request-size cap.
+
+    The Content-Length middleware can be bypassed with Transfer-Encoding: chunked,
+    so we also enforce the byte budget here while streaming, before the whole body
+    is buffered in memory.
+    """
+    cap = _max_request_bytes()
+    chunks: list[bytes] = []
+    total = 0
+    while True:
+        chunk = await file.read(1024 * 1024)
+        if not chunk:
+            break
+        total += len(chunk)
+        if total > cap:
+            raise HTTPException(status_code=413, detail="Request body too large.")
+        chunks.append(chunk)
+    return b"".join(chunks)
+
+
+def _guard_zip_bomb(content: bytes) -> None:
+    """Reject decompression bombs: .xlsx is a ZIP, and a small file can inflate to
+    many GB. Sum the declared uncompressed sizes and abort past the cap before any
+    parser (pandas/openpyxl) expands the archive."""
+    if len(content) < 4 or content[:2] != b"PK":
+        return  # not a zip (e.g. CSV) — nothing to expand
+    import zipfile
+
+    try:
+        with zipfile.ZipFile(io.BytesIO(content)) as zf:
+            total = sum(max(0, info.file_size) for info in zf.infolist())
+    except zipfile.BadZipFile:
+        return  # let the downstream parser surface a clean error
+    if total > _max_zip_uncompressed_bytes():
+        raise HTTPException(status_code=413, detail="Spreadsheet expands too large to process.")
+
+
 @app.middleware("http")
 async def _limit_request_size(request, call_next):
     # Reject oversized bodies up front (by Content-Length) so huge uploads can't
-    # exhaust memory before they're even parsed.
+    # exhaust memory before they're even parsed. Chunked-encoding requests omit
+    # Content-Length and are additionally capped while streaming in
+    # _read_upload_capped at the upload handlers.
     from fastapi.responses import JSONResponse
 
     cl = request.headers.get("content-length")
@@ -210,7 +257,7 @@ def issue_token(request: Request):
     secret = os.getenv("AUTH_JWT_SECRET", "")
     if not secret:
         return {"token": None, "auth": "disabled"}
-    if not security.trust_proxy_auth():
+    if not security.trust_proxy_auth() or not security.proxy_request_verified(request):
         raise HTTPException(status_code=404, detail="Not found.")
     email = (
         request.headers.get("x-forwarded-email")
@@ -266,13 +313,30 @@ def get_user(request: Request):
         return {"key": key, "email": email, "name": name or email or key, "photo_url": ""}
 
 
+def _safe_photo_url(value) -> str | None:
+    """Allowlist photo URL schemes. The value is later rendered as <img src=...>
+    in the browser, so block javascript:/vbscript:/arbitrary data: payloads and
+    only permit https:, root-relative paths, and image data URLs."""
+    if not isinstance(value, str):
+        return None
+    candidate = value.strip()
+    if not candidate:
+        return ""  # explicit clear
+    lowered = candidate.lower()
+    if lowered.startswith("https://") or candidate.startswith("/"):
+        return candidate
+    if lowered.startswith("data:image/png") or lowered.startswith("data:image/jpeg") or lowered.startswith("data:image/webp"):
+        return candidate
+    raise HTTPException(status_code=400, detail="Unsupported photo URL (use https:// or an image data URL).")
+
+
 @app.patch("/api/user")
 def patch_user(payload: dict, request: Request):
     if not isinstance(payload, dict):
         raise HTTPException(status_code=400, detail="Profile payload must be a JSON object.")
     key, email, name = _user_identity(request)
     display_name = payload.get("name")
-    photo_url = payload.get("photo_url")
+    photo_url = _safe_photo_url(payload.get("photo_url")) if "photo_url" in payload else None
     # Data-URL photos can balloon; cap here (the body-size middleware also guards).
     if isinstance(photo_url, str) and len(photo_url) > 3_000_000:
         raise HTTPException(status_code=413, detail="Profile photo too large (max ~2MB).")
@@ -291,9 +355,10 @@ def patch_user(payload: dict, request: Request):
 
 
 @app.post("/api/users/display")
-def users_display(payload: dict):
+def users_display(payload: dict, request: Request):
     """Resolve a batch of user identifiers (BRID/email/name keys) to display
     name + photo so owners/actors render as names instead of opaque IDs."""
+    security.require_user(request)  # no-op unless AUTH_ENABLED
     keys = payload.get("keys") if isinstance(payload, dict) else None
     if not isinstance(keys, list):
         return {}
@@ -1724,7 +1789,7 @@ def planning_consolidated(payload: dict):
 
 
 @app.post("/api/planning/plan/rebalancing")
-def planning_rebalancing_preview(payload: dict):
+def planning_rebalancing_preview(payload: dict, request: Request):
     if not isinstance(payload, dict):
         raise HTTPException(status_code=400, detail="Rebalancing payload must be a JSON object.")
 
@@ -1741,9 +1806,7 @@ def planning_rebalancing_preview(payload: dict):
     loc: list[str] = []
 
     if plan_id:
-        plan = load_plan(int(plan_id))
-        if not plan:
-            raise HTTPException(status_code=404, detail="Plan not found.")
+        plan = _authorize_plan_access(plan_id, request)
         ba_val = str(plan.get("business_area") or plan.get("vertical") or "").strip()
         if ba_val:
             ba = [ba_val]
@@ -2014,7 +2077,9 @@ def plan_debug_upper(plan_id: int = Query(...)):
 
 
 @app.get("/api/planning/activity")
-def get_planning_activity(limit: int = Query(10), plan_id: Optional[int] = Query(None)):
+def get_planning_activity(request: Request, limit: int = Query(10), plan_id: Optional[int] = Query(None)):
+    if plan_id is not None:
+        _authorize_plan_access(plan_id, request)
     return {"rows": list_activity(limit=limit, plan_id=plan_id)}
 
 
@@ -2038,10 +2103,8 @@ def save_plan(payload: dict):
 
 
 @app.get("/api/planning/plan/scope-options")
-def plan_scope_options(plan_id: int = Query(...)):
-    plan = load_plan(int(plan_id))
-    if not plan:
-        raise HTTPException(status_code=404, detail="Plan not found.")
+def plan_scope_options(request: Request, plan_id: int = Query(...)):
+    plan = _authorize_plan_access(plan_id, request)
     options = []
     plans = list_plans(
         business_area=plan.get("business_area"),
@@ -2159,7 +2222,8 @@ def export_plan(payload: dict, request: Request):
 
 
 @app.get("/api/planning/plan/whatif")
-def get_plan_whatif(plan_id: int = Query(...)):
+def get_plan_whatif(request: Request, plan_id: int = Query(...)):
+    _authorize_plan_access(plan_id, request)
     df = load_df(f"plan_{plan_id}_whatif")
     if not isinstance(df, pd.DataFrame) or df.empty:
         return {"overrides": {}}
@@ -2174,12 +2238,13 @@ def get_plan_whatif(plan_id: int = Query(...)):
 
 
 @app.post("/api/planning/plan/whatif")
-def save_plan_whatif(payload: dict):
+def save_plan_whatif(payload: dict, request: Request):
     if not isinstance(payload, dict):
         raise HTTPException(status_code=400, detail="What-if payload must be a JSON object.")
     plan_id = payload.get("plan_id")
     if not plan_id:
         raise HTTPException(status_code=400, detail="plan_id is required.")
+    _authorize_plan_access(plan_id, request)
     action = (payload.get("action") or "apply").lower()
     overrides = payload.get("overrides") if isinstance(payload.get("overrides"), dict) else {}
     if action == "clear":
@@ -2210,7 +2275,8 @@ def save_plan_whatif(payload: dict):
 
 
 @app.get("/api/planning/plan/new-hire/classes")
-def get_plan_new_hire_classes(plan_id: int = Query(...)):
+def get_plan_new_hire_classes(request: Request, plan_id: int = Query(...)):
+    _authorize_plan_access(plan_id, request)
     df = load_nh_classes(int(plan_id))
     return {
         "rows": df_to_records(df),
@@ -2220,13 +2286,14 @@ def get_plan_new_hire_classes(plan_id: int = Query(...)):
 
 
 @app.post("/api/planning/plan/new-hire/classes")
-def save_plan_new_hire_classes(payload: dict):
+def save_plan_new_hire_classes(payload: dict, request: Request):
     if not isinstance(payload, dict):
         raise HTTPException(status_code=400, detail="New-hire payload must be a JSON object.")
     plan_id = payload.get("plan_id")
     rows = payload.get("rows") or []
     if not plan_id:
         raise HTTPException(status_code=400, detail="plan_id is required.")
+    _authorize_plan_access(plan_id, request)
     df = df_from_payload(rows)
     save_nh_classes(int(plan_id), df)
     try:
@@ -2247,13 +2314,14 @@ def save_plan_new_hire_classes(payload: dict):
 
 
 @app.post("/api/planning/plan/new-hire/class")
-def add_plan_new_hire_class(payload: dict):
+def add_plan_new_hire_class(payload: dict, request: Request):
     if not isinstance(payload, dict):
         raise HTTPException(status_code=400, detail="New-hire payload must be a JSON object.")
     plan_id = payload.get("plan_id")
     data = payload.get("data") or {}
     if not plan_id:
         raise HTTPException(status_code=400, detail="plan_id is required.")
+    _authorize_plan_access(plan_id, request)
     if not isinstance(data, dict):
         raise HTTPException(status_code=400, detail="data must be a JSON object.")
     df = load_nh_classes(int(plan_id))
@@ -2300,13 +2368,14 @@ def add_plan_new_hire_class(payload: dict):
 
 
 @app.post("/api/planning/plan/new-hire/confirm")
-def confirm_plan_new_hire_classes(payload: dict):
+def confirm_plan_new_hire_classes(payload: dict, request: Request):
     if not isinstance(payload, dict):
         raise HTTPException(status_code=400, detail="New-hire payload must be a JSON object.")
     plan_id = payload.get("plan_id")
     class_refs = payload.get("class_refs") or []
     if not plan_id:
         raise HTTPException(status_code=400, detail="plan_id is required.")
+    _authorize_plan_access(plan_id, request)
     if not isinstance(class_refs, list):
         raise HTTPException(status_code=400, detail="class_refs must be a list.")
     df = load_nh_classes(int(plan_id))
@@ -2338,13 +2407,15 @@ def confirm_plan_new_hire_classes(payload: dict):
 
 
 @app.post("/api/planning/plan/compare")
-def compare_plans(payload: dict):
+def compare_plans(payload: dict, request: Request):
     if not isinstance(payload, dict):
         raise HTTPException(status_code=400, detail="Compare payload must be a JSON object.")
     plan_id = payload.get("plan_id")
     compare_id = payload.get("compare_id")
     if not plan_id or not compare_id:
         raise HTTPException(status_code=400, detail="plan_id and compare_id are required.")
+    _authorize_plan_access(plan_id, request)
+    _authorize_plan_access(compare_id, request)
 
     def _upper_df(pid: int) -> pd.DataFrame:
         data, status, _meta = compute_plan_detail_tables(int(pid), grain="week")
@@ -2385,7 +2456,8 @@ def compare_plans(payload: dict):
 
 
 @app.get("/api/planning/plan/table")
-def get_plan_table(plan_id: int = Query(...), name: str = Query(...)):
+def get_plan_table(request: Request, plan_id: int = Query(...), name: str = Query(...)):
+    _authorize_plan_access(plan_id, request)
     pid = int(plan_id)
     table_name = str(name or "")
     if table_name.strip().lower() == "emp":
@@ -2840,9 +2912,10 @@ def attrition_raw_endpoint(payload: dict):
 
 @app.post("/api/forecast/volume-summary")
 async def volume_summary(file: UploadFile = File(...)):
-    content = await file.read()
+    content = await _read_upload_capped(file)
     if not content:
         raise HTTPException(status_code=400, detail="Empty file upload.")
+    _guard_zip_bomb(content)
     result = run_volume_summary(file.filename or "upload", content)
     try:
         save_forecast_run(
@@ -2859,9 +2932,10 @@ async def volume_summary(file: UploadFile = File(...)):
 
 @app.post("/api/forecast/ingest/original")
 async def ingest_original(file: UploadFile = File(...)):
-    content = await file.read()
+    content = await _read_upload_capped(file)
     if not content:
         raise HTTPException(status_code=400, detail="Empty file upload.")
+    _guard_zip_bomb(content)
     df, msg = parse_upload_any(
         file.filename or "upload",
         content,
@@ -2872,9 +2946,10 @@ async def ingest_original(file: UploadFile = File(...)):
 
 @app.post("/api/forecast/ingest/interval")
 async def ingest_interval(file: UploadFile = File(...)):
-    content = await file.read()
+    content = await _read_upload_capped(file)
     if not content:
         raise HTTPException(status_code=400, detail="Empty file upload.")
+    _guard_zip_bomb(content)
     df, msg = parse_upload_any(
         file.filename or "upload",
         content,

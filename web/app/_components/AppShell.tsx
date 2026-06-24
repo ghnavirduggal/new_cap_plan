@@ -6,7 +6,7 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 import Sidebar from "./Sidebar";
 import { logPageVisit } from "../../lib/activity";
-import { apiGet, apiPatch } from "../../lib/api";
+import { apiGet, apiPatch, clearAuthToken } from "../../lib/api";
 
 interface AppShellProps {
   title?: string;
@@ -134,6 +134,7 @@ export default function AppShell({ title, crumbs, crumbIcon, userLabel, crumbLin
     const logoutUrl = process.env.NEXT_PUBLIC_LOGOUT_URL;
     try {
       window.sessionStorage.clear();
+      clearAuthToken();
     } catch {
       /* ignore */
     }

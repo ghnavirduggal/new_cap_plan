@@ -37,6 +37,20 @@ func authEnabled() bool    { return envFlag("AUTH_ENABLED") }
 func trustProxyAuth() bool { return envFlag("TRUST_PROXY_AUTH") }
 func authSecret() string   { return os.Getenv("AUTH_JWT_SECRET") }
 
+// proxyRequestVerified is defense-in-depth for the token-mint endpoint and
+// proxy-trusted identity. When PROXY_SHARED_SECRET is set, proxy-provided
+// identity is only honored if the request carries the matching X-Proxy-Auth
+// header (injected by the trusted proxy, stripped from inbound client requests).
+// When unset, returns true to preserve existing behavior.
+func proxyRequestVerified(r *http.Request) bool {
+  secret := os.Getenv("PROXY_SHARED_SECRET")
+  if secret == "" {
+    return true
+  }
+  provided := strings.TrimSpace(r.Header.Get("X-Proxy-Auth"))
+  return provided != "" && hmac.Equal([]byte(provided), []byte(secret))
+}
+
 func verifyJWT(token, secret string) (map[string]any, error) {
   parts := strings.Split(token, ".")
   if len(parts) != 3 {
@@ -73,10 +87,14 @@ func verifyJWT(token, secret string) (map[string]any, error) {
   if err := json.Unmarshal(payloadBytes, &claims); err != nil {
     return nil, err
   }
-  if exp, ok := claims["exp"].(float64); ok {
-    if time.Now().Unix() > int64(exp) {
-      return nil, errors.New("token expired")
-    }
+  // Require exp: a token without an expiry would be valid forever, so reject it
+  // rather than treating "no exp" as "never expires".
+  exp, ok := claims["exp"].(float64)
+  if !ok {
+    return nil, errors.New("missing exp claim")
+  }
+  if time.Now().Unix() > int64(exp) {
+    return nil, errors.New("token expired")
   }
   return claims, nil
 }
@@ -125,8 +143,10 @@ func principalFromRequest(r *http.Request) *principal {
       return &principal{Email: email, Roles: roles}
     }
   }
-  // Only trust proxy-provided identity when explicitly enabled.
-  if trustProxyAuth() {
+  // Only trust proxy-provided identity when explicitly enabled and — when a
+  // PROXY_SHARED_SECRET is configured — the request proves it came through the
+  // trusted proxy.
+  if trustProxyAuth() && proxyRequestVerified(r) {
     if email := headerEmail(r); email != "" {
       return &principal{Email: email}
     }
@@ -166,7 +186,7 @@ func principalFromContext(r *http.Request) *principal {
 
 func handleIssueToken(w http.ResponseWriter, r *http.Request) {
   secret := authSecret()
-  if secret == "" || !trustProxyAuth() {
+  if secret == "" || !trustProxyAuth() || !proxyRequestVerified(r) {
     respondJSON(w, http.StatusNotFound, simpleResponse{Status: "error", Message: "not found"})
     return
   }
