@@ -9,12 +9,12 @@ import logging
 from typing import Any, Optional
 from concurrent.futures import ThreadPoolExecutor
 
-from fastapi import FastAPI, File, HTTPException, Query, UploadFile
+from fastapi import FastAPI, File, HTTPException, Query, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 
 import config_manager
-from app import cap_store, plan_store
+from app import cap_store, plan_store, security
 from app.cap_store import resolve_settings as resolve_cap_settings
 from app.pipeline import settings_store
 import os
@@ -99,7 +99,7 @@ from app.pipeline.plan_detail_engine import (
     prefetch_plan_detail_grains,
 )
 from app.pipeline.plan_detail.calc_engine import mark_plan_dirty as mark_plan_detail_dirty, mark_plan_dirty_deps as mark_plan_detail_dirty_deps, dep_snapshot_all
-from app.pipeline.ba_rollup_plan import compute_ba_rollup_tables, month_cols_for_ba, week_cols_for_ba
+from app.pipeline.ba_rollup_plan import compute_ba_rollup_tables, invalidate_rollup_cache, month_cols_for_ba, week_cols_for_ba
 from app.pipeline.plan_detail._common import (
     clone_plan,
     current_user_fallback,
@@ -144,6 +144,84 @@ logger = logging.getLogger("forecast-service")
 if not logging.getLogger().handlers:
     logging.basicConfig(level=logging.INFO)
 logger.setLevel(logging.INFO)
+
+# Diagnostic/debug endpoints leak filesystem paths and config; keep them off
+# unless explicitly enabled.
+_DEBUG_ENDPOINTS_ENABLED = os.getenv("ENABLE_DEBUG_ENDPOINTS", "0").strip().lower() in {"1", "true", "yes"}
+
+
+def _require_debug_enabled() -> None:
+    if not _DEBUG_ENDPOINTS_ENABLED:
+        raise HTTPException(status_code=404, detail="Not found.")
+
+
+def _max_request_bytes() -> int:
+    try:
+        return int(os.getenv("MAX_REQUEST_BYTES", str(50 * 1024 * 1024)))
+    except (TypeError, ValueError):
+        return 50 * 1024 * 1024
+
+
+@app.middleware("http")
+async def _limit_request_size(request, call_next):
+    # Reject oversized bodies up front (by Content-Length) so huge uploads can't
+    # exhaust memory before they're even parsed.
+    from fastapi.responses import JSONResponse
+
+    cl = request.headers.get("content-length")
+    if cl and cl.isdigit() and int(cl) > _max_request_bytes():
+        return JSONResponse(status_code=413, content={"detail": "Request body too large."})
+    return await call_next(request)
+
+
+@app.middleware("http")
+async def _authenticate(request, call_next):
+    # Attach the authenticated principal (if any) to request.state, and when
+    # AUTH_ENABLED reject unauthenticated requests to protected routes. All of
+    # this is a no-op unless the AUTH_* env flags are set.
+    from fastapi.responses import JSONResponse
+
+    request.state.principal = security.principal_from_request(request)
+    if (
+        security.auth_enabled()
+        and request.state.principal is None
+        and not security.is_exempt_path(request.url.path)
+        and request.method != "OPTIONS"
+    ):
+        return JSONResponse(status_code=401, content={"detail": "Authentication required."})
+    return await call_next(request)
+
+
+@app.post("/api/auth/token")
+def issue_token(request: Request):
+    """Mint a short-lived session token from trusted proxy identity.
+
+    Only works when AUTH_JWT_SECRET is configured and the upstream proxy is
+    trusted (TRUST_PROXY_AUTH=1); otherwise returns 404 so it isn't an open
+    token oracle.
+    """
+    secret = os.getenv("AUTH_JWT_SECRET", "")
+    if not secret or not security.trust_proxy_auth():
+        raise HTTPException(status_code=404, detail="Not found.")
+    email = (
+        request.headers.get("x-forwarded-email")
+        or request.headers.get("x-email")
+        or request.headers.get("x-user-email")
+        or ""
+    ).strip()
+    if not email:
+        raise HTTPException(status_code=401, detail="No upstream identity.")
+    token = security.mint_jwt(email, secret, ttl_seconds=int(os.getenv("AUTH_TOKEN_TTL", "3600") or 3600))
+    return {"token": token, "token_type": "bearer", "email": email}
+
+
+def _authorize_plan_access(plan_id, request: Request) -> dict:
+    """Load a plan and enforce per-plan authorization (no-op unless AUTHZ_ENABLED)."""
+    plan = load_plan(int(plan_id))
+    if not plan:
+        raise HTTPException(status_code=404, detail="Plan not found.")
+    security.authorize_plan(plan, security.require_user(request))
+    return plan
 
 _COMBINED_TIMESERIES_KINDS = {
     "voice_forecast",
@@ -1076,7 +1154,9 @@ def get_settings(
         elif raw_channel in ("outbound", "ob", "out bound"):
             kind = "ob_actual"
         if kind:
-            ts_df = load_timeseries_any(kind, scopes)
+            # Multi-scope load: use the batched single-query path instead of one
+            # DB round-trip per scope.
+            ts_df = load_timeseries_any(kind, scopes, batch=True)
             actual_val = _last_actual_value(ts_df, value_col, weight_col=weight_col)
             if actual_val is None and value_col == "sut_sec" and "aht_sec" in ts_df.columns:
                 actual_val = _last_actual_value(ts_df, "aht_sec", weight_col=weight_col)
@@ -1617,6 +1697,7 @@ def planning_rebalancing_preview(payload: dict):
 
 @app.get("/api/planning/plan")
 def get_plans(
+    request: Request,
     plan_id: Optional[int] = Query(None),
     ba: Optional[str] = Query(None),
     sba: Optional[str] = Query(None),
@@ -1626,12 +1707,14 @@ def get_plans(
     status: Optional[str] = Query(None),
 ):
     if plan_id:
-        return {"plan": load_plan(int(plan_id))}
+        plan = _authorize_plan_access(plan_id, request)
+        return {"plan": plan}
     return {"plans": list_plans(ba, sba, channel, location, site, status_filter=status)}
 
 
 @app.get("/api/planning/plan/debug")
 def plan_debug(plan_id: int = Query(...)):
+    _require_debug_enabled()
     plan = load_plan(int(plan_id))
     if not plan:
         raise HTTPException(status_code=404, detail="Plan not found.")
@@ -1697,6 +1780,7 @@ def plan_debug_voice_weekly(
     plan_id: int = Query(...),
     week: Optional[str] = Query(None),
 ):
+    _require_debug_enabled()
     plan = load_plan(int(plan_id))
     if not plan:
         raise HTTPException(status_code=404, detail="Plan not found.")
@@ -1770,6 +1854,7 @@ def plan_debug_voice_weekly(
 
 @app.get("/api/planning/plan/debug/upper")
 def plan_debug_upper(plan_id: int = Query(...)):
+    _require_debug_enabled()
     plan = load_plan(int(plan_id))
     if not plan:
         raise HTTPException(status_code=404, detail="Plan not found.")
@@ -1898,32 +1983,36 @@ def plan_scope_options(plan_id: int = Query(...)):
 
 
 @app.post("/api/planning/plan/delete")
-def delete_plan_endpoint(payload: dict):
+def delete_plan_endpoint(payload: dict, request: Request):
     if not isinstance(payload, dict):
         raise HTTPException(status_code=400, detail="Delete payload must be a JSON object.")
     plan_id = payload.get("plan_id")
     if not plan_id:
         raise HTTPException(status_code=400, detail="plan_id is required.")
+    _authorize_plan_access(plan_id, request)
+    invalidate_rollup_cache()
     return delete_plan(int(plan_id))
 
 
 @app.post("/api/planning/plan/save-as")
-def save_plan_as(payload: dict):
+def save_plan_as(payload: dict, request: Request):
     if not isinstance(payload, dict):
         raise HTTPException(status_code=400, detail="Save-as payload must be a JSON object.")
     plan_id = payload.get("plan_id")
     name = (payload.get("name") or "").strip()
     if not plan_id or not name:
         raise HTTPException(status_code=400, detail="plan_id and name are required.")
+    _authorize_plan_access(plan_id, request)
     try:
         new_id = clone_plan(int(plan_id), name)
     except Exception as exc:
-        raise HTTPException(status_code=500, detail=str(exc)) from exc
+        logger.exception("clone_plan failed: plan_id=%s", plan_id)
+        raise HTTPException(status_code=500, detail="Failed to save plan.") from exc
     return {"status": "created", "id": new_id}
 
 
 @app.post("/api/planning/plan/extend")
-def extend_plan_endpoint(payload: dict):
+def extend_plan_endpoint(payload: dict, request: Request):
     if not isinstance(payload, dict):
         raise HTTPException(status_code=400, detail="Extend payload must be a JSON object.")
     plan_id = payload.get("plan_id")
@@ -1932,6 +2021,7 @@ def extend_plan_endpoint(payload: dict):
         raise HTTPException(status_code=400, detail="plan_id is required.")
     if not weeks:
         raise HTTPException(status_code=400, detail="weeks is required.")
+    _authorize_plan_access(plan_id, request)
     try:
         plan_store.extend_plan_weeks(int(plan_id), int(weeks))
     except ValueError as exc:
@@ -1940,12 +2030,13 @@ def extend_plan_endpoint(payload: dict):
 
 
 @app.post("/api/planning/plan/export")
-def export_plan(payload: dict):
+def export_plan(payload: dict, request: Request):
     if not isinstance(payload, dict):
         raise HTTPException(status_code=400, detail="Export payload must be a JSON object.")
     plan_id = payload.get("plan_id")
     if not plan_id:
         raise HTTPException(status_code=400, detail="plan_id is required.")
+    _authorize_plan_access(plan_id, request)
     buf = io.BytesIO()
     keys = ["fw", "hc", "attr", "shr", "train", "ratio", "seat", "bva", "nh", "emp", "bulk_files", "notes"]
     try:
@@ -1953,13 +2044,15 @@ def export_plan(payload: dict):
         upper_rows = data.get("upper") if status == "ready" and data else []
     except Exception:
         upper_rows = []
+    from app.pipeline.save import sanitize_export
+
     with pd.ExcelWriter(buf, engine="xlsxwriter") as xw:
         if upper_rows:
-            pd.DataFrame(upper_rows).to_excel(xw, sheet_name="upper", index=False)
+            sanitize_export(pd.DataFrame(upper_rows)).to_excel(xw, sheet_name="upper", index=False)
         for key in keys:
             rows = load_plan_table(int(plan_id), key)
             df = pd.DataFrame(rows or [])
-            df.to_excel(xw, sheet_name=key[:31], index=False)
+            sanitize_export(df).to_excel(xw, sheet_name=key[:31], index=False)
     buf.seek(0)
     return StreamingResponse(
         buf,
@@ -2210,7 +2303,7 @@ def get_plan_table(plan_id: int = Query(...), name: str = Query(...)):
 
 
 @app.post("/api/planning/plan/table")
-def save_plan_table_endpoint(payload: dict):
+def save_plan_table_endpoint(payload: dict, request: Request):
     if not isinstance(payload, dict):
         raise HTTPException(status_code=400, detail="Plan table payload must be a JSON object.")
     plan_id = payload.get("plan_id")
@@ -2218,9 +2311,12 @@ def save_plan_table_endpoint(payload: dict):
     rows = payload.get("rows") or []
     if not plan_id or not name:
         raise HTTPException(status_code=400, detail="plan_id and name are required.")
+    _authorize_plan_access(plan_id, request)
     result = save_plan_table(int(plan_id), str(name), rows)
     if result.get("status") == "locked":
         raise HTTPException(status_code=409, detail="Plan is locked (history).")
+    # A table edit changes the plan's contribution to any BA rollup it belongs to.
+    invalidate_rollup_cache()
     try:
         base = str(name or "").split("_")[0].lower()
         if base in {"notes", "bulk_files"}:
@@ -2232,12 +2328,13 @@ def save_plan_table_endpoint(payload: dict):
 
 
 @app.post("/api/planning/plan/detail/compute")
-def compute_plan_detail_endpoint(payload: dict):
+def compute_plan_detail_endpoint(payload: dict, request: Request):
     if not isinstance(payload, dict):
         raise HTTPException(status_code=400, detail="Plan detail payload must be a JSON object.")
     plan_id = payload.get("plan_id") or payload.get("id")
     if not plan_id:
         raise HTTPException(status_code=400, detail="plan_id is required.")
+    _authorize_plan_access(plan_id, request)
     try:
         plan = load_plan(int(plan_id))
         if plan and str(plan.get("status") or "").lower() == "history":
@@ -2711,7 +2808,7 @@ def get_original_data():
 
 
 @app.post("/api/forecast/smoothing")
-async def smoothing(payload: dict):
+def smoothing(payload: dict):
     data = payload.get("data")
     window = payload.get("window", 6)
     threshold = payload.get("threshold", 2.5)
@@ -2748,7 +2845,7 @@ async def smoothing(payload: dict):
 
 
 @app.post("/api/forecast/smoothing/auto")
-async def smoothing_auto(payload: dict):
+def smoothing_auto(payload: dict):
     data = payload.get("data")
     windows = payload.get("windows")
     thresholds = payload.get("thresholds")
@@ -2764,7 +2861,7 @@ async def smoothing_auto(payload: dict):
 
 
 @app.post("/api/forecast/phase1")
-async def phase1(payload: dict):
+def phase1(payload: dict):
     data = payload.get("data")
     config = payload.get("config")
     holidays = payload.get("holidays")
@@ -2786,7 +2883,7 @@ async def phase1(payload: dict):
 
 
 @app.post("/api/forecast/phase2")
-async def phase2(payload: dict):
+def phase2(payload: dict):
     data = payload.get("data")
     start_date = payload.get("start_date")
     end_date = payload.get("end_date")
@@ -2827,7 +2924,7 @@ async def phase2(payload: dict):
 
 
 @app.post("/api/forecast/transformations/apply")
-async def transformations_apply(payload: dict):
+def transformations_apply(payload: dict):
     data = payload.get("data")
     result = apply_transformations(data)
     if not result.get("results"):
@@ -2846,7 +2943,7 @@ async def transformations_apply(payload: dict):
 
 
 @app.post("/api/forecast/seasonality/build")
-async def build_seasonality_endpoint(payload: dict):
+def build_seasonality_endpoint(payload: dict):
     ratio_table = payload.get("ratio_table")
     result = build_seasonality(ratio_table)
     if not result.get("results"):
@@ -2864,7 +2961,7 @@ async def build_seasonality_endpoint(payload: dict):
 
 
 @app.post("/api/forecast/seasonality/apply")
-async def apply_seasonality_endpoint(payload: dict):
+def apply_seasonality_endpoint(payload: dict):
     capped_rows = payload.get("capped_rows")
     lower_cap = payload.get("lower_cap")
     upper_cap = payload.get("upper_cap")
@@ -2885,7 +2982,7 @@ async def apply_seasonality_endpoint(payload: dict):
 
 
 @app.post("/api/forecast/volume-summary/prophet-smoothing")
-async def volume_summary_prophet(payload: dict):
+def volume_summary_prophet(payload: dict):
     normalized_ratio = payload.get("normalized_ratio")
     ratio_table = payload.get("ratio_table")
     iq_table = payload.get("iq_table")
@@ -2906,7 +3003,7 @@ async def volume_summary_prophet(payload: dict):
 
 
 @app.post("/api/forecast/volume-summary/prophet-save")
-async def volume_summary_prophet_save(payload: dict):
+def volume_summary_prophet_save(payload: dict):
     if not isinstance(payload, dict):
         raise HTTPException(status_code=400, detail="Prophet save payload must be a JSON object.")
     edited = payload.get("edited")
@@ -2918,7 +3015,7 @@ async def volume_summary_prophet_save(payload: dict):
 
 
 @app.post("/api/forecast/phase2/volume-split")
-async def phase2_volume_split(payload: dict):
+def phase2_volume_split(payload: dict):
     base_df = payload.get("base_df")
     split_rows = payload.get("split_rows")
     fg_monthly = payload.get("forecast_group_monthly")
@@ -2929,7 +3026,7 @@ async def phase2_volume_split(payload: dict):
 
 
 @app.post("/api/forecast/daily-interval")
-async def daily_interval(payload: dict):
+def daily_interval(payload: dict):
     transform_df = payload.get("transform_df")
     interval_df = payload.get("interval_df")
     forecast_month = payload.get("forecast_month")
@@ -3233,7 +3330,7 @@ def push_forecast_to_plan(payload: dict):
 
 
 @app.post("/api/forecast/save/smoothing")
-async def save_smoothing_results(payload: dict):
+def save_smoothing_results(payload: dict):
     results = payload.get("results") if isinstance(payload, dict) else None
     if isinstance(results, dict):
         payload = results
@@ -3245,7 +3342,7 @@ async def save_smoothing_results(payload: dict):
 
 
 @app.post("/api/forecast/save/forecast-results")
-async def save_forecast(payload: dict):
+def save_forecast(payload: dict):
     results = payload.get("results") if isinstance(payload, dict) else None
     if isinstance(results, dict):
         payload = results
@@ -3268,7 +3365,7 @@ async def save_forecast(payload: dict):
 
 
 @app.post("/api/forecast/save/adjusted-forecast")
-async def save_adjusted(payload: dict):
+def save_adjusted(payload: dict):
     if not isinstance(payload, dict):
         raise HTTPException(status_code=400, detail="Invalid adjusted forecast payload.")
     rows = (
@@ -3285,7 +3382,7 @@ async def save_adjusted(payload: dict):
 
 
 @app.post("/api/forecast/save/transformations")
-async def save_transformations_results(payload: dict):
+def save_transformations_results(payload: dict):
     if not isinstance(payload, dict):
         raise HTTPException(status_code=400, detail="Invalid transformations payload.")
     rows = payload.get("data") or payload.get("rows") or payload.get("final")
@@ -3307,7 +3404,7 @@ async def save_transformations_results(payload: dict):
 
 
 @app.post("/api/forecast/save/daily-interval")
-async def save_daily_interval_results(payload: dict):
+def save_daily_interval_results(payload: dict):
     if not isinstance(payload, dict):
         raise HTTPException(status_code=400, detail="Invalid daily/interval payload.")
     results = payload.get("results") if isinstance(payload.get("results"), dict) else {}

@@ -42,14 +42,38 @@ def _safe_user() -> str:
     return cleaned or "user"
 
 
+_CSV_INJECTION_PREFIXES = ("=", "+", "-", "@", "\t", "\r")
+
+
+def _neutralize_cell(value: Any) -> Any:
+    # Prefix risky leading characters so spreadsheet apps treat the value as
+    # text instead of a formula (CSV/formula injection mitigation).
+    if isinstance(value, str) and value and value[0] in _CSV_INJECTION_PREFIXES:
+        return "'" + value
+    return value
+
+
+def sanitize_export(df: pd.DataFrame) -> pd.DataFrame:
+    """Return a copy with string cells neutralized against formula injection."""
+    if not isinstance(df, pd.DataFrame) or df.empty:
+        return df
+    obj_cols = df.select_dtypes(include="object").columns
+    if not len(obj_cols):
+        return df
+    out = df.copy()
+    for col in obj_cols:
+        out[col] = out[col].map(_neutralize_cell)
+    return out
+
+
 def save_smoothing(payload: dict) -> dict:
     outdir = _exports_dir()
     smoothed = pd.DataFrame(payload.get("smoothed", []))
     seasonality = pd.DataFrame(payload.get("capped", []))
     smoothed_path = outdir / "smoothing_smoothed.csv"
     seasonality_path = outdir / "smoothing_seasonality.csv"
-    smoothed.to_csv(smoothed_path, index=False)
-    seasonality.to_csv(seasonality_path, index=False)
+    sanitize_export(smoothed).to_csv(smoothed_path, index=False)
+    sanitize_export(seasonality).to_csv(seasonality_path, index=False)
     return {
         "status": "saved",
         "paths": [str(smoothed_path), str(seasonality_path)],
@@ -62,8 +86,8 @@ def save_forecast_results(payload: dict) -> dict:
     accuracy = pd.DataFrame(payload.get("accuracy", []))
     combined_path = outdir / "forecast_results.csv"
     accuracy_path = outdir / "forecast_accuracy.csv"
-    combined.to_csv(combined_path, index=False)
-    accuracy.to_csv(accuracy_path, index=False)
+    sanitize_export(combined).to_csv(combined_path, index=False)
+    sanitize_export(accuracy).to_csv(accuracy_path, index=False)
     return {
         "status": "saved",
         "paths": [str(combined_path), str(accuracy_path)],
@@ -77,7 +101,7 @@ def save_adjusted_forecast(df: pd.DataFrame, group_name: Optional[str] = None) -
     group = re.sub(r"[^A-Za-z0-9_-]+", "_", str(group_name or "forecast_group")).strip("_") or "forecast_group"
     filename = f"Monthly_Forecast_{group}_{ts}_{user}.csv"
     fpath = base_dir / filename
-    df.to_csv(fpath, index=False)
+    sanitize_export(df).to_csv(fpath, index=False)
     return {"status": "saved", "paths": [str(fpath)]}
 
 
@@ -130,7 +154,7 @@ def save_transformations(df: pd.DataFrame) -> dict:
     owner = _safe_user()
     fname = f"Monthly_Forecast_with_Adjustments_{date_str}_{time_str}_{owner}.csv"
     fpath = base_dir / fname
-    export_df.to_csv(fpath, index=False)
+    sanitize_export(export_df).to_csv(fpath, index=False)
     return {"status": "saved", "paths": [str(fpath)]}
 
 
@@ -154,8 +178,8 @@ def save_daily_interval(payload: dict) -> dict:
     ts = pd.Timestamp.now()
     daily_path = output_dir / f"Final_Daily_Forecast_{ts:%Y%m%d_%H%M%S}.csv"
     interval_path = output_dir / f"Interval_Daily_Forecast_{ts:%Y%m%d_%H%M%S}.csv"
-    daily.to_csv(daily_path, index=False)
-    interval.to_csv(interval_path, index=False)
+    sanitize_export(daily).to_csv(daily_path, index=False)
+    sanitize_export(interval).to_csv(interval_path, index=False)
     try:
         (output_dir / "latest_forecast_path.txt").write_text(str(daily_path))
     except Exception:

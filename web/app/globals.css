@@ -3696,3 +3696,108 @@ a {
 .input.rashvi {
   height: fit-content;
 }
+
+/* ===== Ops dashboard: smart insights, trend deltas, health score ===== */
+.ops-kpi-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.ops-kpi-spark {
+  margin-top: 8px;
+  min-height: 40px;
+}
+
+.ops-delta {
+  font-size: 11px;
+  font-weight: 700;
+  padding: 2px 8px;
+  border-radius: 999px;
+  white-space: nowrap;
+  letter-spacing: 0.01em;
+}
+.ops-delta--good { color: #047857; background: rgba(16, 185, 129, 0.14); }
+.ops-delta--bad { color: #b91c1c; background: rgba(239, 68, 68, 0.14); }
+.ops-delta--flat { color: var(--ops-muted); background: rgba(100, 116, 139, 0.12); }
+
+/* Capacity health KPI card */
+.ops-health-card[data-tone="good"] { border-color: rgba(22, 163, 74, 0.35); background: linear-gradient(180deg, rgba(220, 252, 231, 0.7), #fff); }
+.ops-health-card[data-tone="info"] { border-color: rgba(37, 99, 235, 0.3); background: linear-gradient(180deg, rgba(219, 234, 254, 0.7), #fff); }
+.ops-health-card[data-tone="warning"] { border-color: rgba(217, 119, 6, 0.35); background: linear-gradient(180deg, rgba(254, 243, 199, 0.7), #fff); }
+.ops-health-card[data-tone="critical"] { border-color: rgba(220, 38, 38, 0.35); background: linear-gradient(180deg, rgba(254, 226, 226, 0.7), #fff); }
+
+.ops-health-score {
+  margin-top: 6px;
+  font-size: 30px;
+  font-weight: 700;
+  color: var(--ops-ink);
+}
+.ops-health-score span { font-size: 14px; font-weight: 600; color: var(--ops-muted); margin-left: 2px; }
+
+.ops-health-bar {
+  margin-top: 10px;
+  height: 8px;
+  border-radius: 999px;
+  background: rgba(15, 23, 42, 0.08);
+  overflow: hidden;
+}
+.ops-health-bar span { display: block; height: 100%; border-radius: 999px; transition: width 0.5s ease; }
+.ops-health-card[data-tone="good"] .ops-health-bar span { background: #16a34a; }
+.ops-health-card[data-tone="info"] .ops-health-bar span { background: #2563eb; }
+.ops-health-card[data-tone="warning"] .ops-health-bar span { background: #d97706; }
+.ops-health-card[data-tone="critical"] .ops-health-bar span { background: #dc2626; }
+
+/* Smart insights panel */
+.ops-panel--smart .ops-panel__header { align-items: center; }
+
+.ops-health-chip {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 14px;
+  border-radius: 14px;
+  font-weight: 700;
+}
+.ops-health-chip__score { font-size: 22px; line-height: 1; }
+.ops-health-chip__label { font-size: 12px; text-transform: uppercase; letter-spacing: 0.06em; }
+.ops-health-chip--good { color: #047857; background: rgba(16, 185, 129, 0.14); }
+.ops-health-chip--info { color: #1d4ed8; background: rgba(37, 99, 235, 0.12); }
+.ops-health-chip--warning { color: #b45309; background: rgba(217, 119, 6, 0.14); }
+.ops-health-chip--critical { color: #b91c1c; background: rgba(239, 68, 68, 0.14); }
+
+.ops-insight-feed {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+  gap: 12px;
+}
+
+.ops-insight-item {
+  display: flex;
+  gap: 12px;
+  padding: 14px 16px;
+  border-radius: 14px;
+  background: #fff;
+  border: 1px solid var(--ops-border);
+  border-left-width: 4px;
+  box-shadow: 0 6px 14px rgba(15, 23, 42, 0.05);
+}
+.ops-insight-item--critical { border-left-color: #dc2626; }
+.ops-insight-item--warning { border-left-color: #d97706; }
+.ops-insight-item--good { border-left-color: #16a34a; }
+.ops-insight-item--info { border-left-color: #2563eb; }
+
+.ops-insight-item__icon { font-size: 20px; line-height: 1.4; }
+.ops-insight-item__body { min-width: 0; }
+.ops-insight-item__title { font-weight: 700; color: var(--ops-ink); font-size: 14px; }
+.ops-insight-item__detail { margin-top: 3px; font-size: 12.5px; color: var(--ops-muted); line-height: 1.45; }
+
+.ops-insight-empty {
+  grid-column: 1 / -1;
+  padding: 18px;
+  text-align: center;
+  color: var(--ops-muted);
+  border: 1px dashed var(--ops-border);
+  border-radius: 14px;
+}

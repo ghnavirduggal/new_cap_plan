@@ -757,15 +757,31 @@ export default function HomePage() {
             rows: Array<Record<string, any>>,
             keys: string[],
             currentCol?: string | null,
-            previousCol?: string | null
+            previousCol?: string | null,
+            addKeys?: string[]
           ) => {
             const current = toNumber(metricValue(rows, keys, currentCol || undefined));
             const previous = toNumber(metricValue(rows, keys, previousCol || undefined));
             if (current === null || previous === null) return null;
-            return current - previous;
+            let curr = current;
+            let prev = previous;
+            if (addKeys && addKeys.length) {
+              // Effective volume includes carried-over backlog (Back Office sizes
+              // capacity on Forecast + Backlog). Missing backlog counts as 0.
+              curr += toNumber(metricValue(rows, addKeys, currentCol || undefined)) ?? 0;
+              prev += toNumber(metricValue(rows, addKeys, previousCol || undefined)) ?? 0;
+            }
+            return curr - prev;
           };
 
-          const driversSpec = [
+          const driversSpec: Array<{
+            title: string;
+            rows: Array<Record<string, any>>;
+            keys: string[];
+            addKeys?: string[];
+            worseIf: "increase" | "decrease";
+            suffix: string;
+          }> = [
             {
               title: "Shrinkage",
               rows: shr,
@@ -783,7 +799,12 @@ export default function HomePage() {
             {
               title: "Volume",
               rows: fw,
-              keys: ["Forecast", "Actual Volume", "Backlog (Items)"],
+              // Effective workload that drives capacity. Back Office carries the
+              // previous period's backlog into the forecast (Forecast + Backlog),
+              // so backlog is added on top of the base volume rather than picked
+              // as an alternative to it.
+              keys: ["Forecast", "Actual Volume"],
+              addKeys: ["Backlog (Items)"],
               worseIf: "increase" as const,
               suffix: "calls"
             },
@@ -805,7 +826,7 @@ export default function HomePage() {
 
           const driverChanges = driversSpec
             .map((spec) => {
-              const delta = metricChange(spec.rows, spec.keys, lastActualCol, prevActualCol);
+              const delta = metricChange(spec.rows, spec.keys, lastActualCol, prevActualCol, spec.addKeys);
               if (delta === null) return null;
               const isWorse =
                 spec.worseIf === "increase" ? delta > 0 : spec.worseIf === "decrease" ? delta < 0 : false;

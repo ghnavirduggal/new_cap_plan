@@ -113,6 +113,63 @@ def _fill_tables_fixed_daily(ptype, pid, _fw_cols_unused, _tick, whatif=None):
     # Backlog logic is enabled only when a backlog/queue metric is selected
     backlog_enabled = ("backlog" in lower_opts) or ("queue" in lower_opts) or ("req_queue" in upper_opts)
 
+    # ---- read persisted What-If (mirrors weekly _calc behaviour) ----
+    # The daily grain is a separate module, so it must load and apply the same
+    # what-if dials (vol/aht/shrink) and active window that the weekly module
+    # uses, otherwise dials silently have no effect at the daily grain.
+    wf_start = ""
+    wf_end = ""
+    try:
+        wf_df = load_df(f"plan_{pid}_whatif")
+        if isinstance(wf_df, pd.DataFrame) and not wf_df.empty:
+            last = wf_df.tail(1).iloc[0]
+            wf_start = str(last.get("start_week") or "").strip()
+            wf_end = str(last.get("end_week") or "").strip()
+            raw = last.get("overrides")
+            wf_ovr = {}
+            if isinstance(raw, dict):
+                wf_ovr = raw
+            elif isinstance(raw, str) and raw.strip():
+                import json as _json, ast as _ast
+                try:
+                    wf_ovr = _json.loads(raw)
+                except Exception:
+                    try:
+                        wf_ovr = _ast.literal_eval(raw)
+                    except Exception:
+                        wf_ovr = {}
+            if isinstance(wf_ovr, dict):
+                whatif = dict(whatif or {})
+                whatif.update(wf_ovr)
+    except Exception:
+        pass
+    whatif = dict(whatif or {})
+
+    def _wf_f(x, d=0.0):
+        try:
+            return float(x)
+        except Exception:
+            return d
+    aht_delta = _wf_f(whatif.get("aht_delta"), 0.0)      # %
+    shrink_delta = _wf_f(whatif.get("shrink_delta"), 0.0)  # %
+    vol_delta = _wf_f(whatif.get("vol_delta"), 0.0)        # %
+    _today_w_default = str(_monday(pd.Timestamp("today").date()))
+
+    def _wf_active_day(d) -> bool:
+        """Active if the day's week-start falls inside the what-if window.
+        Matches weekly semantics: with no window, only future weeks are active."""
+        try:
+            w = str(_monday(d))
+        except Exception:
+            return False
+        if not wf_start and not wf_end:
+            return w > _today_w_default
+        if wf_start and w < str(wf_start):
+            return False
+        if wf_end and w > str(wf_end):
+            return False
+        return True
+
     # Build scope key and assemble RAW uploads
     ch = ch_name.lower()
     sk = _canon_scope(plan.get("vertical"),
@@ -748,14 +805,17 @@ def _fill_tables_fixed_daily(ptype, pid, _fw_cols_unused, _tick, whatif=None):
     except Exception:
         m_fte_b = {}
 
-    var_mtp = [ (m_fte_f.get(c, 0.0) - m_fte_a.get(c, 0.0)) for c in day_ids ]
-    var_tac = [ (m_fte_t.get(c, 0.0) - m_fte_a.get(c, 0.0)) for c in day_ids ]
-    var_bud = [ (m_fte_b.get(c, 0.0) - m_fte_a.get(c, 0.0)) for c in day_ids ]
+    # Variance rows are computed AFTER the FTE @ Forecast re-size (backlog +
+    # what-if) below, so they reflect the effective required FTE.
 
     # Daily roll-ups used for backlog/queue and FW grid
     volF = _daily_sum(dfF, weight_col_upload)
     volA = _daily_sum(dfA, weight_col_upload)
     volT = _daily_sum(dfT, weight_col_upload)
+    # Snapshot the raw forecast volume BEFORE any backlog carryover so the
+    # FTE @ Forecast can be re-sized on the effective (Forecast + Backlog)
+    # workload via the linear volume ratio further below.
+    volF_base = dict(volF)
 
     backlog_map: dict[str, float] = {}
     queue_map: dict[str, float] = {}
@@ -792,6 +852,48 @@ def _fill_tables_fixed_daily(ptype, pid, _fw_cols_unused, _tick, whatif=None):
             add = float(backlog_map.get(cur_d, 0.0) or 0.0)
             if add:
                 volF[nxt_d] = float(volF.get(nxt_d, 0.0) or 0.0) + add
+
+    # ---- Re-size FTE @ Forecast on the effective workload + what-if dials ----
+    # BO daily FTE is linear in volume and SUT (items*sut/denom), so the base
+    # required FTE (m_fte_f) can be scaled by:
+    #   • the Forecast+Backlog volume ratio  (effective volF / raw volF_base)
+    #   • the what-if volume delta           (active days only)
+    #   • the what-if AHT/SUT delta          (active days only)
+    #   • the what-if shrink delta           (active days only; grows denom)
+    # For voice/chat/outbound the base FTE is an Erlang sumproduct rollup; the
+    # weekly module applies the same linear scaling to the rolled-up FTE for
+    # what-if (backlog is Back-Office-only), so we stay consistent here.
+    if vol_delta or aht_delta or shrink_delta or (is_bo and backlog_enabled):
+        for d in day_ids:
+            base_f = float(m_fte_f.get(d, 0.0) or 0.0)
+            if base_f == 0.0:
+                continue
+            base_v = float(volF_base.get(d, 0.0) or 0.0)
+            eff_v = float(volF.get(d, 0.0) or 0.0)
+            active = _wf_active_day(d)
+            # 1) Forecast + Backlog: scale by effective/raw volume (BO only;
+            #    voice/chat/ob keep ratio == 1 since volF is uncarried there).
+            if base_v > 0 and eff_v != base_v:
+                base_f *= (eff_v / base_v)
+            # 2) what-if volume delta on active days (forecast portion)
+            if active and vol_delta:
+                base_f *= (1.0 + vol_delta / 100.0)
+            # 3) what-if AHT/SUT delta on active days
+            if active and aht_delta:
+                base_f *= (1.0 + aht_delta / 100.0)
+            # 4) what-if shrink delta on active days (more shrink → more FTE)
+            if active and shrink_delta:
+                base_f /= max(0.1, 1.0 - (shrink_delta / 100.0))
+            m_fte_f[d] = base_f
+            # Reflect the volume dial in the displayed Forecast row too, so the
+            # grid and the required FTE stay consistent.
+            if active and vol_delta:
+                volF[d] = eff_v * (1.0 + vol_delta / 100.0)
+
+    # Variance rows use the effective (post backlog + what-if) FTE @ Forecast.
+    var_mtp = [ (m_fte_f.get(c, 0.0) - m_fte_a.get(c, 0.0)) for c in day_ids ]
+    var_tac = [ (m_fte_t.get(c, 0.0) - m_fte_a.get(c, 0.0)) for c in day_ids ]
+    var_bud = [ (m_fte_b.get(c, 0.0) - m_fte_a.get(c, 0.0)) for c in day_ids ]
 
     # Build the upper DataFrame
     upper_payload = {

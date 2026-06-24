@@ -5,6 +5,8 @@ import (
   "log"
   "net/http"
   "os"
+  "strings"
+  "time"
 
   "github.com/go-chi/chi/v5"
   "github.com/go-chi/cors"
@@ -23,11 +25,13 @@ type CalcResponse struct {
 
 func main() {
   r := chi.NewRouter()
+  // Never combine a wildcard origin with credentials. Use an explicit
+  // allowlist from CORS_ORIGINS (comma-separated); default to the dev frontend.
   r.Use(cors.Handler(cors.Options{
-    AllowedOrigins:   []string{"*"},
+    AllowedOrigins:   corsOrigins(),
     AllowedMethods:   []string{"GET", "POST", "OPTIONS"},
     AllowedHeaders:   []string{"Accept", "Authorization", "Content-Type", "X-CSRF-Token"},
-    AllowCredentials: true,
+    AllowCredentials: false,
     MaxAge:           300,
   }))
 
@@ -45,7 +49,29 @@ func main() {
 
   addr := envOrDefault("ENGINE_ADDR", ":8081")
   log.Printf("engine listening on %s", addr)
-  log.Fatal(http.ListenAndServe(addr, r))
+  httpSrv := &http.Server{
+    Addr:              addr,
+    Handler:           r,
+    ReadHeaderTimeout: 10 * time.Second,
+    ReadTimeout:       60 * time.Second,
+    WriteTimeout:      120 * time.Second,
+    IdleTimeout:       120 * time.Second,
+  }
+  log.Fatal(httpSrv.ListenAndServe())
+}
+
+func corsOrigins() []string {
+  raw := envOrDefault("CORS_ORIGINS", "http://localhost:3000")
+  out := []string{}
+  for _, part := range strings.Split(raw, ",") {
+    if trimmed := strings.TrimSpace(part); trimmed != "" && trimmed != "*" {
+      out = append(out, trimmed)
+    }
+  }
+  if len(out) == 0 {
+    return []string{"http://localhost:3000"}
+  }
+  return out
 }
 
 func envOrDefault(key, fallback string) string {

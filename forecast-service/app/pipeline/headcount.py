@@ -5,6 +5,8 @@ import re
 import json
 import hashlib
 import os
+import threading
+import time
 from typing import Any, Optional
 
 import numpy as np
@@ -173,10 +175,47 @@ def save_headcount(df: pd.DataFrame) -> dict:
     except PermissionError:
         # Postgres write already succeeded; skip legacy CSV sync if filesystem is read-only.
         pass
+    invalidate_headcount_cache()
     return {"status": "saved", "rows": len(df.index), "path": str(path), "dataset_hash": dataset_hash}
 
 
+# Short-lived cache: the settings/budget/shrinkage pages each call the
+# dropdown helpers (business_areas, sub_business_areas, locations, sites,
+# critical_team_options, preview_headcount) which previously triggered a full
+# headcount table load + JSON re-parse apiece. They now share one snapshot.
+# Invalidated immediately on save_headcount so uploads are reflected at once.
+_HC_CACHE: dict[str, Any] = {"df": None, "ts": 0.0}
+_HC_CACHE_LOCK = threading.Lock()
+
+
+def _hc_cache_ttl() -> float:
+    try:
+        return float(os.getenv("HEADCOUNT_CACHE_TTL", "30") or 30)
+    except (TypeError, ValueError):
+        return 30.0
+
+
+def invalidate_headcount_cache() -> None:
+    with _HC_CACHE_LOCK:
+        _HC_CACHE["df"] = None
+        _HC_CACHE["ts"] = 0.0
+
+
 def load_headcount() -> pd.DataFrame:
+    ttl = _hc_cache_ttl()
+    if ttl > 0:
+        cached = _HC_CACHE.get("df")
+        if cached is not None and (time.monotonic() - _HC_CACHE.get("ts", 0.0)) < ttl:
+            return cached
+    df = _load_headcount_uncached()
+    if ttl > 0:
+        with _HC_CACHE_LOCK:
+            _HC_CACHE["df"] = df
+            _HC_CACHE["ts"] = time.monotonic()
+    return df
+
+
+def _load_headcount_uncached() -> pd.DataFrame:
     if has_dsn():
         ensure_headcount_schema()
         try:

@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import os
+import threading
 from contextlib import contextmanager
 from typing import Iterator, Optional, Any
 
 import psycopg2
+import psycopg2.pool
 
 class _Psycopg2Compat:
     """Minimal execute() wrapper for psycopg2 connections."""
@@ -30,17 +32,85 @@ def has_dsn() -> bool:
     return bool(_dsn())
 
 
+_POOL: Optional[psycopg2.pool.ThreadedConnectionPool] = None
+_POOL_LOCK = threading.Lock()
+
+
+def _pool_enabled() -> bool:
+    return os.getenv("POSTGRES_POOL", "1").strip().lower() not in {"0", "false", "no", "off"}
+
+
+def _int_env(name: str, default: int) -> int:
+    try:
+        return int(os.getenv(name, str(default)))
+    except (TypeError, ValueError):
+        return default
+
+
+def _get_pool() -> psycopg2.pool.ThreadedConnectionPool:
+    global _POOL
+    if _POOL is not None:
+        return _POOL
+    with _POOL_LOCK:
+        if _POOL is None:
+            dsn = _dsn()
+            if not dsn:
+                raise RuntimeError("POSTGRES_DSN/DATABASE_URL not configured.")
+            mn = max(1, _int_env("POSTGRES_POOL_MIN", 1))
+            mx = max(mn, _int_env("POSTGRES_POOL_MAX", 16))
+            _POOL = psycopg2.pool.ThreadedConnectionPool(mn, mx, dsn)
+    return _POOL
+
+
 @contextmanager
 def db_conn() -> Iterator["_Psycopg2Compat"]:
     dsn = _dsn()
     if not dsn:
         raise RuntimeError("POSTGRES_DSN/DATABASE_URL not configured.")
-    conn = psycopg2.connect(dsn)
+
+    # Reuse pooled connections to avoid paying a TCP+auth handshake per call.
+    # Falls back to a direct connection if pooling is disabled or the pool is
+    # momentarily exhausted, so a burst never fails a request outright.
+    pool = None
+    conn = None
+    pooled = False
+    if _pool_enabled():
+        try:
+            pool = _get_pool()
+            conn = pool.getconn()
+            pooled = True
+        except Exception:
+            conn = None
+            pooled = False
+    if conn is None:
+        conn = psycopg2.connect(dsn)
+
+    bad = False
     try:
         conn.autocommit = True
         yield _Psycopg2Compat(conn)
+    except Exception:
+        bad = True
+        raise
     finally:
-        conn.close()
+        try:
+            if getattr(conn, "closed", 0):
+                bad = True
+        except Exception:
+            bad = True
+        if pooled and pool is not None:
+            try:
+                pool.putconn(conn, close=bad)
+            except Exception:
+                try:
+                    conn.close()
+                except Exception:
+                    pass
+        else:
+            try:
+                conn.close()
+            except Exception:
+                pass
 
 
 @contextmanager

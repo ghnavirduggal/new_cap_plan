@@ -3,6 +3,7 @@ from __future__ import annotations
 import datetime as dt
 import json
 import re
+from functools import lru_cache
 from pathlib import Path
 from typing import Any, Optional
 
@@ -62,9 +63,10 @@ def _format_effective_date(value: dt.date) -> str:
     return value.strftime("%Y%m%d")
 
 
-def _read_settings(path: Path) -> dict:
+@lru_cache(maxsize=2048)
+def _read_settings_cached(path_str: str, mtime_ns: int) -> dict:
     try:
-        data = json.loads(path.read_text())
+        data = json.loads(Path(path_str).read_text())
     except Exception:
         return DEFAULT_SETTINGS.copy()
     if not isinstance(data, dict):
@@ -74,7 +76,20 @@ def _read_settings(path: Path) -> dict:
     return merged
 
 
-def _versioned_settings_files(key: str) -> list[tuple[dt.date, Path]]:
+def _read_settings(path: Path) -> dict:
+    # Cache by (path, mtime) so the per-week settings resolution in plan detail
+    # stops re-reading and re-parsing the same JSON file on every iteration.
+    # A save bumps the mtime, so the cache self-invalidates.
+    try:
+        mtime_ns = path.stat().st_mtime_ns
+    except OSError:
+        return DEFAULT_SETTINGS.copy()
+    # Return a fresh copy so callers can mutate without corrupting the cache.
+    return dict(_read_settings_cached(str(path), mtime_ns))
+
+
+@lru_cache(maxsize=1024)
+def _versioned_settings_files_cached(key: str, dir_mtime_ns: int) -> tuple[tuple[dt.date, Path], ...]:
     out: list[tuple[dt.date, Path]] = []
     prefix = f"settings_{key}_"
     for path in _exports_dir().glob(f"{prefix}*.json"):
@@ -87,7 +102,17 @@ def _versioned_settings_files(key: str) -> list[tuple[dt.date, Path]]:
         except Exception:
             continue
         out.append((eff_date, path))
-    return sorted(out, key=lambda item: item[0])
+    return tuple(sorted(out, key=lambda item: item[0]))
+
+
+def _versioned_settings_files(key: str) -> list[tuple[dt.date, Path]]:
+    # Cache the directory scan by (key, dir-mtime). Adding/removing a versioned
+    # settings file changes the directory mtime and invalidates the cache.
+    try:
+        dir_mtime_ns = _exports_dir().stat().st_mtime_ns
+    except OSError:
+        dir_mtime_ns = 0
+    return list(_versioned_settings_files_cached(key, dir_mtime_ns))
 
 
 def _repo_root() -> Path:

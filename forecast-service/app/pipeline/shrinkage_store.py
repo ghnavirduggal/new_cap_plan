@@ -326,21 +326,26 @@ def _hc_lookup() -> dict:
     journey_col = _pick_col(df, "journey", "business area", "level 0")
     level3_col = _pick_col(df, "level 3", "sub business area", "sub_business_area")
 
-    out = {}
-    for _, row in df.iterrows():
-        brid = str(row.get(brid_col, "")).strip()
-        if not brid:
-            continue
-        out[brid] = {
-            "lm_name": row.get(lm_name_col) if lm_name_col else None,
-            "lm_brid": row.get(lm_brid_col) if lm_brid_col else None,
-            "site": row.get(site_col) if site_col else None,
-            "city": row.get(city_col) if city_col else None,
-            "country": row.get(country_col) if country_col else None,
-            "journey": row.get(journey_col) if journey_col else None,
-            "level_3": row.get(level3_col) if level3_col else None,
-        }
-    return out
+    # Vectorized build (avoids a per-row iterrows pass over the full headcount).
+    field_cols = {
+        "lm_name": lm_name_col,
+        "lm_brid": lm_brid_col,
+        "site": site_col,
+        "city": city_col,
+        "country": country_col,
+        "journey": journey_col,
+        "level_3": level3_col,
+    }
+    sub = pd.DataFrame({"brid": df[brid_col].astype(str).str.strip()})
+    for key, col in field_cols.items():
+        sub[key] = df[col].to_numpy() if col else None
+    sub = sub[sub["brid"] != ""]
+    if sub.empty:
+        return {}
+    # Last occurrence wins (matches the original dict-overwrite behavior).
+    sub = sub.set_index("brid")
+    sub = sub[~sub.index.duplicated(keep="last")]
+    return sub.to_dict("index")
 
 
 def shrinkage_bo_raw_template_df(rows: int = 16) -> pd.DataFrame:

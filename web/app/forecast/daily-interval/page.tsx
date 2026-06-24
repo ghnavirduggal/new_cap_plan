@@ -1026,7 +1026,7 @@ export default function DailyIntervalPage() {
               </div>
             </div>
             <div className="forecast-actions-row">
-              <button className="btn btn-primary" type="button" onClick={handlePushToPlan}>
+              <button className="btn btn-primary" type="button" onClick={handlePushToPlan} disabled={loading}>
                 Push forecast to plan
               </button>
             </div>

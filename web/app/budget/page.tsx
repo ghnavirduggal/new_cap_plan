@@ -35,6 +35,10 @@ const TAB_CONFIG: Record<BudgetTabKey, { label: string; channel: string; sampleB
   ob: { label: "Outbound budget", channel: "Outbound", sampleBase: 15, metric: "aht" }
 };
 
+// Only channels that have a budget tab are selectable — picking a tab-less
+// channel (e.g. Blended/MessageUs) left every tab empty and blocked saving.
+const TAB_CHANNELS = Array.from(new Set(Object.values(TAB_CONFIG).map((t) => t.channel)));
+
 const DEFAULT_TAB_STATE: BudgetTabState = {
   rows: [],
   message: "",
@@ -265,18 +269,22 @@ export default function BudgetPage() {
   const loadOptions = async (ba?: string) => {
     const params = new URLSearchParams();
     if (ba) params.set("ba", ba);
-    const res = await apiGet<{
-      business_areas?: string[];
-      sub_business_areas?: string[];
-      sites?: string[];
-      channels?: string[];
-    }>(`/api/forecast/headcount/options${params.toString() ? `?${params.toString()}` : ""}`);
-    setOptions((prev) => ({
-      businessAreas: res.business_areas ?? prev.businessAreas,
-      subBusinessAreas: res.sub_business_areas ?? (ba ? [] : prev.subBusinessAreas),
-      sites: res.sites ?? (ba ? [] : prev.sites),
-      channels: res.channels ?? prev.channels
-    }));
+    try {
+      const res = await apiGet<{
+        business_areas?: string[];
+        sub_business_areas?: string[];
+        sites?: string[];
+        channels?: string[];
+      }>(`/api/forecast/headcount/options${params.toString() ? `?${params.toString()}` : ""}`);
+      setOptions((prev) => ({
+        businessAreas: res.business_areas ?? prev.businessAreas,
+        subBusinessAreas: res.sub_business_areas ?? (ba ? [] : prev.subBusinessAreas),
+        sites: res.sites ?? (ba ? [] : prev.sites),
+        channels: res.channels ?? prev.channels
+      }));
+    } catch (error: any) {
+      notify("error", error?.message || "Could not load scope options.");
+    }
   };
 
   useEffect(() => {
@@ -289,9 +297,11 @@ export default function BudgetPage() {
   }, [businessArea]);
 
   useEffect(() => {
-    if (!options.channels.length) return;
-    if (options.channels.includes(channel)) return;
-    setChannel(options.channels[0]);
+    // Keep the channel on a tab-backed value.
+    const selectable = TAB_CHANNELS.filter((ch) => !options.channels.length || options.channels.includes(ch));
+    const pool = selectable.length ? selectable : TAB_CHANNELS;
+    if (pool.includes(channel)) return;
+    setChannel(pool[0]);
   }, [options.channels, channel]);
 
   useEffect(() => {
@@ -506,7 +516,7 @@ export default function BudgetPage() {
             <div>
               <div className="label">Channel</div>
               <select className="select" value={channel} onChange={(event) => setChannel(event.target.value)}>
-                {options.channels.map((ch) => (
+                {TAB_CHANNELS.filter((ch) => !options.channels.length || options.channels.includes(ch)).map((ch) => (
                   <option key={ch} value={ch}>
                     {ch}
                   </option>
