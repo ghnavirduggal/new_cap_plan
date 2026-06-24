@@ -259,12 +259,15 @@ def _week_label(d) -> str | None:
     return pd.Timestamp(monday).normalize().date().isoformat()
 
 
-def _nh_effective_count(row) -> int:
+def _nh_effective_count(row, pt_fte_ratio: float = 0.5) -> int:
     """
     Effective class size:
-      - If billable_hc > 0 ? use it.
-      - Else Full-Time ? grads_needed
-      - Else Part-Time ? ceil(grads_needed / 2)
+      - If billable_hc > 0 -> use it.
+      - Else Full-Time -> grads_needed
+      - Else Part-Time -> ceil(grads_needed * pt_fte_ratio)
+
+    pt_fte_ratio is configurable (Settings: pt_fte_ratio, default 0.5 = two PT
+    heads ~= one FTE).
     """
     billable = pd.to_numeric(row.get("billable_hc"), errors="coerce")
     if pd.notna(billable) and billable > 0:
@@ -273,7 +276,12 @@ def _nh_effective_count(row) -> int:
     grads = int(pd.to_numeric(row.get("grads_needed"), errors="coerce") or 0)
     emp   = str(row.get("emp_type", "")).strip().lower()
     if emp == "part-time":
-        return int(math.ceil(grads / 2.0))
+        try:
+            ratio = float(pt_fte_ratio)
+        except Exception:
+            ratio = 0.5
+        ratio = ratio if ratio > 0 else 0.5
+        return int(math.ceil(grads * ratio))
     return int(grads)
 
 
@@ -2240,7 +2248,7 @@ def _fill_tables_fixed(ptype, pid, fw_cols, _tick, whatif=None, grain: str = 'we
             return pd.Timestamp(monday).normalize().date().isoformat()
 
         for _, r in df.iterrows():
-            n = _nh_effective_count(r)
+            n = _nh_effective_count(r, pt_fte_ratio=settings.get("pt_fte_ratio", 0.5))
             if n <= 0: continue
             ns = _w(r.get("nesting_start")); ne = _w(r.get("nesting_end")); ps = _w(r.get("production_start"))
             if ns and ne:
@@ -2263,7 +2271,7 @@ def _fill_tables_fixed(ptype, pid, fw_cols, _tick, whatif=None, grain: str = 'we
         def _between(w, w_start, w_end) -> bool:
             return (w_start is not None) and (w_end is not None) and (w_start <= w <= w_end)
         for _, r in c.iterrows():
-            n_eff = _nh_effective_count(r)
+            n_eff = _nh_effective_count(r, pt_fte_ratio=settings.get("pt_fte_ratio", 0.5))
             w_ts = _week_label(r.get("training_start"))
             w_te = _week_label(r.get("training_end"))
             w_ns = _week_label(r.get("nesting_start"))

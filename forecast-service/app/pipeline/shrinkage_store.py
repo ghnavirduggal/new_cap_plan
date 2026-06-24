@@ -713,12 +713,14 @@ def normalize_shrink_weekly(data) -> pd.DataFrame:
 
 
 def _compound_overall_pct(ooo_pct: pd.Series, ino_pct: pd.Series) -> pd.Series:
-    ooo = pd.to_numeric(ooo_pct, errors="coerce")
-    ino = pd.to_numeric(ino_pct, errors="coerce")
+    ooo = pd.to_numeric(ooo_pct, errors="coerce").clip(lower=0.0, upper=100.0)
+    ino = pd.to_numeric(ino_pct, errors="coerce").clip(lower=0.0, upper=100.0)
     mask = ooo.notna() & ino.notna()
     availability = (1.0 - (ooo / 100.0)) * (1.0 - (ino / 100.0))
     overall = (1.0 - availability) * 100.0
-    return overall.where(mask)
+    # Clamp to [0,100] so out-of-range uploads can't produce a negative
+    # availability / >100% shrink.
+    return overall.clip(lower=0.0, upper=100.0).where(mask)
 
 
 def _compute_shrink_weekly_percentages(df: pd.DataFrame) -> pd.DataFrame:
@@ -878,8 +880,40 @@ def save_shrinkage_raw(kind: str, df: pd.DataFrame) -> int:
     return int(len(rows))
 
 
-def weekly_avg_active_fte_from_roster(week_start: str = "Monday") -> pd.DataFrame:
-    roster = load_roster_supply()
+def _filter_roster_to_scope(roster: pd.DataFrame, scope: Optional[dict]) -> pd.DataFrame:
+    """Best-effort filter of a roster frame to a plan scope (BA > Sub BA >
+    Modality/Channel > Site). Matches case-insensitively against whatever scope
+    columns the roster carries; if a scope dimension or its column is missing,
+    that dimension is not filtered (so behaviour degrades to today's total)."""
+    if not isinstance(roster, pd.DataFrame) or roster.empty or not scope:
+        return roster
+    cols = {str(c).strip().lower(): c for c in roster.columns}
+
+    def _col(*cands):
+        for c in cands:
+            if c in cols:
+                return cols[c]
+        return None
+
+    dims = [
+        (_col("business area", "business_area", "ba", "vertical"),
+         scope.get("business_area") or scope.get("ba") or scope.get("vertical")),
+        (_col("sub business area", "sub_business_area", "sub_ba", "subba"),
+         scope.get("sub_business_area") or scope.get("sub_ba")),
+        (_col("lob", "channel", "modality"),
+         scope.get("channel") or scope.get("lob") or scope.get("modality")),
+        (_col("site"), scope.get("site")),
+    ]
+    out = roster
+    for col, val in dims:
+        v = str(val or "").strip().lower()
+        if col and v:
+            out = out[out[col].astype(str).str.strip().str.lower() == v]
+    return out
+
+
+def weekly_avg_active_fte_from_roster(week_start: str = "Monday", scope: Optional[dict] = None) -> pd.DataFrame:
+    roster = _filter_roster_to_scope(load_roster_supply(), scope)
     if isinstance(roster, pd.DataFrame) and (not roster.empty) and {"start_date", "fte"}.issubset(roster.columns):
         def _to_date(val):
             try:
@@ -912,7 +946,7 @@ def weekly_avg_active_fte_from_roster(week_start: str = "Monday") -> pd.DataFram
         weekly = daily.groupby("week", as_index=False)["fte"].mean().rename(columns={"fte": "avg_active_fte"})
         return weekly.sort_values("week")
 
-    long = load_roster_long()
+    long = _filter_roster_to_scope(load_roster_long(), scope)
     if long is None or long.empty or "date" not in long.columns:
         return pd.DataFrame(columns=["week", "avg_active_fte"])
     df = long.copy()
@@ -976,10 +1010,14 @@ def attrition_weekly_from_raw(
     df["program"] = program_series.fillna("All").astype(str)
     df["week"] = df["Termination Date"].apply(lambda x: _week_floor(x, week_start))
     wk = df.groupby(["week", "program"], as_index=False)["FTE"].sum().rename(columns={"FTE": "leavers_fte"})
-    den = weekly_avg_active_fte_from_roster(week_start=week_start)
+    # Denominator is the average active FTE for THIS plan's scope (BA > Sub BA >
+    # Modality > Site), not the whole org, so each plan reads its own attrition.
+    den = weekly_avg_active_fte_from_roster(week_start=week_start, scope=scope)
     out = wk.merge(den, on="week", how="left")
-    out["attrition_pct"] = (out["leavers_fte"] / out["avg_active_fte"].replace({0: np.nan})) * 100.0
-    out["attrition_pct"] = out["attrition_pct"].round(2)
+    # Annualized attrition rate: weekly leavers / avg active FTE, scaled to a
+    # full year (x52). A weekly 0.5% reads as ~26% annualized.
+    weekly_rate = out["leavers_fte"] / out["avg_active_fte"].replace({0: np.nan})
+    out["attrition_pct"] = (weekly_rate * 52.0 * 100.0).round(2)
     keep = ["week", "leavers_fte", "avg_active_fte", "attrition_pct", "program"]
     for col in keep:
         if col not in out.columns:
@@ -1035,7 +1073,8 @@ def _normalize_attrition_weekly(df: pd.DataFrame) -> pd.DataFrame:
     # Recompute attrition % when missing and denominator is valid.
     missing_pct = data["attrition_pct"].isna()
     den = data["avg_active_fte"].replace({0: np.nan})
-    data.loc[missing_pct, "attrition_pct"] = (data.loc[missing_pct, "leavers_fte"] / den.loc[missing_pct]) * 100.0
+    # Annualized to match attrition_weekly_from_raw (weekly rate x52).
+    data.loc[missing_pct, "attrition_pct"] = (data.loc[missing_pct, "leavers_fte"] / den.loc[missing_pct]) * 52.0 * 100.0
     data["attrition_pct"] = pd.to_numeric(data["attrition_pct"], errors="coerce").round(2)
     data = data[ATTRITION_WEEKLY_FIELDS]
     data = data.sort_values(["week", "program"]).reset_index(drop=True)

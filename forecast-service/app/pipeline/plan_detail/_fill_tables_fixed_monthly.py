@@ -1429,7 +1429,7 @@ def _fill_tables_fixed_monthly(ptype, pid, fw_cols, _tick, whatif=None):
             if pd.isna(t): return None
             return pd.Timestamp(t).to_period("M").to_timestamp().date().isoformat()
         for _, r in df.iterrows():
-            n = _nh_effective_count(r)
+            n = _nh_effective_count(r, pt_fte_ratio=settings.get("pt_fte_ratio", 0.5))
             if n <= 0: continue
             ns = _m(r.get("nesting_start")); ne = _m(r.get("nesting_end")); ps = _m(r.get("production_start"))
             if ns and ne:
