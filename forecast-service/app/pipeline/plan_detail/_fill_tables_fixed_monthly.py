@@ -3038,16 +3038,26 @@ def _fill_tables_fixed_monthly(ptype, pid, fw_cols, _tick, whatif=None):
         for mm in month_ids:
             vol = float(bF_itm.get(mm, 0.0))
             sut = float(bF_sut.get(mm, s_target_sut))
-            # What-If: apply AHT/SUT delta to requirement calc as well
+            # What-If: apply volume/AHT/SUT deltas to the requirement calc too
+            # (previously only AHT was applied, so a volume what-if had no effect
+            # on BO required FTE).
             try:
-                if _wf_active_month(mm) and aht_delta:
-                    sut = max(1.0, sut * (1.0 + aht_delta / 100.0))
+                if _wf_active_month(mm):
+                    if vol_delta:
+                        vol = vol * (1.0 + vol_delta / 100.0)
+                    if aht_delta:
+                        sut = max(1.0, sut * (1.0 + aht_delta / 100.0))
             except Exception:
                 pass
             sh_pct = float(shr_planned_pct_m.get(mm, np.nan))
             sh_frac = (sh_pct/100.0) if (not pd.isna(sh_pct)) else float(planned_shrink_fraction)
             denom = max(1e-6, monthly_hours * float(util_bo) * max(0.01, 1.0 - sh_frac))
             fte = ((vol * sut) / 3600.0) / denom
+            try:
+                if _wf_active_month(mm) and shrink_delta:
+                    fte /= max(0.1, 1.0 - (shrink_delta / 100.0))
+            except Exception:
+                pass
             upper_df.loc[upper_df["metric"] == "FTE Required @ Forecast Volume", mm] = fte
     elif "FTE Required @ Forecast Volume" in spec["upper"]:
         for mm in month_ids:

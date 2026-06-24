@@ -2939,6 +2939,25 @@ def _fill_tables_fixed(ptype, pid, fw_cols, _tick, whatif=None, grain: str = 'we
     except Exception:
         pass
 
+    # Re-apply What-If volume/AHT/shrink deltas to the FINAL forecast requirement.
+    # The earlier adjustment is overwritten by the weekly recompute + interval
+    # override above, so it must be re-applied here to actually move the
+    # displayed 'FTE Required @ Forecast Volume'.
+    if vol_delta or shrink_delta or aht_delta:
+        for w in list(req_w_forecast.keys()):
+            if not _wf_active(w):
+                continue
+            v = float(req_w_forecast.get(w, 0.0) or 0.0)
+            if vol_delta:
+                v *= (1.0 + vol_delta / 100.0)
+            if aht_delta:
+                # Approximate: FTE requirement scales ~linearly with AHT.
+                v *= (1.0 + aht_delta / 100.0)
+            if shrink_delta:
+                denom = max(0.1, 1.0 - (shrink_delta / 100.0))
+                v /= denom
+            req_w_forecast[w] = v
+
     # Write Overtime Hours (#) from shrinkage raw into FW and merged FW (independent of shrinkage logic)
     if "Overtime Hours (#)" in fw_rows:
         for w in week_ids:
