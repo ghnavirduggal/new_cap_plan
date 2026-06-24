@@ -397,12 +397,21 @@ def auto_smoothing_sweep(
     best = None
     candidates: list[dict[str, Any]] = []
     for window in windows:
+        # The EWMA smoothing, pivot and seasonality work depend only on the
+        # window, not the threshold. Compute it once per window, then re-derive
+        # the cheap (threshold-dependent) anomaly mask for each threshold.
+        try:
+            base_res = smoothing_core(df, window, thresholds[0], None)
+        except Exception:
+            continue
+        base_tbl = base_res.get("smoothed")
+        if base_tbl is None or getattr(base_tbl, "empty", True):
+            continue
+        zscore = pd.to_numeric(base_tbl.get("zscore"), errors="coerce")
         for threshold in thresholds:
-            try:
-                res = smoothing_core(df, window, threshold, None)
-            except Exception:
-                continue
-            score, metrics = _score_smoothing_candidate(res.get("smoothed"))
+            scored_tbl = base_tbl.copy()
+            scored_tbl["is_anomaly"] = zscore.abs() > float(threshold or 3.0)
+            score, metrics = _score_smoothing_candidate(scored_tbl)
             if not np.isfinite(score):
                 continue
             meta = {
@@ -414,17 +423,19 @@ def auto_smoothing_sweep(
             }
             candidates.append(meta)
             if best is None or score < best["meta"]["score"]:
-                best = {"res": res, "meta": meta}
+                best = {"base_res": base_res, "smoothed": scored_tbl, "meta": meta}
 
     if best is None:
         return None, {"error": "no-valid-candidate"}
 
+    win_tbl = best["smoothed"]
+    win_anomalies = win_tbl[win_tbl["is_anomaly"]][["ds", "y", "smoothed", "zscore"]]
     payload = {
-        "smoothed": df_to_records(best["res"]["smoothed"]),
-        "anomalies": df_to_records(best["res"]["anomalies"]),
-        "ratio": df_to_records(best["res"]["ratio"]),
-        "capped": df_to_records(best["res"]["capped"]),
-        "pivot": df_to_records(best["res"]["pivot"]),
+        "smoothed": df_to_records(win_tbl),
+        "anomalies": df_to_records(win_anomalies),
+        "ratio": df_to_records(best["base_res"]["ratio"]),
+        "capped": df_to_records(best["base_res"]["capped"]),
+        "pivot": df_to_records(best["base_res"]["pivot"]),
         "meta": best["meta"],
         "candidates": candidates,
     }
