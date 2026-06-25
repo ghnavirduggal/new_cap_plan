@@ -5089,12 +5089,19 @@ summary:focus-visible,
   color: #b91c1c;
 }
 
-/* Top-down allocation + cross-skill optimiser panels */
+/* Plan approval + top-down allocation + cross-skill optimiser panels */
+.plan-options-approval,
 .plan-options-alloc,
 .plan-options-optimizer {
   margin-top: 16px;
   padding-top: 14px;
   border-top: 1px solid var(--border);
+}
+.plan-options-approval h5 {
+  margin: 0 0 8px;
+  font-size: 13px;
+  font-weight: 700;
+  color: #1f2937;
 }
 .plan-options-alloc h5,
 .plan-options-optimizer h5 {
@@ -5102,6 +5109,40 @@ summary:focus-visible,
   font-size: 13px;
   font-weight: 700;
   color: #1f2937;
+}
+.plan-approval-status {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 10px;
+}
+.plan-approval-chip {
+  font-size: 12px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  padding: 3px 10px;
+  border-radius: 999px;
+}
+.plan-approval-chip--draft { color: #475569; background: rgba(100, 116, 139, 0.14); }
+.plan-approval-chip--submitted { color: #b45309; background: rgba(245, 158, 11, 0.16); }
+.plan-approval-chip--approved { color: #047857; background: rgba(16, 185, 129, 0.16); }
+.plan-approval-chip--rejected { color: #b91c1c; background: rgba(239, 68, 68, 0.14); }
+.plan-approval-meta { font-size: 11px; color: #94a3b8; }
+.plan-approval-history {
+  list-style: none;
+  margin: 10px 0 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.plan-approval-history li {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: 11.5px;
+  color: #475569;
 }
 .plan-alloc-controls {
   display: flex;
