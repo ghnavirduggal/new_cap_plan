@@ -1219,6 +1219,7 @@ export default function HomePage() {
                 <div>Loading plans...</div>
               ) : visiblePlans.length ? (
                 <>
+                  <div className="table-wrap">
                   <table className="table plans-table">
                     <thead>
                       <tr>
@@ -1254,6 +1255,7 @@ export default function HomePage() {
                       ))}
                     </tbody>
                   </table>
+                  </div>
                 </>
               ) : (
                 <div>No plans match the current filters.</div>
