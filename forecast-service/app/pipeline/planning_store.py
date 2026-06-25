@@ -155,6 +155,26 @@ def _to_json(value: object) -> Optional[Json]:
     return Json(value)
 
 
+def _plan_segment(hierarchy_json: object) -> str:
+    """Extract the optional 'segment' tag from a plan's hierarchy_json blob."""
+    raw = hierarchy_json
+    if isinstance(raw, str) and raw.strip():
+        try:
+            raw = json.loads(raw)
+        except Exception:
+            return ""
+    if isinstance(raw, dict):
+        return str(raw.get("segment") or "").strip()
+    return ""
+
+
+def _with_segment(d: dict) -> dict:
+    """Surface the segment tag as a top-level field on a plan dict."""
+    if isinstance(d, dict):
+        d["segment"] = _plan_segment(d.get("hierarchy_json"))
+    return d
+
+
 def _conn_execute(conn: Any, sql: str, params: Optional[tuple] = None):
     """Run SQL for both psycopg2 raw connections and execute-capable wrappers."""
     if hasattr(conn, "execute"):
@@ -454,7 +474,7 @@ def load_plan(plan_id: int) -> dict:
         if not row:
             return {}
         cols = [desc[0] for desc in cur.description]
-    return dict(zip(cols, row))
+    return _with_segment(dict(zip(cols, row)))
 
 
 def _is_plan_locked(plan_id: int) -> bool:
@@ -530,7 +550,7 @@ def list_plans(
         )
         rows = cur.fetchall()
         cols = [desc[0] for desc in cur.description]
-    return [dict(zip(cols, row)) for row in rows]
+    return [_with_segment(dict(zip(cols, row))) for row in rows]
 
 
 def list_business_areas(status_filter: Optional[str] = "current") -> list[str]:

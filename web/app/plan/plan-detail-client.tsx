@@ -29,6 +29,7 @@ type PlanRecord = {
   updated_by?: string;
   created_at?: string;
   updated_at?: string;
+  segment?: string;
 };
 
 type PlanTableConfig = {
@@ -932,6 +933,8 @@ export default function PlanDetailClient({ planId, rollupBa }: PlanDetailClientP
   const [mcResult, setMcResult] = useState<MonteCarloResult | null>(null);
   const [mcBusy, setMcBusy] = useState(false);
   const [mcCv, setMcCv] = useState("");
+  const [segmentInput, setSegmentInput] = useState("");
+  const [segmentBusy, setSegmentBusy] = useState(false);
   const [xskillPreview, setXskillPreview] = useState<WorkforcePreview | null>(null);
   const [xskillLoading, setXskillLoading] = useState(false);
   const [criticalTeamOptions, setCriticalTeamOptions] = useState<SelectOption[]>([]);
@@ -2170,6 +2173,25 @@ export default function PlanDetailClient({ planId, rollupBa }: PlanDetailClientP
       notify("error", error?.message || "Could not run Monte Carlo.");
     } finally {
       setMcBusy(false);
+    }
+  };
+
+  // --- Segment (flexible plan dimension) ----------------------------------
+  useEffect(() => {
+    setSegmentInput(String(planMeta?.segment || ""));
+  }, [planMeta?.segment]);
+
+  const handleSaveSegment = async () => {
+    if (!planId || isRollup) return;
+    setSegmentBusy(true);
+    try {
+      await apiPost("/api/planning/plan/segment", { plan_id: planId, segment: segmentInput.trim() });
+      setPlanMeta((prev) => (prev ? { ...prev, segment: segmentInput.trim() } : prev));
+      setMessage(segmentInput.trim() ? `Segment set to "${segmentInput.trim()}".` : "Segment cleared.");
+    } catch (error: any) {
+      notify("error", error?.message || "Could not save segment.");
+    } finally {
+      setSegmentBusy(false);
     }
   };
 
@@ -3637,6 +3659,34 @@ export default function PlanDetailClient({ planId, rollupBa }: PlanDetailClientP
                     </div>
                   </div>
                 ) : null}
+              </div>
+            ) : null}
+
+            {!isRollup ? (
+              <div className="plan-options-segment">
+                <h5>Segment</h5>
+                <p className="plan-scenarios-hint">
+                  An optional tag for this plan (e.g. tenure, language, LOB, customer tier) you can filter by on the
+                  Planning list. It does not affect any calculation.
+                </p>
+                <div className="plan-segment-controls">
+                  <input
+                    className="input"
+                    type="text"
+                    placeholder="e.g. Tenured, Spanish, Premier"
+                    value={segmentInput}
+                    onChange={(e) => setSegmentInput(e.target.value)}
+                    disabled={segmentBusy || isLocked}
+                  />
+                  <button
+                    type="button"
+                    className="btn btn-primary"
+                    onClick={handleSaveSegment}
+                    disabled={segmentBusy || isLocked}
+                  >
+                    {segmentBusy ? "Saving…" : "Save"}
+                  </button>
+                </div>
               </div>
             ) : null}
 

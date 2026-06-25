@@ -2246,6 +2246,44 @@ def planning_business_areas(status: Optional[str] = Query("current")):
     return {"business_areas": list_business_areas(status)}
 
 
+# --- Segment (flexible plan-level dimension) -------------------------------
+# An optional free-text tag on a plan (e.g. tenure / language / LOB / customer
+# tier) that planners can set and filter by. Stored in plan metadata; it does NOT
+# affect any calculation or rollup.
+
+@app.post("/api/planning/plan/segment")
+def set_plan_segment(payload: dict, request: Request):
+    if not isinstance(payload, dict):
+        raise HTTPException(status_code=400, detail="Segment payload must be a JSON object.")
+    plan_id = payload.get("plan_id")
+    if not plan_id:
+        raise HTTPException(status_code=400, detail="plan_id is required.")
+    _authorize_plan_access(plan_id, request)
+    segment = str(payload.get("segment") or "").strip()[:120]
+    save_plan_meta(int(plan_id), {"segment": segment})
+    try:
+        record_activity(
+            plan_id=int(plan_id),
+            action=f"set segment to '{segment}'" if segment else "cleared segment",
+            actor=current_user_fallback(),
+            entity_type="segment",
+        )
+    except Exception:
+        pass
+    return {"status": "saved", "segment": segment}
+
+
+@app.get("/api/planning/segments")
+def list_plan_segments(status: Optional[str] = Query(None)):
+    """Distinct, non-empty segment tags across plans (for a filter dropdown)."""
+    try:
+        plans = list_plans(status_filter=status, limit=500)
+    except Exception:
+        plans = []
+    segs = sorted({str(p.get("segment") or "").strip() for p in plans if str(p.get("segment") or "").strip()})
+    return {"segments": segs}
+
+
 @app.post("/api/planning/plan")
 def save_plan(payload: dict):
     if not isinstance(payload, dict):
