@@ -232,6 +232,16 @@ summary:focus-visible,
   flex: 0 0 auto;
 }
 
+/* When collapsed, tighten the clip window to the eagle only. The eagle ends at
+   ~16% of the lockup width (≈30px at this height); the visible logo width is
+   (brand width − left padding), so 46 − 14 = 32px shows the eagle plus a sliver
+   of white gap and stops before the "B". Overrides the base calc() width; the
+   width transition animates back to full on expand so the wordmark slides out. */
+.sidebar.collapsed .brand {
+  width: 46px;
+  padding: 0 0 0 14px;
+}
+
 .nav-list {
   width: 100%;
   display: flex;
