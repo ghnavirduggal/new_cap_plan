@@ -5088,3 +5088,23 @@ summary:focus-visible,
 .plan-mc-stat--risk .plan-mc-stat__value {
   color: #b91c1c;
 }
+
+/* Cross-skill optimiser panel */
+.plan-options-optimizer {
+  margin-top: 16px;
+  padding-top: 14px;
+  border-top: 1px solid var(--border);
+}
+.plan-options-optimizer h5 {
+  margin: 0 0 4px;
+  font-size: 13px;
+  font-weight: 700;
+  color: #1f2937;
+}
+.plan-optimizer-result {
+  margin-top: 10px;
+}
+.plan-optimizer-table .num {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
