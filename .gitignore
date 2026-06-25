@@ -13,3 +13,9 @@ __pycache__
 forecast-service/exports/settings_global*.json
 forecast-service/exports/timeseries_*.csv
 forecast-service/exports/*_2[0-9][0-9][0-9][0-1][0-9][0-3][0-9]*.json
+# Runtime stores written at request time (accuracy history, flexible-dimension
+# registry + per-scope dimension sidecar, per-plan tables).
+forecast-service/exports/forecast_accuracy_history.json
+forecast-service/exports/dimension_registry.json
+forecast-service/exports/scope_dimensions_map.json
+forecast-service/exports/plan_tables/
