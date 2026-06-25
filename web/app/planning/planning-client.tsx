@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import AppShell from "../_components/AppShell";
 import Icon, { channelIconName } from "../_components/Icon";
 import MultiSelect from "../_components/MultiSelect";
@@ -93,7 +93,6 @@ function canonicalChannel(label?: string) {
 export default function PlanningClient() {
   const { setLoading } = useGlobalLoader();
   const { notify } = useToast();
-  const kanbanRef = useRef<HTMLDivElement | null>(null);
 
   const [statusFilter, setStatusFilter] = useState<"current" | "history">("current");
   const [alphaFilter, setAlphaFilter] = useState("All");
@@ -512,14 +511,6 @@ export default function PlanningClient() {
     }
   };
 
-  const scrollKanban = (direction: "left" | "right") => {
-    const el = kanbanRef.current;
-    if (!el) return;
-    const step = el.querySelector(".ws-kanban-col")?.getBoundingClientRect().width || 420;
-    const delta = direction === "left" ? -step - 16 : step + 16;
-    el.scrollBy({ left: delta, behavior: "smooth" });
-  };
-
   return (
     <AppShell crumbs="CAP-CONNECT / Planning Workspace">
       <div className="ws-root">
@@ -660,14 +651,6 @@ export default function PlanningClient() {
           <div className="ws-right-card">
             <div className="card">
               <div className="card-body">
-                <div className="ws-right-actions">
-                  <button type="button" className="btn btn-light" onClick={() => scrollKanban("left")}>
-                    <Icon name="chevron-left" size={16} title="Scroll left" />
-                  </button>
-                  <button type="button" className="btn btn-light" onClick={() => scrollKanban("right")}>
-                    <Icon name="chevron-right" size={16} title="Scroll right" />
-                  </button>
-                </div>
                 <div className="ws-right-stack">
                   {selectedBa ? (
                     <Link href={`/plan/ba/${encodeURIComponent(selectedBa)}`} className="ws-ba-card-link">
@@ -677,7 +660,7 @@ export default function PlanningClient() {
                       </div>
                     </Link>
                   ) : null}
-                  <div ref={kanbanRef} className="ws-kanban">
+                  <div className="ws-kanban">
                     {sbaOrder.map((sba) => {
                       const channels = groupedKanban[sba] || {};
                       const channelKeys = Object.keys(channels).sort((a, b) => a.localeCompare(b));

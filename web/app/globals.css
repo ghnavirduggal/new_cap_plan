@@ -3198,13 +3198,6 @@ summary:focus-visible,
   height: 100%;
 }
 
-.ws-right-actions {
-  display: flex;
-  justify-content: flex-end;
-  gap: 8px;
-  margin-bottom: 12px;
-}
-
 .ws-right-stack {
   display: flex;
   flex-direction: column;
