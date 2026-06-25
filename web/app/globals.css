@@ -5089,21 +5089,38 @@ summary:focus-visible,
   color: #b91c1c;
 }
 
-/* Cross-skill optimiser panel */
+/* Top-down allocation + cross-skill optimiser panels */
+.plan-options-alloc,
 .plan-options-optimizer {
   margin-top: 16px;
   padding-top: 14px;
   border-top: 1px solid var(--border);
 }
+.plan-options-alloc h5,
 .plan-options-optimizer h5 {
   margin: 0 0 4px;
   font-size: 13px;
   font-weight: 700;
   color: #1f2937;
 }
+.plan-alloc-controls {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  align-items: end;
+  margin-bottom: 10px;
+}
+.plan-alloc-controls label {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  font-size: 12px;
+  color: #475569;
+}
 .plan-optimizer-result {
   margin-top: 10px;
 }
+.plan-alloc-table .num,
 .plan-optimizer-table .num {
   text-align: right;
   font-variant-numeric: tabular-nums;
