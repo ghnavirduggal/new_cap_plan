@@ -6,6 +6,7 @@ import AppShell from "../../_components/AppShell";
 import DataTable from "../../_components/DataTable";
 import EditableTable from "../../_components/EditableTable";
 import { useGlobalLoader } from "../../_components/GlobalLoader";
+import Icon from "../../_components/Icon";
 import LineChart from "../../_components/LineChart";
 import { useToast } from "../../_components/ToastProvider";
 import { apiGet, apiPost } from "../../../lib/api";
@@ -612,7 +613,7 @@ export default function DailyIntervalPage() {
                   setDupPromptPayload(null);
                 }}
               >
-                ✕
+                <Icon name="close" size={16} />
               </button>
             </div>
             <div className="ws-modal-body">
@@ -671,11 +672,11 @@ export default function DailyIntervalPage() {
         </div>
 
         <div className="forecast-stepper">
-          <div className="forecast-step-pill">📊 Volume Summary</div>
+          <div className="forecast-step-pill"><Icon name="dashboard" size={16} /> Volume Summary</div>
           <span className="forecast-step-arrow">→</span>
-          <div className="forecast-step-pill">⚙️ Transformation Projects</div>
+          <div className="forecast-step-pill"><Icon name="settings" size={16} /> Transformation Projects</div>
           <span className="forecast-step-arrow">→</span>
-          <div className="forecast-step-pill active">⏱️ Daily Interval Forecast</div>
+          <div className="forecast-step-pill active"><Icon name="calendar" size={16} /> Daily Interval Forecast</div>
         </div>
 
         <section className="forecast-section-block">

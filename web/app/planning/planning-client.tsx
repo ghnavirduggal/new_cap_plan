@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import AppShell from "../_components/AppShell";
+import Icon, { channelIconName } from "../_components/Icon";
 import MultiSelect from "../_components/MultiSelect";
 import { useGlobalLoader } from "../_components/GlobalLoader";
 import { useToast } from "../_components/ToastProvider";
@@ -44,16 +45,6 @@ const PLAN_TYPES = [
   "FTE Based Billable Transaction"
 ];
 const DEFAULT_LOCATIONS = ["India", "UK"];
-const CHANNEL_ICON: Record<string, string> = {
-  Backoffice: "💼",
-  Voice: "📞",
-  Chat: "💬",
-  MessageUs: "📩",
-  Outbound: "📣",
-  Blended: "🔀",
-  Email: "✉️",
-  Omni: "🌐"
-};
 const CHAN_ALIASES: Record<string, string> = {
   "back office": "Backoffice",
   "back-office": "Backoffice",
@@ -97,11 +88,6 @@ function canonicalChannel(label?: string) {
   if (!label) return "Backoffice";
   const key = label.trim().toLowerCase();
   return CHAN_ALIASES[key] || label.trim().replace(/\b\w/g, (m) => m.toUpperCase());
-}
-
-function channelIcon(label?: string) {
-  const canonical = canonicalChannel(label);
-  return CHANNEL_ICON[canonical] || "👥";
 }
 
 export default function PlanningClient() {
@@ -657,7 +643,7 @@ export default function PlanningClient() {
                             className={`ws-ba-item ${selectedBa === ba ? "active" : ""}`}
                             onClick={() => setSelectedBa(ba)}
                           >
-                            <span className="ba-ico">💼</span>
+                            <span className="ba-ico"><Icon name="briefcase" size={16} /></span>
                             <span>{ba}</span>
                           </li>
                         ))}
@@ -676,17 +662,17 @@ export default function PlanningClient() {
               <div className="card-body">
                 <div className="ws-right-actions">
                   <button type="button" className="btn btn-light" onClick={() => scrollKanban("left")}>
-                    ◀
+                    <Icon name="chevron-left" size={16} title="Scroll left" />
                   </button>
                   <button type="button" className="btn btn-light" onClick={() => scrollKanban("right")}>
-                    ▶
+                    <Icon name="chevron-right" size={16} title="Scroll right" />
                   </button>
                 </div>
                 <div className="ws-right-stack">
                   {selectedBa ? (
                     <Link href={`/plan/ba/${encodeURIComponent(selectedBa)}`} className="ws-ba-card-link">
                       <div className="ws-ba-card">
-                        <span className="ba-ico">💼</span>
+                        <span className="ba-ico"><Icon name="briefcase" size={16} /></span>
                         <span className="fw-semibold">{selectedBa}</span>
                       </div>
                     </Link>
@@ -712,7 +698,7 @@ export default function PlanningClient() {
                                 return (
                                   <div key={ch} className="ws-kanban-card">
                                     <div className="ws-card-title">
-                                      <span className="me-2">{channelIcon(ch)}</span>
+                                      <span className="me-2"><Icon name={channelIconName(ch)} size={14} /></span>
                                       <span className="fw-semibold">{canonicalChannel(ch)}</span>
                                     </div>
                                     <div className="ws-card-body">
@@ -722,11 +708,11 @@ export default function PlanningClient() {
                                         return (
                                           <div key={siteLabel}>
                                             <div className="ws-card-row ws-l1">
-                                              <span className="me-2">{channelIcon(ch)}</span>
+                                              <span className="me-2"><Icon name={channelIconName(ch)} size={14} /></span>
                                               <span>{canonicalChannel(ch)}</span>
                                             </div>
                                             <div className="ws-card-row ws-l2">
-                                              <span className="me-2">📍</span>
+                                              <span className="me-2"><Icon name="pin" size={14} /></span>
                                               <span>{siteLabel}</span>
                                             </div>
                                             {sitePlans.map((plan) => {
@@ -736,7 +722,7 @@ export default function PlanningClient() {
                                               seen.add(key);
                                               return (
                                                 <div key={`${plan.id}-${name}`} className="ws-card-row ws-l3">
-                                                  <span className="me-2">📝</span>
+                                                  <span className="me-2"><Icon name="edit" size={14} /></span>
                                                   <Link href={`/plan/${plan.id}`} className="ws-plan-link">
                                                     {name}
                                                   </Link>
@@ -757,7 +743,7 @@ export default function PlanningClient() {
                                                       className="ws-del-btn"
                                                       onClick={() => setDeletePlanId(plan.id)}
                                                     >
-                                                      🗑
+                                                      <Icon name="trash" size={16} title="Delete plan" />
                                                     </button>
                                                   ) : null}
                                                 </div>
@@ -790,7 +776,7 @@ export default function PlanningClient() {
               <div className="ws-modal-header">
                 <h3>Add New Plan</h3>
                 <button type="button" className="btn-close" onClick={closeNewPlan}>
-                  ✕
+                  <Icon name="close" size={14} />
                 </button>
               </div>
               <div className="ws-modal-body">
@@ -1063,7 +1049,7 @@ export default function PlanningClient() {
                       aria-label="Remove dimension"
                       onClick={() => setDimEditorRows((prev) => prev.filter((_, i) => i !== idx))}
                     >
-                      ✕
+                      <Icon name="close" size={14} />
                     </button>
                   </div>
                 ))}
@@ -1134,7 +1120,7 @@ export default function PlanningClient() {
                       aria-label="Remove scope tag"
                       onClick={() => setScopeTagsRows((prev) => prev.filter((_, i) => i !== idx))}
                     >
-                      ✕
+                      <Icon name="close" size={14} />
                     </button>
                   </div>
                 ))}

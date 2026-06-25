@@ -1,46 +1,58 @@
-export const forecastSteps = [
+import type { IconName } from "../_components/Icon";
+
+export const forecastSteps: Array<{
+  slug: string;
+  label: string;
+  icon: IconName;
+  description: string;
+}> = [
   {
     slug: "volume-summary",
     label: "Volume Summary",
-    emoji: "📊",
+    icon: "dashboard",
     description: "Upload volume and IQ inputs, review seasonality, and run Phase 1/2 forecasts."
   },
   {
     slug: "transformation-projects",
     label: "Transformation Projects",
-    emoji: "⚙️",
+    icon: "settings",
     description: "Apply sequential adjustments and publish final monthly forecasts."
   },
   {
     slug: "daily-interval",
     label: "Daily & Interval Forecast",
-    emoji: "⏱️",
+    icon: "calendar",
     description: "Split monthly totals into daily and interval targets for planning."
   }
 ];
 
-export const forecastModels = [
+export const forecastModels: Array<{
+  title: string;
+  icon: IconName;
+  description: string;
+  equations: string[];
+}> = [
   {
     title: "Random Forest",
-    icon: "🌳",
+    icon: "layers",
     description: "Aggregates many decision trees for prediction.",
     equations: ["f(x) = (1 / B) * sum_k T_k(x)"]
   },
   {
     title: "Prophet",
-    icon: "📅",
+    icon: "calendar",
     description: "Handles trend, seasonality, and holidays.",
     equations: ["y_t = g_t + s_t + h_t + e_t"]
   },
   {
     title: "XGBoost",
-    icon: "⚡",
+    icon: "bolt",
     description: "Gradient boosting framework for high performance.",
     equations: ["y_hat_i = sum_k f_k(x_i)", "Obj(theta) = sum l(y_i, y_hat_i) + sum Omega(f_k)"]
   },
   {
     title: "ARIMA",
-    icon: "📘",
+    icon: "dashboard",
     description: "Combines autoregression and moving average.",
     equations: [
       "AR(p): y_t = c + phi_1 y_{t-1} + ... + phi_p y_{t-p}",
@@ -50,7 +62,7 @@ export const forecastModels = [
   },
   {
     title: "Triple Exponential Smoothing (Holt-Winters)",
-    icon: "📉",
+    icon: "trend-down",
     description: "Captures level, trend, and seasonality.",
     equations: [
       "Level: l_t = alpha * y_t + (1 - alpha) * (l_{t-1} + b_{t-1})",
@@ -61,7 +73,7 @@ export const forecastModels = [
   },
   {
     title: "Double Exponential Smoothing (Holt's)",
-    icon: "📊",
+    icon: "dashboard",
     description: "Captures level and trend.",
     equations: [
       "Level: l_t = alpha * y_t + (1 - alpha) * l_{t-1}",
@@ -71,19 +83,19 @@ export const forecastModels = [
   },
   {
     title: "Single Exponential Smoothing",
-    icon: "🔹",
+    icon: "trend-up",
     description: "Simple smoothing method.",
     equations: ["l_t = alpha * y_t + (1 - alpha) * l_{t-1}", "Forecast: y_{t+1} = l_t"]
   },
   {
     title: "Linear Regression",
-    icon: "📐",
+    icon: "forecast",
     description: "Predicts using a linear combination of features.",
     equations: ["y_hat = beta_0 + beta_1 x_1 + ... + beta_k x_k", "RSS = sum (y_i - y_hat_i)^2"]
   },
   {
     title: "Weighted Moving Average",
-    icon: "📘",
+    icon: "trend-up",
     description: "Forecasts using a weighted average of past observations.",
     equations: ["y_hat_t = sum (w_i * y_{t-i}), where sum w_i = 1"]
   }

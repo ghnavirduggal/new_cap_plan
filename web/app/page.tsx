@@ -1021,7 +1021,7 @@ export default function HomePage() {
     : "No active plan selected";
 
   return (
-    <AppShell crumbs="Home" crumbIcon="🏠">
+    <AppShell crumbs="Home">
       <div className="home-dashboard">
         {/* Filter fields have been moved into a dropdown triggered by the three‑dots button */}
 

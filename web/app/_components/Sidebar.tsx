@@ -3,19 +3,20 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import clsx from "clsx";
+import Icon, { type IconName } from "./Icon";
 
-const navItems = [
-  { href: "/forecast", label: "Forecasting", icon: "📈" },
-  { href: "/forecast/accuracy", label: "Forecast Accuracy", icon: "🎯" },
-  { href: "/planning", label: "Planning", icon: "📅" },
-  { href: "/budget", label: "Budget", icon: "💰" },
-  { href: "/ops", label: "Operational Dashboard", icon: "📊" },
-  { href: "/new-hire", label: "New Hire Summary", icon: "🧑‍💼" },
-  { href: "/roster", label: "Employee Roster", icon: "🗂️" },
-  { href: "/dataset", label: "Planner Dataset", icon: "🧮" },
-  { href: "/settings", label: "Default Settings", icon: "⚙️" },
-  { href: "/shrinkage", label: "Upload Shrinkage", icon: "📤" },
-  { href: "/help", label: "Help & Docs", icon: "ℹ️" }
+const navItems: { href: string; label: string; icon: IconName }[] = [
+  { href: "/forecast", label: "Forecasting", icon: "forecast" },
+  { href: "/forecast/accuracy", label: "Forecast Accuracy", icon: "target" },
+  { href: "/planning", label: "Planning", icon: "calendar" },
+  { href: "/budget", label: "Budget", icon: "wallet" },
+  { href: "/ops", label: "Operational Dashboard", icon: "dashboard" },
+  { href: "/new-hire", label: "New Hire Summary", icon: "user-plus" },
+  { href: "/roster", label: "Employee Roster", icon: "users" },
+  { href: "/dataset", label: "Planner Dataset", icon: "database" },
+  { href: "/settings", label: "Default Settings", icon: "settings" },
+  { href: "/shrinkage", label: "Upload Shrinkage", icon: "upload" },
+  { href: "/help", label: "Help & Docs", icon: "info" }
 ];
 
 export default function Sidebar({ collapsed }: { collapsed: boolean }) {
@@ -37,7 +38,7 @@ export default function Sidebar({ collapsed }: { collapsed: boolean }) {
             title={item.label}
           >
             <span className="nav-icon" aria-hidden>
-              {item.icon}
+              <Icon name={item.icon} size={20} />
             </span>
             {/* Always rendered so the label fades/clips with the slide instead
                 of popping in and out when the sidebar collapses. */}
