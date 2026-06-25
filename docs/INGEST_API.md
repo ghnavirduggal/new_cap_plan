@@ -50,6 +50,13 @@ Identify the **scope** with `business_area` / `sub_business_area` / `channel` / 
 
 `mode` is `append` (default — overlapping dates are replaced) or `replace`.
 
+Optionally include a `dimensions` object (e.g. `{"tenure": "Tenured", "language": "Spanish"}`)
+to tag this scope with custom flexible-dimension values. It is stored in a
+non-destructive sidecar keyed by the scope (it does **not** change the `scope_key`
+or any calculation) and lets rollups group demand by a registered dimension. When
+a dimension registry is configured, only registered keys are kept. See
+[FLEXIBLE_DIMENSIONS_DESIGN.md](FLEXIBLE_DIMENSIONS_DESIGN.md).
+
 ### Row fields
 
 | Field | Required | Notes |

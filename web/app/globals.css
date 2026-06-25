@@ -5120,16 +5120,21 @@ summary:focus-visible,
 .plan-segment-controls .input {
   flex: 1 1 auto;
 }
-.plan-options-dimensions {
+.plan-options-dimensions,
+.plan-options-demanddim {
   margin-top: 16px;
   padding-top: 14px;
   border-top: 1px solid var(--border);
 }
-.plan-options-dimensions h5 {
+.plan-options-dimensions h5,
+.plan-options-demanddim h5 {
   margin: 0 0 4px;
   font-size: 13px;
   font-weight: 700;
   color: #1f2937;
+}
+.plan-demanddim-result {
+  margin-top: 10px;
 }
 .plan-dim-controls {
   display: flex;

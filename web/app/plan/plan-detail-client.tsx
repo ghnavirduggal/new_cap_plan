@@ -40,6 +40,22 @@ type DimensionDef = {
   values?: string[];
 };
 
+type DemandGroup = {
+  value: string;
+  scope_count: number;
+  required_fte: number;
+  supply_fte: number;
+  gap_fte: number;
+  shortfall_fte: number;
+  surplus_fte: number;
+};
+
+type DemandByDimension = {
+  dimension: string;
+  groups: DemandGroup[];
+  scope_count: number;
+};
+
 type PlanTableConfig = {
   key: string;
   label: string;
@@ -987,6 +1003,9 @@ export default function PlanDetailClient({ planId, rollupBa }: PlanDetailClientP
   const [dimRegistry, setDimRegistry] = useState<DimensionDef[]>([]);
   const [dimValues, setDimValues] = useState<Record<string, string>>({});
   const [dimBusy, setDimBusy] = useState(false);
+  const [demandDim, setDemandDim] = useState("");
+  const [demandRollup, setDemandRollup] = useState<DemandByDimension | null>(null);
+  const [demandBusy, setDemandBusy] = useState(false);
   const [approval, setApproval] = useState<ApprovalState | null>(null);
   const [approvalNote, setApprovalNote] = useState("");
   const [approvalBusy, setApprovalBusy] = useState(false);
@@ -2372,6 +2391,29 @@ export default function PlanDetailClient({ planId, rollupBa }: PlanDetailClientP
       notify("error", error?.message || "Could not save dimensions.");
     } finally {
       setDimBusy(false);
+    }
+  };
+
+  // --- Demand grouped by a custom dimension (opt-in, Phase 2) -------------
+  const handleDemandByDimension = async () => {
+    if (!planId && !rollupBa) return;
+    if (!demandDim) {
+      notify("warning", "Pick a dimension to group by.");
+      return;
+    }
+    setDemandBusy(true);
+    try {
+      const res = await apiPost<DemandByDimension>("/api/planning/plan/scope-balance-by-dimension", {
+        plan_id: planId,
+        rollup_ba: rollupBa,
+        grain,
+        dimension: demandDim
+      });
+      setDemandRollup(res);
+    } catch (error: any) {
+      notify("error", error?.message || "Could not group demand by dimension.");
+    } finally {
+      setDemandBusy(false);
     }
   };
 
@@ -4122,6 +4164,69 @@ export default function PlanDetailClient({ planId, rollupBa }: PlanDetailClientP
                       <div className="plan-scenarios-empty">No transferable surplus to move.</div>
                     )}
                   </div>
+                ) : null}
+              </div>
+            ) : null}
+
+            {editableDims.length ? (
+              <div className="plan-options-demanddim">
+                <h5>Demand by Dimension</h5>
+                <p className="plan-scenarios-hint">
+                  Re-bucket the per-scope FTE balance by a custom dimension (tagged on scopes via ingest or the
+                  scope-dimensions API). This only groups already-computed numbers — it does not change any calculation.
+                </p>
+                <div className="plan-alloc-controls">
+                  <label>
+                    Dimension
+                    <select className="input" value={demandDim} onChange={(e) => setDemandDim(e.target.value)}>
+                      <option value="">Select…</option>
+                      {editableDims.map((d) => (
+                        <option key={d.key} value={d.key}>
+                          {d.label}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                </div>
+                <div className="plan-whatif-actions">
+                  <button type="button" className="btn btn-primary" onClick={handleDemandByDimension} disabled={demandBusy}>
+                    {demandBusy ? "Grouping…" : "Group demand"}
+                  </button>
+                </div>
+                {demandRollup ? (
+                  demandRollup.groups.length ? (
+                    <div className="plan-demanddim-result">
+                      <div className="plan-scenarios-hint">
+                        {demandRollup.scope_count} scopes grouped by {demandRollup.dimension}
+                      </div>
+                      <div className="table-wrap">
+                        <table className="table plan-alloc-table">
+                          <thead>
+                            <tr>
+                              <th>{demandRollup.dimension}</th>
+                              <th className="num">Scopes</th>
+                              <th className="num">Required</th>
+                              <th className="num">Supply</th>
+                              <th className="num">Shortfall</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {demandRollup.groups.map((g) => (
+                              <tr key={g.value}>
+                                <td>{g.value}</td>
+                                <td className="num">{g.scope_count}</td>
+                                <td className="num">{g.required_fte}</td>
+                                <td className="num">{g.supply_fte}</td>
+                                <td className="num">{g.shortfall_fte}</td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+                    </div>
+                  ) : (
+                    <div className="plan-scenarios-empty">No scopes to group.</div>
+                  )
                 ) : null}
               </div>
             ) : null}
