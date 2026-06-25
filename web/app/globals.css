@@ -5089,7 +5089,8 @@ summary:focus-visible,
   color: #b91c1c;
 }
 
-/* Plan approval + top-down allocation + cross-skill optimiser panels */
+/* Plan segment + approval + top-down allocation + cross-skill optimiser panels */
+.plan-options-segment,
 .plan-options-approval,
 .plan-options-alloc,
 .plan-options-optimizer {
@@ -5103,12 +5104,33 @@ summary:focus-visible,
   font-weight: 700;
   color: #1f2937;
 }
+.plan-options-segment h5,
 .plan-options-alloc h5,
 .plan-options-optimizer h5 {
   margin: 0 0 4px;
   font-size: 13px;
   font-weight: 700;
   color: #1f2937;
+}
+.plan-segment-controls {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+.plan-segment-controls .input {
+  flex: 1 1 auto;
+}
+.ws-segment-filter {
+  max-width: 200px;
+}
+.ws-segment-tag {
+  margin-left: 8px;
+  font-size: 10.5px;
+  font-weight: 600;
+  color: #1d4ed8;
+  background: rgba(37, 99, 235, 0.12);
+  border-radius: 999px;
+  padding: 1px 8px;
 }
 .plan-approval-status {
   display: flex;

@@ -24,6 +24,7 @@ type PlanRecord = {
   channel?: string;
   location?: string;
   site?: string;
+  segment?: string;
 };
 
 const ALPHABET = ["All", ..."ABCDEFGHIJKLMNOPQRSTUVWXYZ"];
@@ -106,6 +107,7 @@ export default function PlanningClient() {
   const [businessAreas, setBusinessAreas] = useState<string[]>([]);
   const [selectedBa, setSelectedBa] = useState<string>("");
   const [plans, setPlans] = useState<PlanRecord[]>([]);
+  const [segmentFilter, setSegmentFilter] = useState<string>("All");
   const [headcountSbas, setHeadcountSbas] = useState<string[]>([]);
   const [message, setMessage] = useState("");
   const [newPlanMsg, setNewPlanMsg] = useState("");
@@ -207,9 +209,23 @@ export default function PlanningClient() {
     }
   }, [filteredAreas, selectedBa]);
 
+  const segmentOptions = useMemo(() => {
+    const set = new Set<string>();
+    plans.forEach((p) => {
+      const seg = String(p.segment || "").trim();
+      if (seg) set.add(seg);
+    });
+    return Array.from(set).sort((a, b) => a.localeCompare(b));
+  }, [plans]);
+
+  const visiblePlans = useMemo(() => {
+    if (segmentFilter === "All") return plans;
+    return plans.filter((p) => String(p.segment || "").trim() === segmentFilter);
+  }, [plans, segmentFilter]);
+
   const groupedKanban = useMemo(() => {
     const grouped: Record<string, Record<string, PlanRecord[]>> = {};
-    plans.forEach((plan) => {
+    visiblePlans.forEach((plan) => {
       const sba = (plan.sub_business_area || "Overall").trim() || "Overall";
       const channels = (plan.channel || "").split(",").map((c) => c.trim()).filter(Boolean);
       const channelList = channels.length ? channels : ["Unspecified"];
@@ -221,7 +237,7 @@ export default function PlanningClient() {
       });
     });
     return grouped;
-  }, [plans]);
+  }, [visiblePlans]);
 
   const sbaOrder = useMemo(() => {
     const order: string[] = [];
@@ -235,7 +251,7 @@ export default function PlanningClient() {
     });
     const planSeen = new Set<string>();
     const planOrder: string[] = [];
-    plans.forEach((plan) => {
+    visiblePlans.forEach((plan) => {
       const sba = (plan.sub_business_area || "Overall").trim() || "Overall";
       if (!planSeen.has(sba)) {
         planSeen.add(sba);
@@ -249,7 +265,7 @@ export default function PlanningClient() {
       }
     });
     return order.length ? order : ["Overall"];
-  }, [headcountSbas, plans]);
+  }, [headcountSbas, visiblePlans]);
 
   const openNewPlan = () => {
     setMessage("");
@@ -423,6 +439,21 @@ export default function PlanningClient() {
           <button type="button" className="btn btn-primary" onClick={openNewPlan}>
             + New Cap Plan
           </button>
+          {segmentOptions.length ? (
+            <select
+              className="input ws-segment-filter"
+              value={segmentFilter}
+              onChange={(e) => setSegmentFilter(e.target.value)}
+              aria-label="Filter by segment"
+            >
+              <option value="All">All segments</option>
+              {segmentOptions.map((seg) => (
+                <option key={seg} value={seg}>
+                  {seg}
+                </option>
+              ))}
+            </select>
+          ) : null}
           <div className="ws-search">
             <input
               className="input"
@@ -550,6 +581,9 @@ export default function PlanningClient() {
                                                   <Link href={`/plan/${plan.id}`} className="ws-plan-link">
                                                     {name}
                                                   </Link>
+                                                  {String(plan.segment || "").trim() ? (
+                                                    <span className="ws-segment-tag">{plan.segment}</span>
+                                                  ) : null}
                                                   {ADMIN_DELETE_ENABLED ? (
                                                     <button
                                                       type="button"
