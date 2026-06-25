@@ -4,6 +4,7 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import AppShell from "../_components/AppShell";
+import Icon from "../_components/Icon";
 import DataTable from "../_components/DataTable";
 import EditableTable from "../_components/EditableTable";
 import MultiSelect from "../_components/MultiSelect";
@@ -3109,7 +3110,7 @@ export default function PlanDetailClient({ planId, rollupBa }: PlanDetailClientP
           <>
             <div className="plan-toolbar">
               <label className="upload-box">
-                ⬆️ Upload CSV/Excel
+                <Icon name="upload" size={14} /> Upload CSV/Excel
                 <input
                   type="file"
                   accept=".csv,.xlsx,.xls"
@@ -3214,7 +3215,7 @@ export default function PlanDetailClient({ planId, rollupBa }: PlanDetailClientP
         <div className="plan-header">
           <div className="plan-header-left">
             <Link className="btn btn-light back" href="/planning">
-              🢀
+              <Icon name="arrow-left" size={16} title="Back to planning" />
             </Link>
             <div>
               <div className="plan-title">{planName}</div>
@@ -3223,10 +3224,10 @@ export default function PlanDetailClient({ planId, rollupBa }: PlanDetailClientP
           </div>
           <div className="plan-header-actions">
             <button type="button" className="btn btn-light save" onClick={saveAll} disabled={isRollup}>
-              💾
+              <Icon name="save" size={16} title="Save" />
             </button>
             <button type="button" className="btn btn-light refresh" onClick={refreshAll}>
-              🔄
+              <Icon name="refresh" size={16} title="Refresh" />
             </button>
             <label className="plan-toggle">
               <input
@@ -3249,7 +3250,7 @@ export default function PlanDetailClient({ planId, rollupBa }: PlanDetailClientP
               title="Collapse/Expand"
               onClick={() => setUpperCollapsed((prev) => !prev)}
             >
-              ▼
+              <Icon name="chevron-down" size={16} style={{ transform: upperCollapsed ? "rotate(-90deg)" : "none", transition: "transform 150ms" }} />
             </button>
           </div>
         </div>
@@ -3388,7 +3389,7 @@ export default function PlanDetailClient({ planId, rollupBa }: PlanDetailClientP
       {!isRollup ? (
         <>
           <button type="button" className="plan-options-toggle" onClick={() => setOptionsOpen((prev) => !prev)}>
-            ⚙ Options
+            <Icon name="settings" size={14} /> Options
           </button>
           <div className={`plan-options-panel ${optionsOpen ? "open" : ""}`}>
             <div className="plan-options-header">
@@ -3440,7 +3441,7 @@ export default function PlanDetailClient({ planId, rollupBa }: PlanDetailClientP
                   void loadScopeOptions();
                 }}
               >
-                ⇄
+                <Icon name="shuffle" size={16} title="Switch plan" />
               </button>
               <button
                 type="button"
@@ -3450,7 +3451,7 @@ export default function PlanDetailClient({ planId, rollupBa }: PlanDetailClientP
                   void loadScopeOptions();
                 }}
               >
-                ⚖️
+                <Icon name="compare" size={16} title="Compare plans" />
               </button>
               <button
                 type="button"
@@ -3461,13 +3462,13 @@ export default function PlanDetailClient({ planId, rollupBa }: PlanDetailClientP
                   setViewModalOpen(true);
                 }}
               >
-                📆
+                <Icon name="calendar" size={16} title="View range" />
               </button>
               <button type="button" className="btn btn-light" onClick={() => setSaveAsOpen(true)}>
-                💾
+                <Icon name="save" size={16} title="Save as scenario" />
               </button>
               <button type="button" className="btn btn-light" onClick={handleExport}>
-                📤
+                <Icon name="download" size={16} title="Export" />
               </button>
               <button
                 type="button"
@@ -3476,7 +3477,7 @@ export default function PlanDetailClient({ planId, rollupBa }: PlanDetailClientP
                 disabled={isLocked}
                 title={isLocked ? "Plan is locked (history)." : ""}
               >
-                ➕
+                <Icon name="plus" size={16} title="Extend plan" />
               </button>
               <button type="button" className="btn btn-danger" onClick={handleDeletePlan}>
                 Delete Plan

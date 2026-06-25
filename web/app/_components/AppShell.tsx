@@ -5,13 +5,14 @@ import { useEffect, useState } from "react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import Sidebar from "./Sidebar";
+import Icon from "./Icon";
 import { logPageVisit } from "../../lib/activity";
 import { apiGet, apiPatch, clearAuthToken } from "../../lib/api";
 
 interface AppShellProps {
   title?: string;
   crumbs?: string;
-  crumbIcon?: string;
+  crumbIcon?: ReactNode;
   userLabel?: string;
   crumbLinks?: Record<string, string>;
   children: ReactNode;
@@ -150,7 +151,7 @@ export default function AppShell({ title, crumbs, crumbIcon, userLabel, crumbLin
         <div className="topbar">
           <div className="topbar-left">
             <button className="burger" type="button" aria-label="Toggle sidebar" onClick={toggleSidebar}>
-              ☰
+              <Icon name="menu" size={20} />
             </button>
             <div>
               <div className="crumbs-line">
@@ -235,10 +236,10 @@ export default function AppShell({ title, crumbs, crumbIcon, userLabel, crumbLin
                 <div className="user-menu-backdrop" onClick={() => setMenuOpen(false)} />
                 <div className="user-menu" role="menu">
                   <button type="button" className="user-menu-item" role="menuitem" onClick={openProfile}>
-                    <span className="user-menu-icon">👤</span> Profile
+                    <span className="user-menu-icon"><Icon name="user" size={16} /></span> Profile
                   </button>
                   <button type="button" className="user-menu-item user-menu-item--danger" role="menuitem" onClick={signOut}>
-                    <span className="user-menu-icon">⏻</span> Sign out
+                    <span className="user-menu-icon"><Icon name="logout" size={16} /></span> Sign out
                   </button>
                 </div>
               </>

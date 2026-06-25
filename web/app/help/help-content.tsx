@@ -17,6 +17,7 @@ const tocItems = [
   { id: "transformation-projects", label: "Transformation Projects" },
   { id: "daily-interval", label: "Daily and Interval Forecast" },
   { id: "capacity-overview", label: "Capacity Planning Overview" },
+  { id: "advanced-features", label: "Advanced Capacity Features (Recent)" },
   { id: "calculations", label: "Calculations Reference" },
   { id: "data-flow", label: "Data Flow (Uploads → Pages)" },
   { id: "scheduling-staffing", label: "Scheduling and Staffing" },
@@ -108,6 +109,21 @@ const sections: Section[] = [
       "Top-Down Allocation (Plan Detail options): spread an org/BA-level target (a hiring number, an FTE cap) down to the child scopes by a chosen basis — proportional to required FTE, shortfall, supply, or an equal split. Whole-number allocations use largest-remainder rounding so the integer parts sum exactly to the target.",
       "Cross-Skill Optimiser (Plan Detail options): an opt-in min-cost transportation solver that recommends borrow/lend moves closing the same shortfall as the default suggestion, but preferring transfers within the same business area / channel to reduce disruption. The default greedy suggestion is unchanged.",
       "BA rollups provide summarized capacity views."
+    ]
+  },
+  {
+    id: "advanced-features",
+    title: "Advanced Capacity Features (Recent)",
+    body: "Recent additions to the planning suite. All of these are additive and opt-in — they never change the default capacity numbers unless you explicitly use them, and none of them alter the core Erlang/coverage calculations.",
+    bullets: [
+      "Cross-Skill Optimiser (Plan Detail → options): an opt-in min-cost transportation solver for borrow/lend moves. It closes the same shortfall as the default greedy suggestion but minimises a transfer-affinity cost, so lends prefer the same sub-business-area, then business area, then channel before crossing the org. Shows the moves plus within-BA% / within-channel% / residual shortfall. The default greedy suggestion is left unchanged.",
+      "Top-Down Allocation (Plan Detail → options): spread an org/BA-level target (a hiring number, an FTE cap, a headcount budget) down to the child scopes by a chosen basis — proportional to required FTE, shortfall, or supply, or an equal split. Whole-number mode uses largest-remainder rounding so the integer parts sum exactly to the target.",
+      "Approval workflow + audit trail (Plan Detail → options): a governed plan lifecycle — Draft → Submitted → Approved or Rejected, with Reopen back to Draft. Every transition is attributed (who, when, optional note) and logged to the activity feed as an audit trail. When per-plan authorization is enabled, only admins can approve or reject.",
+      "Flexible dimensions — registry: define your own ordered, custom dimensions (e.g. tenure band, language, line-of-business, customer tier) with optional allowed-value lists, in the Planning workspace → Manage dimensions. Custom dimensions are stored alongside the fixed Business Area / Sub-BA / Channel / Site hierarchy and need no data migration.",
+      "Flexible dimensions — tag & filter plans: tag each plan with values for the registered dimensions (Plan Detail → Dimensions), then filter the Planning list by any dimension and value. The legacy single 'Segment' tag is preserved as one of these dimensions.",
+      "Flexible dimensions — dimensioned demand: tag demand scopes with dimension values from the Planning workspace → Scope tags, via the REST ingest API (a 'dimensions' object on the payload), or the scope-dimensions endpoint. Tagging is a non-destructive sidecar — it does not rewrite the timeseries scope key.",
+      "Flexible dimensions — Demand by Dimension: an opt-in view (Plan Detail and the BA rollup view) that re-buckets the per-scope FTE balance — required, supply, shortfall and coverage — by a chosen custom dimension. It only re-aggregates numbers the engine already computed, so it can never change a staffing figure, and the default BA/SBA/Channel/Site rollup is untouched.",
+      "Programmatic ingest (REST API): automated systems can push volume/AHT actuals and forecasts to POST /api/ingest/v1/timeseries with an X-API-Key, optionally carrying a 'dimensions' object for the sidecar above. See docs/INGEST_API.md for the full contract."
     ]
   },
   {

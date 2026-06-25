@@ -7,6 +7,7 @@ import AppShell from "../../_components/AppShell";
 import DataTable from "../../_components/DataTable";
 import EditableTable from "../../_components/EditableTable";
 import { useGlobalLoader } from "../../_components/GlobalLoader";
+import Icon from "../../_components/Icon";
 import LineChart from "../../_components/LineChart";
 import { useToast } from "../../_components/ToastProvider";
 import { apiPost, apiPostForm } from "../../../lib/api";
@@ -662,11 +663,11 @@ export default function VolumeSummaryPage() {
         </div>
 
         <div className="forecast-stepper">
-          <div className="forecast-step-pill active">📊 Volume Summary</div>
+          <div className="forecast-step-pill active"><Icon name="dashboard" size={16} /> Volume Summary</div>
           <span className="forecast-step-arrow">→</span>
-          <div className="forecast-step-pill">⚙️ Transformation Projects</div>
+          <div className="forecast-step-pill"><Icon name="settings" size={16} /> Transformation Projects</div>
           <span className="forecast-step-arrow">→</span>
-          <div className="forecast-step-pill">⏱️ Daily Interval Forecast</div>
+          <div className="forecast-step-pill"><Icon name="calendar" size={16} /> Daily Interval Forecast</div>
         </div>
 
         <div className="forecast-upload-row">

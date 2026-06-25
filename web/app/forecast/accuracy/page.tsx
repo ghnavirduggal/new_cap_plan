@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useState } from "react";
 import AppShell from "../../_components/AppShell";
+import Icon from "../../_components/Icon";
 import LineChart from "../../_components/LineChart";
 import { apiGet } from "../../../lib/api";
 
@@ -124,7 +125,7 @@ export default function ForecastAccuracyPage() {
   }, [data, scope]);
 
   return (
-    <AppShell title="Forecast Accuracy" crumbs="Forecasting / Forecast Accuracy" crumbIcon="🎯">
+    <AppShell title="Forecast Accuracy" crumbs="Forecasting / Forecast Accuracy" crumbIcon={<Icon name="target" size={16} />}>
       <div className="accuracy-page">
         <div className="accuracy-head">
           <div>
@@ -158,7 +159,7 @@ export default function ForecastAccuracyPage() {
         ) : (
           <>
             <div className="accuracy-winner">
-              <span className="accuracy-winner__badge">🏆 Best model</span>
+              <span className="accuracy-winner__badge"><Icon name="trophy" size={14} /> Best model</span>
               <span className="accuracy-winner__name">{board?.best_model}</span>
               {primaryMetric ? (
                 <span className="accuracy-winner__metric">
@@ -190,7 +191,7 @@ export default function ForecastAccuracyPage() {
                       <tr key={m.model} className={m.is_best ? "accuracy-row--best" : ""}>
                         <td>{m.rank}</td>
                         <td>
-                          {m.is_best ? "🏆 " : ""}
+                          {m.is_best ? <Icon name="trophy" size={13} style={{ marginRight: 4, verticalAlign: "-1px" }} /> : null}
                           {m.model}
                         </td>
                         {activeMetrics.map((col) => (

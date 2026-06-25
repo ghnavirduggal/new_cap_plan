@@ -1,5 +1,6 @@
 import Link from "next/link";
 import AppShell from "../_components/AppShell";
+import Icon from "../_components/Icon";
 import { forecastModels } from "./forecast-data";
 
 export default function ForecastPage() {
@@ -9,7 +10,7 @@ export default function ForecastPage() {
         <section className="forecast-header-row">
           <div>
             <h1 className="forecast-heading">
-              <span className="forecast-heading-icon">🔮</span>
+              <span className="forecast-heading-icon"><Icon name="sparkles" size={28} /></span>
               Power of 9 Models: A complete suite for Forecasting
             </h1>
             <p className="forecast-subtitle">Your guided path through forecasting.</p>
@@ -23,7 +24,7 @@ export default function ForecastPage() {
           {forecastModels.map((model) => (
             <article key={model.title} className="forecast-card">
               <div className="forecast-card-title">
-                <span className="forecast-card-icon">{model.icon}</span>
+                <span className="forecast-card-icon"><Icon name={model.icon} size={20} /></span>
                 <span>{model.title}</span>
               </div>
               <div className="forecast-card-body">{model.description}</div>
