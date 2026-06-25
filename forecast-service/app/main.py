@@ -34,6 +34,8 @@ from app.pipeline.headcount import (
 from app.pipeline.budget_store import load_budget_rows, upsert_budget_rows
 from app.pipeline.dataset_dashboard import dataset_snapshot
 from app.pipeline.ops_dashboard import ops_options, refresh_ops_async, refresh_ops_part, workforce_preview
+from app.pipeline import topdown_allocator
+from app.pipeline import cross_skill_optimizer
 from app.pipeline.ops_store import (
     get_latest_timeseries_hash,
     load_timeseries_any,
@@ -101,6 +103,7 @@ from app.pipeline.plan_detail_engine import (
 )
 from app.pipeline.plan_detail.calc_engine import mark_plan_dirty as mark_plan_detail_dirty, mark_plan_dirty_deps as mark_plan_detail_dirty_deps, dep_snapshot_all
 from app.pipeline import scenario_store
+from app.pipeline import approval as approval_mod
 from app.pipeline import monte_carlo as monte_carlo_mod
 from app.pipeline import risk_band as risk_band_mod
 from app.pipeline import accuracy_store
@@ -2002,7 +2005,139 @@ def planning_rebalancing_preview(payload: dict, request: Request):
         loc,
         policy_overrides=policy,
     )
+    # Opt-in: a min-cost transportation optimiser that prefers in-BA/in-channel
+    # lends. The default greedy `rebalancing` is left untouched so existing
+    # numbers don't move unless the optimiser is explicitly requested.
+    if payload.get("optimize"):
+        try:
+            sb = workforce.get("scope_balance") or []
+            oh = workforce.get("org_hiring") or {}
+            eff = float(oh.get("cross_skill_efficiency_pct") or 85.0) / 100.0
+            lend = float(oh.get("max_lend_pct") or 60.0) / 100.0
+            costs = payload.get("affinity_costs") if isinstance(payload.get("affinity_costs"), dict) else None
+            opt = cross_skill_optimizer.optimize(sb, eff, lend, costs)
+            workforce["rebalancing_optimized"] = opt["moves"]
+            workforce["optimizer_summary"] = opt["summary"]
+        except Exception:
+            logger.exception("cross-skill optimize failed for plan_id=%s", plan_id)
     return sanitize_for_json({"status": "ready", "workforce": workforce})
+
+
+# --- Plan approval workflow ------------------------------------------------
+# Draft → Submitted → Approved | Rejected (reopen back to Draft). Transitions are
+# attributed and logged to the planning activity feed (audit trail).
+
+def _plan_hier(plan: dict) -> dict:
+    """Non-column plan metadata is stored in the hierarchy_json blob."""
+    raw = plan.get("hierarchy_json")
+    if isinstance(raw, dict):
+        return raw
+    if isinstance(raw, str) and raw.strip():
+        try:
+            val = json.loads(raw)
+            return val if isinstance(val, dict) else {}
+        except Exception:
+            return {}
+    return {}
+
+
+def _approval_state(plan: dict) -> dict:
+    hier = _plan_hier(plan)
+    status = hier.get("approval_status")
+    return {
+        "status": approval_mod.normalize_state(status),
+        "actor": hier.get("approval_actor") or "",
+        "ts": hier.get("approval_ts") or "",
+        "note": hier.get("approval_note") or "",
+        "available_actions": approval_mod.available_actions(status),
+    }
+
+
+@app.get("/api/planning/plan/approval")
+def get_plan_approval(request: Request, plan_id: int = Query(...)):
+    plan = _authorize_plan_access(plan_id, request)
+    state = _approval_state(plan)
+    try:
+        history = [a for a in list_activity(limit=50, plan_id=int(plan_id)) if (a.get("entity_type") == "approval")]
+    except Exception:
+        history = []
+    return sanitize_for_json({**state, "history": history})
+
+
+@app.post("/api/planning/plan/approval")
+def post_plan_approval(payload: dict, request: Request):
+    if not isinstance(payload, dict):
+        raise HTTPException(status_code=400, detail="Approval payload must be a JSON object.")
+    plan_id = payload.get("plan_id")
+    action = str(payload.get("action") or "").strip().lower()
+    note = str(payload.get("note") or "").strip()
+    if not plan_id:
+        raise HTTPException(status_code=400, detail="plan_id is required.")
+    plan = _authorize_plan_access(plan_id, request)
+    current = approval_mod.normalize_state(_plan_hier(plan).get("approval_status"))
+    new_state = approval_mod.transition(current, action)
+    if new_state is None:
+        raise HTTPException(status_code=409, detail=f"Cannot '{action}' a plan that is '{current}'.")
+    # Approve/reject are decisions — restrict to admins when authz is enabled.
+    if action in approval_mod.DECISION_ACTIONS and security.authz_enabled():
+        principal = security.require_user(request)
+        if not getattr(principal, "is_admin", False):
+            raise HTTPException(status_code=403, detail="Only an admin can approve or reject a plan.")
+    actor = current_user_fallback()
+    now = pd.Timestamp.utcnow().isoformat(timespec="seconds")
+    save_plan_meta(
+        int(plan_id),
+        {"approval_status": new_state, "approval_actor": actor, "approval_ts": now, "approval_note": note},
+    )
+    try:
+        record_activity(
+            plan_id=int(plan_id),
+            action=f"approval: {action} ({current} → {new_state})",
+            actor=actor,
+            entity_type="approval",
+            payload={"from": current, "to": new_state, "note": note},
+        )
+    except Exception:
+        pass
+    return sanitize_for_json(
+        {"status": new_state, "actor": actor, "ts": now, "note": note,
+         "available_actions": approval_mod.available_actions(new_state)}
+    )
+
+
+@app.post("/api/planning/plan/allocate")
+def planning_topdown_allocate(payload: dict, request: Request):
+    """Top-down allocation: spread an org/BA-level target down to child scopes by
+    a chosen basis (required / shortfall / supply / equal)."""
+    if not isinstance(payload, dict):
+        raise HTTPException(status_code=400, detail="Allocation payload must be a JSON object.")
+    plan_id = payload.get("plan_id")
+    rollup_ba = str(payload.get("rollup_ba") or payload.get("business_area") or "").strip()
+    grain = str(payload.get("grain") or "D")
+    try:
+        target = float(payload.get("target"))
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=400, detail="A numeric 'target' is required.")
+    basis = str(payload.get("basis") or "required")
+    integer = bool(payload.get("integer"))
+
+    ba: list[str] = []
+    start_date = payload.get("start_date")
+    end_date = payload.get("end_date")
+    if plan_id:
+        plan = _authorize_plan_access(plan_id, request)
+        ba_val = str(plan.get("business_area") or plan.get("vertical") or "").strip()
+        if ba_val:
+            ba = [ba_val]
+        start_date = start_date or plan.get("start_week")
+        end_date = end_date or plan.get("end_week")
+    elif rollup_ba:
+        ba = [rollup_ba]
+
+    workforce = workforce_preview(start_date, end_date, grain, ba, [], [], [], [])
+    scope_balance = workforce.get("scope_balance") or []
+    result = topdown_allocator.allocate(scope_balance, target, basis, integer=integer)
+    return sanitize_for_json(result)
 
 
 @app.get("/api/planning/plan")

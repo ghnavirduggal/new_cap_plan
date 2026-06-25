@@ -86,6 +86,21 @@ type WorkforcePreview = {
   };
   scope_balance?: Array<Record<string, any>>;
   rebalancing?: Array<Record<string, any>>;
+  rebalancing_optimized?: Array<Record<string, any>>;
+  optimizer_summary?: {
+    total_lend_fte?: number;
+    total_effective_fte?: number;
+    post_rebalance_shortfall_fte?: number;
+    within_ba_pct?: number | null;
+    within_channel_pct?: number | null;
+    donors?: number;
+    receivers?: number;
+  };
+};
+
+type OptimizedRebalance = {
+  moves: Array<Record<string, any>>;
+  summary: NonNullable<WorkforcePreview["optimizer_summary"]>;
 };
 
 type PlanComputeResponse = {
@@ -357,6 +372,32 @@ type MonteCarloResult = {
   required_mean?: number;
   coverage_prob?: number | null;
   shortfall_prob?: number | null;
+};
+
+type ApprovalState = {
+  status: string;
+  actor?: string;
+  ts?: string;
+  note?: string;
+  available_actions?: string[];
+  history?: Array<Record<string, any>>;
+};
+
+type AllocationRow = {
+  scope: string;
+  share_pct: number;
+  allocation: number;
+  required_fte_est?: number;
+  supply_fte_est?: number;
+};
+
+type TopDownResult = {
+  status: string;
+  basis: string;
+  target: number;
+  integer: boolean;
+  allocated_total: number;
+  allocations: AllocationRow[];
 };
 
 type RiskPercentile = {
@@ -935,7 +976,17 @@ export default function PlanDetailClient({ planId, rollupBa }: PlanDetailClientP
   const [mcCv, setMcCv] = useState("");
   const [segmentInput, setSegmentInput] = useState("");
   const [segmentBusy, setSegmentBusy] = useState(false);
+  const [approval, setApproval] = useState<ApprovalState | null>(null);
+  const [approvalNote, setApprovalNote] = useState("");
+  const [approvalBusy, setApprovalBusy] = useState(false);
+  const [allocTarget, setAllocTarget] = useState("");
+  const [allocBasis, setAllocBasis] = useState("required");
+  const [allocInteger, setAllocInteger] = useState(true);
+  const [allocResult, setAllocResult] = useState<TopDownResult | null>(null);
+  const [allocBusy, setAllocBusy] = useState(false);
   const [xskillPreview, setXskillPreview] = useState<WorkforcePreview | null>(null);
+  const [optimizedRebalance, setOptimizedRebalance] = useState<OptimizedRebalance | null>(null);
+  const [optimizeBusy, setOptimizeBusy] = useState(false);
   const [xskillLoading, setXskillLoading] = useState(false);
   const [criticalTeamOptions, setCriticalTeamOptions] = useState<SelectOption[]>([]);
   const [noteText, setNoteText] = useState("");
@@ -1487,6 +1538,43 @@ export default function PlanDetailClient({ planId, rollupBa }: PlanDetailClientP
     [grain, notify, planId, planMeta?.end_week, planMeta?.start_week, rollupBa, whatIf.lockCriticalTeams, whatIf.rebalanceEnabled, whatIf.xskillEfficiencyPct, whatIf.xskillMaxLendPct]
   );
 
+  // Opt-in cross-skill optimiser: min-cost transportation that prefers in-BA/
+  // in-channel lends. Does not change the default greedy preview.
+  const handleOptimizeRebalance = async () => {
+    if (!planId && !rollupBa) return;
+    setOptimizeBusy(true);
+    try {
+      const grainMap: Record<string, string> = { week: "W", day: "D", month: "M", interval: "D" };
+      const eff = Number(whatIf.xskillEfficiencyPct);
+      const lend = Number(whatIf.xskillMaxLendPct);
+      const payload: Record<string, any> = {
+        grain: grainMap[String(grain || "week")] || "D",
+        start_date: planMeta?.start_week,
+        end_date: planMeta?.end_week,
+        optimize: true,
+        policy: {
+          cross_skill_efficiency_pct: (Number.isFinite(eff) ? eff : WHATIF_DEFAULT.xskillEfficiencyPct) / 100,
+          max_lend_pct: whatIf.rebalanceEnabled
+            ? (Number.isFinite(lend) ? lend : WHATIF_DEFAULT.xskillMaxLendPct) / 100
+            : 0,
+          lock_critical_teams: (whatIf.lockCriticalTeams ?? []).map((v) => String(v || "").trim()).filter(Boolean)
+        }
+      };
+      if (planId) payload.plan_id = planId;
+      else if (rollupBa) payload.rollup_ba = rollupBa;
+      const res = await apiPost<{ workforce?: WorkforcePreview }>("/api/planning/plan/rebalancing", payload);
+      const wf = res.workforce ?? {};
+      setOptimizedRebalance({
+        moves: wf.rebalancing_optimized ?? [],
+        summary: wf.optimizer_summary ?? {}
+      });
+    } catch (error: any) {
+      notify("error", error?.message || "Could not optimise transfers.");
+    } finally {
+      setOptimizeBusy(false);
+    }
+  };
+
   const loadWhatIf = useCallback(async () => {
     if (!planId || isRollup) return;
     try {
@@ -1995,6 +2083,40 @@ export default function PlanDetailClient({ planId, rollupBa }: PlanDetailClientP
     }
   }, [planId, isRollup]);
 
+  // --- Approval workflow --------------------------------------------------
+  const loadApproval = useCallback(async () => {
+    if (!planId || isRollup) return;
+    try {
+      const res = await apiGet<ApprovalState>(`/api/planning/plan/approval?plan_id=${planId}`);
+      setApproval(res);
+    } catch {
+      /* approval is optional; ignore load failures */
+    }
+  }, [planId, isRollup]);
+
+  useEffect(() => {
+    void loadApproval();
+  }, [loadApproval]);
+
+  const handleApprovalAction = async (action: string) => {
+    if (!planId || isRollup) return;
+    setApprovalBusy(true);
+    try {
+      const res = await apiPost<ApprovalState>("/api/planning/plan/approval", {
+        plan_id: planId,
+        action,
+        note: approvalNote.trim()
+      });
+      setApprovalNote("");
+      await loadApproval();
+      setMessage(`Plan ${res.status}.`);
+    } catch (error: any) {
+      notify("error", error?.message || `Could not ${action} the plan.`);
+    } finally {
+      setApprovalBusy(false);
+    }
+  };
+
   useEffect(() => {
     void loadScenarios();
   }, [loadScenarios]);
@@ -2192,6 +2314,31 @@ export default function PlanDetailClient({ planId, rollupBa }: PlanDetailClientP
       notify("error", error?.message || "Could not save segment.");
     } finally {
       setSegmentBusy(false);
+    }
+  };
+
+  // --- Top-down target allocation -----------------------------------------
+  const handleAllocate = async () => {
+    if (!planId || isRollup) return;
+    const target = Number(allocTarget);
+    if (!allocTarget.trim() || !Number.isFinite(target) || target <= 0) {
+      notify("warning", "Enter a positive target to allocate.");
+      return;
+    }
+    setAllocBusy(true);
+    try {
+      const res = await apiPost<TopDownResult>("/api/planning/plan/allocate", {
+        plan_id: planId,
+        target,
+        basis: allocBasis,
+        integer: allocInteger
+      });
+      setAllocResult(res);
+      if (res?.status !== "ok") notify("warning", "No scopes available to allocate to.");
+    } catch (error: any) {
+      notify("error", error?.message || "Could not allocate target.");
+    } finally {
+      setAllocBusy(false);
     }
   };
 
@@ -3687,6 +3834,187 @@ export default function PlanDetailClient({ planId, rollupBa }: PlanDetailClientP
                     {segmentBusy ? "Saving…" : "Save"}
                   </button>
                 </div>
+              </div>
+            ) : null}
+
+            {!isRollup && approval ? (
+              <div className="plan-options-approval">
+                <h5>Approval</h5>
+                <div className="plan-approval-status">
+                  <span className={`plan-approval-chip plan-approval-chip--${approval.status}`}>{approval.status}</span>
+                  {approval.actor ? (
+                    <span className="plan-approval-meta">
+                      by {approval.actor}
+                      {approval.ts ? ` · ${String(approval.ts).slice(0, 10)}` : ""}
+                    </span>
+                  ) : null}
+                </div>
+                {(approval.available_actions ?? []).length ? (
+                  <>
+                    <input
+                      className="input"
+                      type="text"
+                      placeholder="Optional note"
+                      value={approvalNote}
+                      onChange={(e) => setApprovalNote(e.target.value)}
+                      style={{ marginBottom: 8 }}
+                    />
+                    <div className="plan-whatif-actions">
+                      {(approval.available_actions ?? []).map((action) => {
+                        const labels: Record<string, string> = {
+                          submit: "Submit for approval",
+                          approve: "Approve",
+                          reject: "Reject",
+                          reopen: "Reopen"
+                        };
+                        const primary = action === "submit" || action === "approve";
+                        return (
+                          <button
+                            key={action}
+                            type="button"
+                            className={`btn ${primary ? "btn-primary" : "btn-light"}`}
+                            onClick={() => void handleApprovalAction(action)}
+                            disabled={approvalBusy}
+                          >
+                            {labels[action] ?? action}
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </>
+                ) : null}
+                {(approval.history ?? []).length ? (
+                  <ul className="plan-approval-history">
+                    {(approval.history ?? []).slice(0, 6).map((h, idx) => (
+                      <li key={idx}>
+                        <span>{String(h.action || "")}</span>
+                        <span className="plan-approval-meta">
+                          {String(h.actor || "")}
+                          {h.created_at ? ` · ${String(h.created_at).slice(0, 10)}` : ""}
+                        </span>
+                      </li>
+                    ))}
+                  </ul>
+                ) : null}
+              </div>
+            ) : null}
+
+            {!isRollup ? (
+              <div className="plan-options-alloc">
+                <h5>Top-Down Allocation</h5>
+                <p className="plan-scenarios-hint">
+                  Spread an org/BA-level target (a hiring number, an FTE cap) down to the child scopes by a chosen basis.
+                </p>
+                <div className="plan-alloc-controls">
+                  <label>
+                    Target
+                    <input
+                      className="input"
+                      type="number"
+                      min={0}
+                      placeholder="e.g. 120"
+                      value={allocTarget}
+                      onChange={(e) => setAllocTarget(e.target.value)}
+                    />
+                  </label>
+                  <label>
+                    Basis
+                    <select className="input" value={allocBasis} onChange={(e) => setAllocBasis(e.target.value)}>
+                      <option value="required">Required FTE</option>
+                      <option value="shortfall">Shortfall</option>
+                      <option value="supply">Supply FTE</option>
+                      <option value="equal">Equal split</option>
+                    </select>
+                  </label>
+                  <label className="plan-whatif-checkbox" style={{ alignSelf: "end" }}>
+                    <input type="checkbox" checked={allocInteger} onChange={(e) => setAllocInteger(e.target.checked)} />
+                    Whole numbers
+                  </label>
+                </div>
+                <div className="plan-whatif-actions">
+                  <button type="button" className="btn btn-primary" onClick={handleAllocate} disabled={allocBusy}>
+                    {allocBusy ? "Allocating…" : "Allocate"}
+                  </button>
+                </div>
+                {allocResult?.status === "ok" ? (
+                  <div className="plan-alloc-result">
+                    <div className="plan-scenarios-hint">
+                      {allocResult.target} by {allocResult.basis} → allocated {allocResult.allocated_total} across{" "}
+                      {allocResult.allocations.length} scopes
+                    </div>
+                    <div className="table-wrap">
+                      <table className="table plan-alloc-table">
+                        <thead>
+                          <tr>
+                            <th>Scope</th>
+                            <th className="num">Share</th>
+                            <th className="num">Allocation</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {allocResult.allocations.slice(0, 40).map((a) => (
+                            <tr key={a.scope}>
+                              <td>{a.scope}</td>
+                              <td className="num">{a.share_pct}%</td>
+                              <td className="num">{a.allocation}</td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
+                ) : null}
+              </div>
+            ) : null}
+
+            {!isRollup ? (
+              <div className="plan-options-optimizer">
+                <h5>Cross-Skill Optimiser</h5>
+                <p className="plan-scenarios-hint">
+                  Recommends borrow/lend moves that close the same shortfall as the default suggestion, but prefers
+                  transfers within the same business area / channel (less disruption). Uses the Cross-Skill Efficiency
+                  and Max Lend dials above.
+                </p>
+                <div className="plan-whatif-actions">
+                  <button type="button" className="btn btn-primary" onClick={handleOptimizeRebalance} disabled={optimizeBusy}>
+                    {optimizeBusy ? "Optimising…" : "Optimise transfers"}
+                  </button>
+                </div>
+                {optimizedRebalance ? (
+                  <div className="plan-optimizer-result">
+                    <div className="plan-scenarios-hint">
+                      {optimizedRebalance.summary.within_ba_pct ?? 0}% within BA ·{" "}
+                      {optimizedRebalance.summary.within_channel_pct ?? 0}% within channel · residual shortfall{" "}
+                      {optimizedRebalance.summary.post_rebalance_shortfall_fte ?? 0} FTE
+                    </div>
+                    {optimizedRebalance.moves.length ? (
+                      <div className="table-wrap">
+                        <table className="table plan-optimizer-table">
+                          <thead>
+                            <tr>
+                              <th>From</th>
+                              <th>To</th>
+                              <th className="num">Lend FTE</th>
+                              <th>Within</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {optimizedRebalance.moves.slice(0, 25).map((m, idx) => (
+                              <tr key={`${m.from_scope}-${m.to_scope}-${idx}`}>
+                                <td>{String(m.from_scope)}</td>
+                                <td>{String(m.to_scope)}</td>
+                                <td className="num">{m.lend_fte}</td>
+                                <td>{m.same_ba ? "BA" : m.same_channel ? "channel" : "cross-org"}</td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+                    ) : (
+                      <div className="plan-scenarios-empty">No transferable surplus to move.</div>
+                    )}
+                  </div>
+                ) : null}
               </div>
             ) : null}
 
