@@ -5088,3 +5088,34 @@ summary:focus-visible,
 .plan-mc-stat--risk .plan-mc-stat__value {
   color: #b91c1c;
 }
+
+/* Top-down allocation panel */
+.plan-options-alloc {
+  margin-top: 16px;
+  padding-top: 14px;
+  border-top: 1px solid var(--border);
+}
+.plan-options-alloc h5 {
+  margin: 0 0 4px;
+  font-size: 13px;
+  font-weight: 700;
+  color: #1f2937;
+}
+.plan-alloc-controls {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  align-items: end;
+  margin-bottom: 10px;
+}
+.plan-alloc-controls label {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  font-size: 12px;
+  color: #475569;
+}
+.plan-alloc-table .num {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}

@@ -34,6 +34,7 @@ from app.pipeline.headcount import (
 from app.pipeline.budget_store import load_budget_rows, upsert_budget_rows
 from app.pipeline.dataset_dashboard import dataset_snapshot
 from app.pipeline.ops_dashboard import ops_options, refresh_ops_async, refresh_ops_part, workforce_preview
+from app.pipeline import topdown_allocator
 from app.pipeline.ops_store import (
     get_latest_timeseries_hash,
     load_timeseries_any,
@@ -2003,6 +2004,41 @@ def planning_rebalancing_preview(payload: dict, request: Request):
         policy_overrides=policy,
     )
     return sanitize_for_json({"status": "ready", "workforce": workforce})
+
+
+@app.post("/api/planning/plan/allocate")
+def planning_topdown_allocate(payload: dict, request: Request):
+    """Top-down allocation: spread an org/BA-level target down to child scopes by
+    a chosen basis (required / shortfall / supply / equal)."""
+    if not isinstance(payload, dict):
+        raise HTTPException(status_code=400, detail="Allocation payload must be a JSON object.")
+    plan_id = payload.get("plan_id")
+    rollup_ba = str(payload.get("rollup_ba") or payload.get("business_area") or "").strip()
+    grain = str(payload.get("grain") or "D")
+    try:
+        target = float(payload.get("target"))
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=400, detail="A numeric 'target' is required.")
+    basis = str(payload.get("basis") or "required")
+    integer = bool(payload.get("integer"))
+
+    ba: list[str] = []
+    start_date = payload.get("start_date")
+    end_date = payload.get("end_date")
+    if plan_id:
+        plan = _authorize_plan_access(plan_id, request)
+        ba_val = str(plan.get("business_area") or plan.get("vertical") or "").strip()
+        if ba_val:
+            ba = [ba_val]
+        start_date = start_date or plan.get("start_week")
+        end_date = end_date or plan.get("end_week")
+    elif rollup_ba:
+        ba = [rollup_ba]
+
+    workforce = workforce_preview(start_date, end_date, grain, ba, [], [], [], [])
+    scope_balance = workforce.get("scope_balance") or []
+    result = topdown_allocator.allocate(scope_balance, target, basis, integer=integer)
+    return sanitize_for_json(result)
 
 
 @app.get("/api/planning/plan")
