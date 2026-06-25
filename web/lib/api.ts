@@ -14,8 +14,9 @@ function isForecastScoped(path: string) {
     path.startsWith("/api/forecast") ||
     path.startsWith("/api/planning") ||
     path.startsWith("/api/uploads") ||
-    path === "/api/user" ||
-    path === "/api/auth/token"
+    path.startsWith("/api/users") ||
+    path.startsWith("/api/auth") ||
+    path === "/api/user"
   );
 }
 
