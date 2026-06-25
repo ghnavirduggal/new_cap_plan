@@ -8,9 +8,13 @@ RUN npm run build
 FROM node:20-alpine AS run
 WORKDIR /app
 ENV NODE_ENV=production
-# Run as the built-in non-root node user.
-COPY --from=build --chown=node:node /app ./
-USER node
+# Run as a non-root user. Use the numeric UID:GID (1000 = the built-in "node"
+# user on official node images) rather than the name "node": a numeric USER
+# needs no /etc/passwd entry, so the container starts even on bases that don't
+# register the node user (avoids "unable to find user node: no matching entries
+# in passwd files").
+COPY --from=build --chown=1000:1000 /app ./
+USER 1000:1000
 EXPOSE 3000
 # Production server (not the dev server, which leaks source maps / verbose errors
 # and applies no production hardening).
