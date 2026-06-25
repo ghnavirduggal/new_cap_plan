@@ -358,6 +358,15 @@ type MonteCarloResult = {
   shortfall_prob?: number | null;
 };
 
+type ApprovalState = {
+  status: string;
+  actor?: string;
+  ts?: string;
+  note?: string;
+  available_actions?: string[];
+  history?: Array<Record<string, any>>;
+};
+
 type RiskPercentile = {
   percentile: string;
   demand_multiplier: number;
@@ -932,6 +941,9 @@ export default function PlanDetailClient({ planId, rollupBa }: PlanDetailClientP
   const [mcResult, setMcResult] = useState<MonteCarloResult | null>(null);
   const [mcBusy, setMcBusy] = useState(false);
   const [mcCv, setMcCv] = useState("");
+  const [approval, setApproval] = useState<ApprovalState | null>(null);
+  const [approvalNote, setApprovalNote] = useState("");
+  const [approvalBusy, setApprovalBusy] = useState(false);
   const [xskillPreview, setXskillPreview] = useState<WorkforcePreview | null>(null);
   const [xskillLoading, setXskillLoading] = useState(false);
   const [criticalTeamOptions, setCriticalTeamOptions] = useState<SelectOption[]>([]);
@@ -1991,6 +2003,40 @@ export default function PlanDetailClient({ planId, rollupBa }: PlanDetailClientP
       /* scenarios are optional; ignore load failures */
     }
   }, [planId, isRollup]);
+
+  // --- Approval workflow --------------------------------------------------
+  const loadApproval = useCallback(async () => {
+    if (!planId || isRollup) return;
+    try {
+      const res = await apiGet<ApprovalState>(`/api/planning/plan/approval?plan_id=${planId}`);
+      setApproval(res);
+    } catch {
+      /* approval is optional; ignore load failures */
+    }
+  }, [planId, isRollup]);
+
+  useEffect(() => {
+    void loadApproval();
+  }, [loadApproval]);
+
+  const handleApprovalAction = async (action: string) => {
+    if (!planId || isRollup) return;
+    setApprovalBusy(true);
+    try {
+      const res = await apiPost<ApprovalState>("/api/planning/plan/approval", {
+        plan_id: planId,
+        action,
+        note: approvalNote.trim()
+      });
+      setApprovalNote("");
+      await loadApproval();
+      setMessage(`Plan ${res.status}.`);
+    } catch (error: any) {
+      notify("error", error?.message || `Could not ${action} the plan.`);
+    } finally {
+      setApprovalBusy(false);
+    }
+  };
 
   useEffect(() => {
     void loadScenarios();
@@ -3636,6 +3682,68 @@ export default function PlanDetailClient({ planId, rollupBa }: PlanDetailClientP
                       </div>
                     </div>
                   </div>
+                ) : null}
+              </div>
+            ) : null}
+
+            {!isRollup && approval ? (
+              <div className="plan-options-approval">
+                <h5>Approval</h5>
+                <div className="plan-approval-status">
+                  <span className={`plan-approval-chip plan-approval-chip--${approval.status}`}>{approval.status}</span>
+                  {approval.actor ? (
+                    <span className="plan-approval-meta">
+                      by {approval.actor}
+                      {approval.ts ? ` · ${String(approval.ts).slice(0, 10)}` : ""}
+                    </span>
+                  ) : null}
+                </div>
+                {(approval.available_actions ?? []).length ? (
+                  <>
+                    <input
+                      className="input"
+                      type="text"
+                      placeholder="Optional note"
+                      value={approvalNote}
+                      onChange={(e) => setApprovalNote(e.target.value)}
+                      style={{ marginBottom: 8 }}
+                    />
+                    <div className="plan-whatif-actions">
+                      {(approval.available_actions ?? []).map((action) => {
+                        const labels: Record<string, string> = {
+                          submit: "Submit for approval",
+                          approve: "Approve",
+                          reject: "Reject",
+                          reopen: "Reopen"
+                        };
+                        const primary = action === "submit" || action === "approve";
+                        return (
+                          <button
+                            key={action}
+                            type="button"
+                            className={`btn ${primary ? "btn-primary" : "btn-light"}`}
+                            onClick={() => void handleApprovalAction(action)}
+                            disabled={approvalBusy}
+                          >
+                            {labels[action] ?? action}
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </>
+                ) : null}
+                {(approval.history ?? []).length ? (
+                  <ul className="plan-approval-history">
+                    {(approval.history ?? []).slice(0, 6).map((h, idx) => (
+                      <li key={idx}>
+                        <span>{String(h.action || "")}</span>
+                        <span className="plan-approval-meta">
+                          {String(h.actor || "")}
+                          {h.created_at ? ` · ${String(h.created_at).slice(0, 10)}` : ""}
+                        </span>
+                      </li>
+                    ))}
+                  </ul>
                 ) : null}
               </div>
             ) : null}
