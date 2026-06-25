@@ -370,7 +370,6 @@ export default function OpsPage() {
   const smartInsights = useMemo(() => deriveInsights(summary), [summary]);
   const trends = useMemo(() => kpiTrends(summary), [summary]);
   const health = useMemo(() => capacityHealth(summary), [summary]);
-  const [healthHover, setHealthHover] = useState(false);
 
   return (
     <AppShell crumbs="CAP-CONNECT / Ops">
@@ -563,43 +562,11 @@ export default function OpsPage() {
               <h2>Smart Insights</h2>
               <p>Auto-generated reads on staffing health, trends, and concentration risk for the current slice.</p>
             </div>
-            <div
-              className="ops-health-chip-wrap"
-              onMouseEnter={() => setHealthHover(true)}
-              onMouseLeave={() => setHealthHover(false)}
-            >
-              <div className={`ops-health-chip ops-health-chip--${health.tone}`} tabIndex={0} aria-label="Capacity health details">
+            <div className="ops-health-chip-wrap">
+              <div className={`ops-health-chip ops-health-chip--${health.tone}`} aria-label="Capacity health">
                 <span className="ops-health-chip__score">{kpisLoading ? "—" : health.score}</span>
                 <span className="ops-health-chip__label">{kpisLoading ? "Scoring" : health.label}</span>
               </div>
-              {healthHover && !kpisLoading ? (
-                <div className="ops-health-pop" role="dialog" aria-label="Capacity health breakdown">
-                  <div className="ops-health-pop__head">
-                    <span className={`ops-health-pop__score ops-health-pop__score--${health.tone}`}>{health.score}</span>
-                    <div>
-                      <div className="ops-health-pop__title">Capacity Health — {health.label}</div>
-                      <div className="ops-health-pop__sub">
-                        {smartInsights.length} signal{smartInsights.length === 1 ? "" : "s"} for this slice
-                      </div>
-                    </div>
-                  </div>
-                  <div className="ops-health-pop__list">
-                    {smartInsights.length ? (
-                      smartInsights.map((item) => (
-                        <div key={item.id} className={`ops-health-pop__item ops-health-pop__item--${item.severity}`}>
-                          <span className="ops-health-pop__icon" aria-hidden="true">{item.icon}</span>
-                          <div>
-                            <div className="ops-health-pop__item-title">{item.title}</div>
-                            <div className="ops-health-pop__item-detail">{item.detail}</div>
-                          </div>
-                        </div>
-                      ))
-                    ) : (
-                      <div className="ops-health-pop__empty">No notable signals — coverage looks steady.</div>
-                    )}
-                  </div>
-                </div>
-              ) : null}
             </div>
           </div>
           <div className="ops-insight-feed">
