@@ -22,6 +22,10 @@ _KEY_RE = re.compile(r"[^a-z0-9_]+")
 _REGISTRY_FILENAME = "dimension_registry.json"
 _MAX_DIMENSIONS = 24
 _MAX_VALUES = 200
+# 'segment' is the legacy Phase-0 dimension with its own dedicated storage and UI
+# panel/filter; reserve the key so a registry entry can't shadow it and become a
+# dead, non-functional row (the UI filters 'segment' out of the generic surfaces).
+_RESERVED_KEYS = {"segment"}
 
 
 def _repo_root() -> Path:
@@ -85,7 +89,7 @@ def normalize_registry(raw: Any) -> list[dict]:
         if not isinstance(item, dict):
             continue
         key = slug(item.get("key") or item.get("label"))
-        if not key or key in seen:
+        if not key or key in seen or key in _RESERVED_KEYS:
             continue
         seen.add(key)
         label = str(item.get("label") or key).strip()[:64] or key
