@@ -122,6 +122,10 @@ export default function PlanningClient() {
   const [dimEditorOpen, setDimEditorOpen] = useState(false);
   const [dimEditorRows, setDimEditorRows] = useState<DimensionDef[]>([]);
   const [dimEditorBusy, setDimEditorBusy] = useState(false);
+  const [scopeTagsOpen, setScopeTagsOpen] = useState(false);
+  const [scopeTagsRows, setScopeTagsRows] = useState<{ scope_key: string; dims: Record<string, string> }[]>([]);
+  const [scopeTagsOrig, setScopeTagsOrig] = useState<string[]>([]);
+  const [scopeTagsBusy, setScopeTagsBusy] = useState(false);
   const [headcountSbas, setHeadcountSbas] = useState<string[]>([]);
   const [message, setMessage] = useState("");
   const [newPlanMsg, setNewPlanMsg] = useState("");
@@ -299,6 +303,43 @@ export default function PlanningClient() {
       setDimEditorBusy(false);
     }
   }, [dimEditorRows, notify]);
+
+  // Scope-dimension tags (the Phase 2 demand sidecar) — assign dimension values
+  // to a timeseries scope so demand can be grouped by them.
+  const openScopeTags = useCallback(async () => {
+    try {
+      const res = await apiGet<{ scopes?: Record<string, Record<string, string>> }>("/api/planning/scope/dimensions");
+      const rows = Object.entries(res.scopes || {}).map(([scope_key, dims]) => ({ scope_key, dims: { ...dims } }));
+      setScopeTagsRows(rows.length ? rows : [{ scope_key: "", dims: {} }]);
+      setScopeTagsOrig(rows.map((r) => r.scope_key.trim().toLowerCase()).filter(Boolean));
+    } catch {
+      setScopeTagsRows([{ scope_key: "", dims: {} }]);
+      setScopeTagsOrig([]);
+    }
+    setScopeTagsOpen(true);
+  }, []);
+
+  const saveScopeTags = useCallback(async () => {
+    const rows = scopeTagsRows.filter((r) => r.scope_key.trim());
+    const present = new Set(rows.map((r) => r.scope_key.trim().toLowerCase()));
+    // Scopes that were loaded but the user removed a row for → clear them (empty map).
+    const removed = scopeTagsOrig.filter((k) => !present.has(k));
+    setScopeTagsBusy(true);
+    try {
+      for (const r of rows) {
+        await apiPost("/api/planning/scope/dimensions", { scope_key: r.scope_key.trim(), dimensions: r.dims });
+      }
+      for (const key of removed) {
+        await apiPost("/api/planning/scope/dimensions", { scope_key: key, dimensions: {} });
+      }
+      setScopeTagsOpen(false);
+      notify("success", "Scope tags saved.");
+    } catch (error: any) {
+      notify("error", error?.message || "Could not save scope tags.");
+    } finally {
+      setScopeTagsBusy(false);
+    }
+  }, [scopeTagsRows, scopeTagsOrig, notify]);
 
   const groupedKanban = useMemo(() => {
     const grouped: Record<string, Record<string, PlanRecord[]>> = {};
@@ -567,6 +608,11 @@ export default function PlanningClient() {
           <button type="button" className="btn btn-light" onClick={openDimEditor}>
             Manage dimensions
           </button>
+          {filterableDims.length ? (
+            <button type="button" className="btn btn-light" onClick={openScopeTags}>
+              Scope tags
+            </button>
+          ) : null}
           <div className="ws-search">
             <input
               className="input"
@@ -1034,6 +1080,77 @@ export default function PlanningClient() {
                   {dimEditorBusy ? "Saving…" : "Save"}
                 </button>
                 <button type="button" className="btn" onClick={() => setDimEditorOpen(false)}>
+                  Cancel
+                </button>
+              </div>
+            </div>
+          </div>
+        ) : null}
+
+        {scopeTagsOpen ? (
+          <div className="ws-modal-backdrop">
+            <div className="ws-modal">
+              <div className="ws-modal-header">
+                <h3>Scope tags</h3>
+              </div>
+              <div className="ws-modal-body">
+                <div className="text-muted" style={{ marginBottom: 10 }}>
+                  Tag a demand scope (<code>business_area|sub_business_area|channel|site</code>) with custom dimension
+                  values so capacity can be grouped by them (Plan Detail / BA rollup → Demand by Dimension). This does
+                  not change any calculation.
+                </div>
+                {scopeTagsRows.map((row, idx) => (
+                  <div key={idx} className="ws-scopetag-row">
+                    <input
+                      className="input"
+                      type="text"
+                      placeholder="Cards|Servicing|Voice|TX"
+                      value={row.scope_key}
+                      onChange={(e) =>
+                        setScopeTagsRows((prev) =>
+                          prev.map((r, i) => (i === idx ? { ...r, scope_key: e.target.value } : r))
+                        )
+                      }
+                    />
+                    {filterableDims.map((d) => (
+                      <input
+                        key={d.key}
+                        className="input"
+                        type="text"
+                        placeholder={d.label}
+                        value={row.dims[d.key] || ""}
+                        onChange={(e) =>
+                          setScopeTagsRows((prev) =>
+                            prev.map((r, i) =>
+                              i === idx ? { ...r, dims: { ...r.dims, [d.key]: e.target.value } } : r
+                            )
+                          )
+                        }
+                      />
+                    ))}
+                    <button
+                      type="button"
+                      className="btn btn-light"
+                      aria-label="Remove scope tag"
+                      onClick={() => setScopeTagsRows((prev) => prev.filter((_, i) => i !== idx))}
+                    >
+                      ✕
+                    </button>
+                  </div>
+                ))}
+                <button
+                  type="button"
+                  className="btn btn-light"
+                  onClick={() => setScopeTagsRows((prev) => [...prev, { scope_key: "", dims: {} }])}
+                >
+                  + Add scope
+                </button>
+              </div>
+              <div className="ws-modal-footer">
+                <button type="button" className="btn btn-primary" onClick={saveScopeTags} disabled={scopeTagsBusy}>
+                  {scopeTagsBusy ? "Saving…" : "Save"}
+                </button>
+                <button type="button" className="btn" onClick={() => setScopeTagsOpen(false)}>
                   Cancel
                 </button>
               </div>
