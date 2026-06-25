@@ -126,7 +126,16 @@ def _learning_curve_for_week(settings: dict, lc_overrides_df, week_id: str) -> d
     return out
 
 def _user():
-    return os.environ.get("HOSTNAME") or os.environ.get("USERNAME") or getpass.getuser() or "system"
+    # Never fall back to HOSTNAME (the Docker container ID, which changes every
+    # rebuild and reads as a meaningless owner/actor). Use a stable identity.
+    name = (os.environ.get("CAP_SYSTEM_ACTOR") or os.environ.get("USERNAME") or os.environ.get("USER") or "").strip()
+    if name:
+        return name
+    try:
+        user = getpass.getuser()
+    except Exception:
+        user = ""
+    return user if user and user != "appuser" else "system"
 
 def _load_index() -> pd.DataFrame:
     # Legacy placeholder: metadata is stored in planning_plans now.

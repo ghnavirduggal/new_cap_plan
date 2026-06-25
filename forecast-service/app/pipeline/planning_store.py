@@ -59,7 +59,17 @@ def _parse_date(value: Optional[object]) -> Optional[dt.date]:
     return ts.normalize().date()
 
 def _user() -> str:
-    return os.environ.get("HOSTNAME") or os.environ.get("USERNAME") or getpass.getuser() or "system"
+    # Do NOT fall back to HOSTNAME: inside Docker that is the container ID, which
+    # changes on every rebuild and shows up as a meaningless owner/actor (e.g.
+    # "2d9505072249"). Use a stable, optionally-configured system identity.
+    name = (os.environ.get("CAP_SYSTEM_ACTOR") or os.environ.get("USERNAME") or os.environ.get("USER") or "").strip()
+    if name:
+        return name
+    try:
+        user = getpass.getuser()
+    except Exception:
+        user = ""
+    return user if user and user != "appuser" else "system"
 
 
 def _repo_root() -> Path:
@@ -629,7 +639,11 @@ def delete_plan(plan_id: int, hard_if_missing: bool = True) -> dict:
     return {"status": "deleted", "id": int(plan_id)}
 
 
-def save_plan_table(plan_id: int, table_name: str, rows: list[dict]) -> dict:
+def save_plan_table(plan_id: int, table_name: str, rows: list[dict], record_activity: bool = True) -> dict:
+    # record_activity=False for automatic persistence (e.g. caching computed
+    # tables when a plan is opened/computed) so merely viewing a plan does not
+    # log a spurious "updated plan data" / "added note" entry. Genuine user
+    # saves leave it True.
     if not plan_id or not table_name:
         return {"status": "invalid"}
     if not has_dsn():
@@ -666,10 +680,11 @@ def save_plan_table(plan_id: int, table_name: str, rows: list[dict]) -> dict:
             pass
         if row:
             mark_plan_dirty(row[0])
-        try:
-            _record_plan_activity(int(plan_id), table_name)
-        except Exception:
-            pass
+        if record_activity:
+            try:
+                _record_plan_activity(int(plan_id), table_name)
+            except Exception:
+                pass
         try:
             from app.pipeline.plan_detail.calc_engine import mark_plan_dirty_deps
             base = str(table_name or "").split("_")[0].lower()

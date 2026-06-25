@@ -291,10 +291,12 @@ def persist_plan_detail_tables(
     tables = payload.get("tables") or {}
     for key in _TABLE_KEYS:
         rows = tables.get(key, [])
-        save_plan_table(int(plan_id), f"{key}{suffix}", rows)
+        # Automatic persistence of computed tables (plan opened/recomputed) — not a
+        # user edit, so don't log it as activity.
+        save_plan_table(int(plan_id), f"{key}{suffix}", rows, record_activity=False)
     upper_rows = payload.get("upper")
     if isinstance(upper_rows, list):
-        save_plan_table(int(plan_id), f"upper{suffix}", upper_rows)
+        save_plan_table(int(plan_id), f"upper{suffix}", upper_rows, record_activity=False)
 
 
 def load_plan_detail_tables(

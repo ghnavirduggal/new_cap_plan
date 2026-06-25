@@ -104,7 +104,10 @@ services:
     ports:
       - "127.0.0.1:8082:8080"
     volumes:
-      - ./forecast-service/exports:/app/exports
+      # Named volume (not a host bind mount): persists user-saved settings,
+      # dimension registry, accuracy history, etc. across image rebuilds, and is
+      # seeded writable from the image so the container's appuser can write to it.
+      - forecast_exports:/app/exports
 
   web:
     build: ./web
@@ -121,3 +124,4 @@ services:
 volumes:
   db_data:
   redis_data:
+  forecast_exports:
