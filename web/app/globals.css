@@ -1299,15 +1299,32 @@ summary:focus-visible,
   gap: 1rem;
 }
 
+/* Flex children default to min-width:auto, which lets a wide table (the Active
+   Plans grid has fixed min-width columns) blow past the pane and overflow the
+   card when the sidebar expands. min-width:0 lets the panes shrink so the table
+   scrolls within its own wrapper instead. */
+.home-grid--bottom,
+.left-pane,
+.right-pane,
+.home-plans,
+.home-insight {
+  min-width: 0;
+}
+
 .home-plans, .home-insight {
   background: linear-gradient(120deg, #ffffff 0%, #f4f7ff 100%);
 }
 
+.home-plans .table-wrap {
+  width: 100%;
+  overflow-x: auto;
+}
+
 .left-pane {
-  flex: 2;             
+  flex: 2;
   display: flex;
   flex-direction: column;
-  gap: 17.5px;            
+  gap: 17.5px;
 }
 
 .right-pane {
