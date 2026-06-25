@@ -186,7 +186,7 @@ summary:focus-visible,
 }
 
 .sidebar.expanded {
-  width: 268px;
+  width: 292px;
 }
 
 .sidebar.collapsed {
@@ -194,7 +194,7 @@ summary:focus-visible,
 }
 
 .sidebar-expanded {
-  --sidebar-width: 268px;
+  --sidebar-width: 292px;
 }
 
 .sidebar-collapsed {
@@ -210,7 +210,7 @@ summary:focus-visible,
   height: 56px;
   width: calc(100% - 24px);
   margin: 2px 0 6px;
-  padding: 0 14px;
+  padding: 0 16px 0 14px;
   display: flex;
   align-items: center;
   justify-content: flex-start;
@@ -221,8 +221,11 @@ summary:focus-visible,
   transition: width 0.22s var(--ease);
 }
 
+/* Height sized for the wide full lockup (eagle + wordmark): keeps the whole
+   wordmark inside the expanded plate while the eagle stays a comfortable size
+   in the collapsed rail. Adjust if a different aspect ratio is supplied. */
 .sidebar .brand .brand-logo {
-  height: 40px;
+  height: 32px;
   width: auto;
   max-width: none;
   display: block;
