@@ -25,6 +25,14 @@ type PlanRecord = {
   location?: string;
   site?: string;
   segment?: string;
+  dimensions?: Record<string, string>;
+};
+
+type DimensionDef = {
+  key: string;
+  label: string;
+  order?: number;
+  values?: string[];
 };
 
 const ALPHABET = ["All", ..."ABCDEFGHIJKLMNOPQRSTUVWXYZ"];
@@ -108,6 +116,12 @@ export default function PlanningClient() {
   const [selectedBa, setSelectedBa] = useState<string>("");
   const [plans, setPlans] = useState<PlanRecord[]>([]);
   const [segmentFilter, setSegmentFilter] = useState<string>("All");
+  const [dimRegistry, setDimRegistry] = useState<DimensionDef[]>([]);
+  const [dimFilterKey, setDimFilterKey] = useState<string>("");
+  const [dimFilterVal, setDimFilterVal] = useState<string>("All");
+  const [dimEditorOpen, setDimEditorOpen] = useState(false);
+  const [dimEditorRows, setDimEditorRows] = useState<DimensionDef[]>([]);
+  const [dimEditorBusy, setDimEditorBusy] = useState(false);
   const [headcountSbas, setHeadcountSbas] = useState<string[]>([]);
   const [message, setMessage] = useState("");
   const [newPlanMsg, setNewPlanMsg] = useState("");
@@ -209,6 +223,19 @@ export default function PlanningClient() {
     }
   }, [filteredAreas, selectedBa]);
 
+  const loadDimRegistry = useCallback(async () => {
+    try {
+      const res = await apiGet<{ dimensions?: DimensionDef[] }>("/api/planning/dimensions");
+      setDimRegistry(res.dimensions ?? []);
+    } catch {
+      setDimRegistry([]);
+    }
+  }, []);
+
+  useEffect(() => {
+    void loadDimRegistry();
+  }, [loadDimRegistry]);
+
   const segmentOptions = useMemo(() => {
     const set = new Set<string>();
     plans.forEach((p) => {
@@ -218,10 +245,60 @@ export default function PlanningClient() {
     return Array.from(set).sort((a, b) => a.localeCompare(b));
   }, [plans]);
 
+  // Custom dimensions available to filter by (registry minus 'segment', which
+  // has its own filter) that actually appear on the loaded plans.
+  const filterableDims = useMemo(
+    () => dimRegistry.filter((d) => d.key !== "segment"),
+    [dimRegistry]
+  );
+
+  const dimValueOptions = useMemo(() => {
+    if (!dimFilterKey) return [] as string[];
+    const set = new Set<string>();
+    plans.forEach((p) => {
+      const v = String((p.dimensions || {})[dimFilterKey] || "").trim();
+      if (v) set.add(v);
+    });
+    return Array.from(set).sort((a, b) => a.localeCompare(b));
+  }, [plans, dimFilterKey]);
+
   const visiblePlans = useMemo(() => {
-    if (segmentFilter === "All") return plans;
-    return plans.filter((p) => String(p.segment || "").trim() === segmentFilter);
-  }, [plans, segmentFilter]);
+    return plans.filter((p) => {
+      if (segmentFilter !== "All" && String(p.segment || "").trim() !== segmentFilter) return false;
+      if (dimFilterKey && dimFilterVal !== "All") {
+        if (String((p.dimensions || {})[dimFilterKey] || "").trim() !== dimFilterVal) return false;
+      }
+      return true;
+    });
+  }, [plans, segmentFilter, dimFilterKey, dimFilterVal]);
+
+  const openDimEditor = useCallback(() => {
+    setDimEditorRows(dimRegistry.map((d) => ({ ...d, values: [...(d.values || [])] })));
+    setDimEditorOpen(true);
+  }, [dimRegistry]);
+
+  const saveDimRegistry = useCallback(async () => {
+    const payload = dimEditorRows
+      .map((r) => ({
+        key: String(r.key || r.label || "").trim(),
+        label: String(r.label || "").trim(),
+        values: Array.isArray(r.values) ? r.values : []
+      }))
+      .filter((r) => r.key || r.label);
+    setDimEditorBusy(true);
+    try {
+      const res = await apiPost<{ dimensions?: DimensionDef[] }>("/api/planning/dimensions", {
+        dimensions: payload
+      });
+      setDimRegistry(res.dimensions ?? []);
+      setDimEditorOpen(false);
+      notify("success", "Dimensions saved.");
+    } catch (error: any) {
+      notify("error", error?.message || "Could not save dimensions.");
+    } finally {
+      setDimEditorBusy(false);
+    }
+  }, [dimEditorRows, notify]);
 
   const groupedKanban = useMemo(() => {
     const grouped: Record<string, Record<string, PlanRecord[]>> = {};
@@ -454,6 +531,42 @@ export default function PlanningClient() {
               ))}
             </select>
           ) : null}
+          {filterableDims.length ? (
+            <select
+              className="input ws-segment-filter"
+              value={dimFilterKey}
+              onChange={(e) => {
+                setDimFilterKey(e.target.value);
+                setDimFilterVal("All");
+              }}
+              aria-label="Filter by dimension"
+            >
+              <option value="">No dimension</option>
+              {filterableDims.map((d) => (
+                <option key={d.key} value={d.key}>
+                  {d.label}
+                </option>
+              ))}
+            </select>
+          ) : null}
+          {dimFilterKey && dimValueOptions.length ? (
+            <select
+              className="input ws-segment-filter"
+              value={dimFilterVal}
+              onChange={(e) => setDimFilterVal(e.target.value)}
+              aria-label="Filter by dimension value"
+            >
+              <option value="All">All values</option>
+              {dimValueOptions.map((v) => (
+                <option key={v} value={v}>
+                  {v}
+                </option>
+              ))}
+            </select>
+          ) : null}
+          <button type="button" className="btn btn-light" onClick={openDimEditor}>
+            Manage dimensions
+          </button>
           <div className="ws-search">
             <input
               className="input"
@@ -584,6 +697,14 @@ export default function PlanningClient() {
                                                   {String(plan.segment || "").trim() ? (
                                                     <span className="ws-segment-tag">{plan.segment}</span>
                                                   ) : null}
+                                                  {filterableDims.map((d) => {
+                                                    const v = String((plan.dimensions || {})[d.key] || "").trim();
+                                                    return v ? (
+                                                      <span key={d.key} className="ws-segment-tag" title={d.label}>
+                                                        {v}
+                                                      </span>
+                                                    ) : null;
+                                                  })}
                                                   {ADMIN_DELETE_ENABLED ? (
                                                     <button
                                                       type="button"
@@ -844,6 +965,75 @@ export default function PlanningClient() {
                   Delete
                 </button>
                 <button type="button" className="btn" onClick={() => setDeletePlanId(null)}>
+                  Cancel
+                </button>
+              </div>
+            </div>
+          </div>
+        ) : null}
+
+        {dimEditorOpen ? (
+          <div className="ws-modal-backdrop">
+            <div className="ws-modal">
+              <div className="ws-modal-header">
+                <h3>Manage dimensions</h3>
+              </div>
+              <div className="ws-modal-body">
+                <div className="text-muted" style={{ marginBottom: 10 }}>
+                  Custom dimensions are optional tags you can set on plans and filter by. They organise plans and do not
+                  affect any calculation. Values are optional (leave blank to allow free text).
+                </div>
+                {dimEditorRows.map((row, idx) => (
+                  <div key={idx} className="ws-dim-row">
+                    <input
+                      className="input"
+                      type="text"
+                      placeholder="Label (e.g. Tenure band)"
+                      value={row.label || ""}
+                      onChange={(e) =>
+                        setDimEditorRows((prev) =>
+                          prev.map((r, i) => (i === idx ? { ...r, label: e.target.value } : r))
+                        )
+                      }
+                    />
+                    <input
+                      className="input"
+                      type="text"
+                      placeholder="Allowed values, comma-separated (optional)"
+                      value={(row.values || []).join(", ")}
+                      onChange={(e) =>
+                        setDimEditorRows((prev) =>
+                          prev.map((r, i) =>
+                            i === idx
+                              ? { ...r, values: e.target.value.split(",").map((v) => v.trim()).filter(Boolean) }
+                              : r
+                          )
+                        )
+                      }
+                    />
+                    <button
+                      type="button"
+                      className="btn btn-light"
+                      aria-label="Remove dimension"
+                      onClick={() => setDimEditorRows((prev) => prev.filter((_, i) => i !== idx))}
+                    >
+                      ✕
+                    </button>
+                  </div>
+                ))}
+                <button
+                  type="button"
+                  className="btn btn-light"
+                  onClick={() => setDimEditorRows((prev) => [...prev, { key: "", label: "", values: [] }])}
+                >
+                  + Add dimension
+                </button>
+              </div>
+              <div className="ws-modal-footer">
+                <button type="button" className="btn btn-primary" onClick={saveDimRegistry} disabled={dimEditorBusy}>
+                  {dimEditorBusy ? "Saving…" : "Save"}
+                </button>
+                <button type="button" className="btn" onClick={() => setDimEditorOpen(false)}>
                   Cancel
                 </button>
               </div>
