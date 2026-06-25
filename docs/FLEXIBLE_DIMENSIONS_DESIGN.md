@@ -109,8 +109,11 @@ Each phase is an independent, reviewable PR.
     pure helper `scope_dimension_rollup`) groups the per-scope FTE balance by a
     registered dimension. It only re-buckets numbers the engine already computed —
     no calc change — and the default BA/SBA/Channel/Site rollup is untouched.
-- **Phase 3 — dimension-aware analytics.** Surface the new group-bys in Ops and
-  the scope-balance / optimiser / allocation features already shipped.
+- **Phase 3 — dimension-aware analytics. DONE.** The Demand-by-Dimension group-by
+  is surfaced at the org level (the BA rollup view, not just per-plan), with a
+  coverage % column, and a **Scope tags** manager in the Planning workspace lets
+  planners assign scope→dimension values from the UI (closing the API-only gap so
+  the group-by is usable end-to-end).
 
 ## Backward compatibility & migration
 

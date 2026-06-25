@@ -5136,6 +5136,9 @@ summary:focus-visible,
 .plan-demanddim-result {
   margin-top: 10px;
 }
+.plan-rollup-dimension {
+  margin-top: 18px;
+}
 .plan-dim-controls {
   display: flex;
   flex-wrap: wrap;
@@ -5167,6 +5170,17 @@ summary:focus-visible,
   gap: 8px;
   align-items: center;
   margin-bottom: 8px;
+}
+.ws-scopetag-row {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  margin-bottom: 8px;
+  flex-wrap: wrap;
+}
+.ws-scopetag-row .input {
+  flex: 1 1 140px;
+  min-width: 120px;
 }
 .ws-dim-row .input:first-child {
   flex: 0 0 200px;

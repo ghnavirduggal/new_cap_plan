@@ -2417,6 +2417,74 @@ export default function PlanDetailClient({ planId, rollupBa }: PlanDetailClientP
     }
   };
 
+  // Rendered in both the plan Options area and the BA-rollup view (org-level).
+  const demandByDimensionPanel = editableDims.length ? (
+    <div className="plan-options-demanddim">
+      <h5>Demand by Dimension</h5>
+      <p className="plan-scenarios-hint">
+        Re-bucket the per-scope FTE balance by a custom dimension (tagged on scopes via ingest or the
+        scope-dimensions API). This only groups already-computed numbers — it does not change any calculation.
+      </p>
+      <div className="plan-alloc-controls">
+        <label>
+          Dimension
+          <select className="input" value={demandDim} onChange={(e) => setDemandDim(e.target.value)}>
+            <option value="">Select…</option>
+            {editableDims.map((d) => (
+              <option key={d.key} value={d.key}>
+                {d.label}
+              </option>
+            ))}
+          </select>
+        </label>
+      </div>
+      <div className="plan-whatif-actions">
+        <button type="button" className="btn btn-primary" onClick={handleDemandByDimension} disabled={demandBusy}>
+          {demandBusy ? "Grouping…" : "Group demand"}
+        </button>
+      </div>
+      {demandRollup ? (
+        demandRollup.groups.length ? (
+          <div className="plan-demanddim-result">
+            <div className="plan-scenarios-hint">
+              {demandRollup.scope_count} scopes grouped by {demandRollup.dimension}
+            </div>
+            <div className="table-wrap">
+              <table className="table plan-alloc-table">
+                <thead>
+                  <tr>
+                    <th>{demandRollup.dimension}</th>
+                    <th className="num">Scopes</th>
+                    <th className="num">Required</th>
+                    <th className="num">Supply</th>
+                    <th className="num">Shortfall</th>
+                    <th className="num">Coverage</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {demandRollup.groups.map((g) => (
+                    <tr key={g.value}>
+                      <td>{g.value}</td>
+                      <td className="num">{g.scope_count}</td>
+                      <td className="num">{g.required_fte}</td>
+                      <td className="num">{g.supply_fte}</td>
+                      <td className="num">{g.shortfall_fte}</td>
+                      <td className="num">
+                        {g.required_fte > 0 ? `${Math.round((g.supply_fte / g.required_fte) * 100)}%` : "—"}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        ) : (
+          <div className="plan-scenarios-empty">No scopes to group.</div>
+        )
+      ) : null}
+    </div>
+  ) : null;
+
   // --- Top-down target allocation -----------------------------------------
   const handleAllocate = async () => {
     if (!planId || isRollup) return;
@@ -3289,6 +3357,9 @@ export default function PlanDetailClient({ planId, rollupBa }: PlanDetailClientP
                 dateMode={grain === "month" ? "month" : "day"}
                 wrapperRef={lowerTableRef}
               />
+              {demandByDimensionPanel ? (
+                <div className="plan-rollup-dimension">{demandByDimensionPanel}</div>
+              ) : null}
             </div>
           ) : activeConfig.key === "emp" ? (
             renderRoster()
@@ -4168,68 +4239,7 @@ export default function PlanDetailClient({ planId, rollupBa }: PlanDetailClientP
               </div>
             ) : null}
 
-            {editableDims.length ? (
-              <div className="plan-options-demanddim">
-                <h5>Demand by Dimension</h5>
-                <p className="plan-scenarios-hint">
-                  Re-bucket the per-scope FTE balance by a custom dimension (tagged on scopes via ingest or the
-                  scope-dimensions API). This only groups already-computed numbers — it does not change any calculation.
-                </p>
-                <div className="plan-alloc-controls">
-                  <label>
-                    Dimension
-                    <select className="input" value={demandDim} onChange={(e) => setDemandDim(e.target.value)}>
-                      <option value="">Select…</option>
-                      {editableDims.map((d) => (
-                        <option key={d.key} value={d.key}>
-                          {d.label}
-                        </option>
-                      ))}
-                    </select>
-                  </label>
-                </div>
-                <div className="plan-whatif-actions">
-                  <button type="button" className="btn btn-primary" onClick={handleDemandByDimension} disabled={demandBusy}>
-                    {demandBusy ? "Grouping…" : "Group demand"}
-                  </button>
-                </div>
-                {demandRollup ? (
-                  demandRollup.groups.length ? (
-                    <div className="plan-demanddim-result">
-                      <div className="plan-scenarios-hint">
-                        {demandRollup.scope_count} scopes grouped by {demandRollup.dimension}
-                      </div>
-                      <div className="table-wrap">
-                        <table className="table plan-alloc-table">
-                          <thead>
-                            <tr>
-                              <th>{demandRollup.dimension}</th>
-                              <th className="num">Scopes</th>
-                              <th className="num">Required</th>
-                              <th className="num">Supply</th>
-                              <th className="num">Shortfall</th>
-                            </tr>
-                          </thead>
-                          <tbody>
-                            {demandRollup.groups.map((g) => (
-                              <tr key={g.value}>
-                                <td>{g.value}</td>
-                                <td className="num">{g.scope_count}</td>
-                                <td className="num">{g.required_fte}</td>
-                                <td className="num">{g.supply_fte}</td>
-                                <td className="num">{g.shortfall_fte}</td>
-                              </tr>
-                            ))}
-                          </tbody>
-                        </table>
-                      </div>
-                    </div>
-                  ) : (
-                    <div className="plan-scenarios-empty">No scopes to group.</div>
-                  )
-                ) : null}
-              </div>
-            ) : null}
+            {editableDims.length ? demandByDimensionPanel : null}
 
             <div className="plan-options-debug">
               <div className="plan-options-debug-head">
