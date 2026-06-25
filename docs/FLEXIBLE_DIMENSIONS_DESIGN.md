@@ -99,12 +99,16 @@ Each phase is an independent, reviewable PR.
   - Plan detail: edit all registered dimensions. Planning list: filter by any
     dimension; group the kanban by a chosen dimension.
   - **No calc/rollup change.** Pure plan-organising layer (Option C).
-- **Phase 2 — dimensioned demand (Option B).**
-  - A `scope_dimensions` sidecar populated at ingest (the REST ingest API and the
-    upload path accept a `dimensions` map).
-  - Rollups can group child scopes by a registered dimension by joining the
-    sidecar. Opt-in per rollup view; the default BA/SBA/Channel/Site rollup is
-    unchanged.
+- **Phase 2 — dimensioned demand (Option B). DONE.**
+  - A `scope_dimensions` sidecar (`scope_dimensions_store`) maps a normalized
+    timeseries `scope_key` to a dimension map. Populated at ingest (the REST
+    ingest API accepts an optional `dimensions` object) or via
+    `POST /api/planning/scope/dimensions`. The `scope_key` itself is **not**
+    rewritten.
+  - An **opt-in** rollup (`POST /api/planning/plan/scope-balance-by-dimension`,
+    pure helper `scope_dimension_rollup`) groups the per-scope FTE balance by a
+    registered dimension. It only re-buckets numbers the engine already computed —
+    no calc change — and the default BA/SBA/Channel/Site rollup is untouched.
 - **Phase 3 — dimension-aware analytics.** Surface the new group-bys in Ops and
   the scope-balance / optimiser / allocation features already shipped.
 

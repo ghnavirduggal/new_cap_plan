@@ -109,6 +109,8 @@ from app.pipeline import risk_band as risk_band_mod
 from app.pipeline import accuracy_store
 from app.pipeline import hiring_solver
 from app.pipeline import dimension_store
+from app.pipeline import scope_dimensions_store
+from app.pipeline import scope_dimension_rollup
 from app.pipeline.ba_rollup_plan import compute_ba_rollup_tables, invalidate_rollup_cache, month_cols_for_ba, week_cols_for_ba
 from app.pipeline.plan_detail._common import (
     clone_plan,
@@ -1549,12 +1551,19 @@ def _require_ingest_auth(request: Request) -> None:
         security.require_user(request)
 
 
-def _ingest_timeseries_core(kind: str, scope_key: str, rows: list, mode: str, actor: str) -> dict:
+def _ingest_timeseries_core(kind: str, scope_key: str, rows: list, mode: str, actor: str,
+                            dimensions: Optional[dict] = None) -> dict:
     """Normalize + persist a timeseries batch, reusing the interactive path's
     helpers. Returns a clean integrator-facing summary."""
     df = df_from_payload(rows)
     base_df, extras = _normalize_timeseries(str(kind or ""), df)
     scope_norm = normalize_scope_key(scope_key)
+    # Optional flexible-dimension tags for this scope (non-destructive sidecar).
+    if isinstance(dimensions, dict) and dimensions:
+        try:
+            scope_dimensions_store.save(scope_key, dimensions, dimension_store.load_registry() or None)
+        except Exception:
+            logger.exception("scope-dimension sidecar write failed for scope=%s", scope_key)
     data_hash = timeseries_dataset_hash(str(kind or ""), base_df)
     if data_hash:
         latest = get_latest_timeseries_hash(str(kind or ""), scope_norm)
@@ -1679,7 +1688,8 @@ def ingest_timeseries(payload: dict, request: Request):
         actor = ""
     actor = actor or "ingest-api"
 
-    return sanitize_for_json(_ingest_timeseries_core(kind, scope_key, rows, mode, actor))
+    dimensions = payload.get("dimensions") if isinstance(payload.get("dimensions"), dict) else None
+    return sanitize_for_json(_ingest_timeseries_core(kind, scope_key, rows, mode, actor, dimensions))
 
 
 @app.post("/api/uploads/timeseries/preview")
@@ -2494,6 +2504,89 @@ def list_dimension_values(key: str = Query(...), status: Optional[str] = Query(N
         if str((p.get("dimensions") or {}).get(dim_key) or "").strip()
     })
     return {"key": dim_key, "values": values}
+
+
+# --- Dimensioned demand (Phase 2: scope-dimension sidecar + opt-in rollup) ---
+# A non-destructive sidecar maps a timeseries scope_key -> custom dimension map,
+# WITHOUT rewriting the scope_key. The default rollup is untouched; only the
+# opt-in by-dimension rollup below joins the sidecar. See the design doc.
+
+@app.get("/api/planning/scope/dimensions")
+def get_scope_dimensions(scope_key: Optional[str] = Query(None)):
+    """One scope's dimensions (when scope_key given) or the full sidecar map."""
+    if scope_key:
+        return {"scope_key": scope_key, "dimensions": scope_dimensions_store.load(scope_key)}
+    return {"scopes": scope_dimensions_store.load_all()}
+
+
+@app.post("/api/planning/scope/dimensions")
+def set_scope_dimensions(payload: dict, request: Request):
+    """Set a scope's dimension map. Admin-gated when authz is enabled."""
+    if not isinstance(payload, dict):
+        raise HTTPException(status_code=400, detail="Payload must be a JSON object.")
+    if security.authz_enabled():
+        principal = security.require_user(request)
+        if not getattr(principal, "is_admin", False):
+            raise HTTPException(status_code=403, detail="Only an admin can set scope dimensions.")
+    scope_key = str(payload.get("scope_key") or "").strip()
+    if not scope_key:
+        raise HTTPException(status_code=400, detail="scope_key is required.")
+    dimensions = payload.get("dimensions")
+    if not isinstance(dimensions, dict):
+        raise HTTPException(status_code=400, detail="'dimensions' must be an object of key:value pairs.")
+    registry = dimension_store.load_registry()
+    saved = scope_dimensions_store.save(scope_key, dimensions, registry or None)
+    return {"status": "saved", "scope_key": scope_key, "dimensions": saved}
+
+
+@app.post("/api/planning/plan/scope-balance-by-dimension")
+def planning_scope_balance_by_dimension(payload: dict, request: Request):
+    """OPT-IN: group the plan's per-scope balance by a registered dimension.
+
+    Re-buckets the FTE numbers workforce_preview already computes — no calc
+    change. Scopes are matched to dimension values via the scope-dimension
+    sidecar (keyed by ba|sba|channel|site)."""
+    if not isinstance(payload, dict):
+        raise HTTPException(status_code=400, detail="Payload must be a JSON object.")
+    dim_key = dimension_store.slug(payload.get("dimension") or payload.get("key"))
+    if not dim_key:
+        raise HTTPException(status_code=400, detail="A 'dimension' key is required.")
+    plan_id = payload.get("plan_id")
+    rollup_ba = str(payload.get("rollup_ba") or payload.get("business_area") or "").strip()
+    grain = str(payload.get("grain") or "D")
+    ba: list[str] = []
+    start_date = payload.get("start_date")
+    end_date = payload.get("end_date")
+    if plan_id:
+        plan = _authorize_plan_access(plan_id, request)
+        ba_val = str(plan.get("business_area") or plan.get("vertical") or "").strip()
+        if ba_val:
+            ba = [ba_val]
+        start_date = start_date or plan.get("start_week")
+        end_date = end_date or plan.get("end_week")
+    elif rollup_ba:
+        ba = [rollup_ba]
+
+    workforce = workforce_preview(start_date, end_date, grain, ba, [], [], [], [])
+    rows = workforce.get("scope_balance") or []
+    sidecar = scope_dimensions_store.load_all()
+    enriched = []
+    for row in rows:
+        norm = normalize_scope_key("|".join([
+            str(row.get("ba") or ""),
+            str(row.get("sba") or ""),
+            str(row.get("ch") or ""),
+            str(row.get("site") or ""),
+        ]))
+        dims = sidecar.get(norm)
+        if not dims:
+            # Fall back to the 3-part (BA|SBA|Channel) key when site is unset.
+            norm3 = normalize_scope_key("|".join([str(row.get("ba") or ""), str(row.get("sba") or ""), str(row.get("ch") or "")]))
+            dims = sidecar.get(norm3)
+        # Copy the row (don't mutate workforce_preview's possibly-cached result).
+        enriched.append({**row, "dimensions": dims or {}})
+    result = scope_dimension_rollup.rollup_by_dimension(enriched, dim_key)
+    return sanitize_for_json(result)
 
 
 @app.post("/api/planning/plan")
