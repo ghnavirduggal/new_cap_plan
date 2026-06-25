@@ -102,6 +102,7 @@ const sections: Section[] = [
       "Risk-Based Staffing (Plan Detail options): required FTE if you staffed to a higher percentile of demand (P50/P75/P90). The demand band comes from the scope's forecast error (a coefficient of variation, estimated from tracked forecast MAPE or set manually); each percentile re-runs the capacity engine with volume scaled by 1 + z·CV.",
       "Monte Carlo (Plan Detail options): simulates uncertain demand (lognormal around the forecast, spread from the scope's forecast error) to show the distribution of required FTE (P50/P90/P95) and the probability that supply covers demand.",
       "Top-Down Allocation (Plan Detail options): spread an org/BA-level target (a hiring number, an FTE cap) down to the child scopes by a chosen basis — proportional to required FTE, shortfall, supply, or an equal split. Whole-number allocations use largest-remainder rounding so the integer parts sum exactly to the target.",
+      "Cross-Skill Optimiser (Plan Detail options): an opt-in min-cost transportation solver that recommends borrow/lend moves closing the same shortfall as the default suggestion, but preferring transfers within the same business area / channel to reduce disruption. The default greedy suggestion is unchanged.",
       "BA rollups provide summarized capacity views."
     ]
   },
