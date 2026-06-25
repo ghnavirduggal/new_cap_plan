@@ -34,6 +34,7 @@ from app.pipeline.headcount import (
 from app.pipeline.budget_store import load_budget_rows, upsert_budget_rows
 from app.pipeline.dataset_dashboard import dataset_snapshot
 from app.pipeline.ops_dashboard import ops_options, refresh_ops_async, refresh_ops_part, workforce_preview
+from app.pipeline import cross_skill_optimizer
 from app.pipeline.ops_store import (
     get_latest_timeseries_hash,
     load_timeseries_any,
@@ -2002,6 +2003,21 @@ def planning_rebalancing_preview(payload: dict, request: Request):
         loc,
         policy_overrides=policy,
     )
+    # Opt-in: a min-cost transportation optimiser that prefers in-BA/in-channel
+    # lends. The default greedy `rebalancing` is left untouched so existing
+    # numbers don't move unless the optimiser is explicitly requested.
+    if payload.get("optimize"):
+        try:
+            sb = workforce.get("scope_balance") or []
+            oh = workforce.get("org_hiring") or {}
+            eff = float(oh.get("cross_skill_efficiency_pct") or 85.0) / 100.0
+            lend = float(oh.get("max_lend_pct") or 60.0) / 100.0
+            costs = payload.get("affinity_costs") if isinstance(payload.get("affinity_costs"), dict) else None
+            opt = cross_skill_optimizer.optimize(sb, eff, lend, costs)
+            workforce["rebalancing_optimized"] = opt["moves"]
+            workforce["optimizer_summary"] = opt["summary"]
+        except Exception:
+            logger.exception("cross-skill optimize failed for plan_id=%s", plan_id)
     return sanitize_for_json({"status": "ready", "workforce": workforce})
 
 

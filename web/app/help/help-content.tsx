@@ -101,6 +101,7 @@ const sections: Section[] = [
       "Hiring Plan Solver (Plan Detail options): recommends new-hire class start weeks and sizes to close the projected FTE shortfall, accounting for the training + nesting lead time (and optional weekly attrition erosion). Weeks that can't be covered in time are flagged; 'Apply as classes' writes the recommendation into the plan's new-hire classes for review.",
       "Risk-Based Staffing (Plan Detail options): required FTE if you staffed to a higher percentile of demand (P50/P75/P90). The demand band comes from the scope's forecast error (a coefficient of variation, estimated from tracked forecast MAPE or set manually); each percentile re-runs the capacity engine with volume scaled by 1 + z·CV.",
       "Monte Carlo (Plan Detail options): simulates uncertain demand (lognormal around the forecast, spread from the scope's forecast error) to show the distribution of required FTE (P50/P90/P95) and the probability that supply covers demand.",
+      "Cross-Skill Optimiser (Plan Detail options): an opt-in min-cost transportation solver that recommends borrow/lend moves closing the same shortfall as the default suggestion, but preferring transfers within the same business area / channel to reduce disruption. The default greedy suggestion is unchanged.",
       "BA rollups provide summarized capacity views."
     ]
   },
