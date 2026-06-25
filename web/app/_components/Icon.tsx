@@ -53,7 +53,9 @@ export type IconName =
   | "pin"
   | "compare"
   | "arrow-left"
-  | "chevron-left";
+  | "chevron-left"
+  | "chevron-down"
+  | "trophy";
 
 const PATHS: Record<IconName, string> = {
   forecast: "M3 3v18h18 M7 14l3-3 3 3 5-6",
@@ -102,6 +104,8 @@ const PATHS: Record<IconName, string> = {
   compare: "M9 3v18 M15 3v18 M3 12h18 M5 7l2 0 M5 17l2 0 M17 7l2 0 M17 17l2 0",
   "arrow-left": "M19 12H5 M12 19l-7-7 7-7",
   "chevron-left": "M15 18l-6-6 6-6",
+  "chevron-down": "M6 9l6 6 6-6",
+  trophy: "M8 21h8 M12 17v4 M7 4h10v4a5 5 0 0 1-10 0z M7 5H4v2a3 3 0 0 0 3 3 M17 5h3v2a3 3 0 0 1-3 3",
 };
 
 type IconProps = {

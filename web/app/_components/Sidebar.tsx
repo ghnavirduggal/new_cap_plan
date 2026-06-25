@@ -23,11 +23,12 @@ export default function Sidebar({ collapsed }: { collapsed: boolean }) {
   const pathname = usePathname();
   return (
     <aside className={`sidebar ${collapsed ? "collapsed" : "expanded"}`}>
-      <div className="brand" aria-label="Cap-Connect">
-        <div className="logo-full">
-          <img src="/assets/logo2.png" alt="Cap-Connect" />
-        </div>
-        <img src="/assets/logo1.png" alt="Cap-Connect" className="logo-eagle" />
+      {/* One left-anchored logo: the eagle sits hard-left and never moves; as the
+          rail widens the clip reveals the "Barclays" wordmark, so it reads as the
+          word sliding out of the eagle. (logo2.png = eagle + wordmark, eagle on
+          the far left; logo1.png = eagle only, used for the favicon.) */}
+      <div className="brand" aria-label="Barclays">
+        <img src="/assets/logo2.png" alt="Barclays" className="brand-logo" />
       </div>
       <nav className="nav-list">
         {navItems.map((item) => (

@@ -186,74 +186,47 @@ summary:focus-visible,
 }
 
 .sidebar.expanded {
-  width: 222px;
+  width: 268px;
 }
 
 .sidebar.collapsed {
-  width: 72px;
+  width: 88px;
 }
 
 .sidebar-expanded {
-  --sidebar-width: 222px;
+  --sidebar-width: 268px;
 }
 
 .sidebar-collapsed {
-  --sidebar-width: 72px;
+  --sidebar-width: 88px;
 }
 
+/* Brand = a left-anchored clip window on a single logo (logo2 = eagle hard-left
+   + wordmark). The eagle sits at a CONSTANT left padding so it never moves; the
+   window width tracks the rail, so expanding it reveals the wordmark — the word
+   appears to slide out of the stationary eagle. The fast width transition (kept
+   in sync with the rail) sells the effect. */
 .sidebar .brand {
-  position: relative;
   height: 56px;
-  margin: 0 12px;
-  padding: 8px 14px;
+  width: calc(100% - 24px);
+  margin: 2px 0 6px;
+  padding: 0 14px;
   display: flex;
   align-items: center;
-  justify-content: center;
-  background: rgba(255, 255, 255, 0.96);
-  border-radius: 14px;
-  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.22), inset 0 0 0 1px rgba(255, 255, 255, 0.5);
-  align-self: stretch;
+  justify-content: flex-start;
+  overflow: hidden;
+  background: rgba(255, 255, 255, 0.97);
+  border-radius: 16px;
+  box-shadow: 0 8px 22px rgba(0, 0, 0, 0.24), inset 0 0 0 1px rgba(255, 255, 255, 0.55);
+  transition: width 0.22s var(--ease);
 }
 
-.sidebar .brand .logo-full,
-.sidebar .brand .logo-eagle {
-  position: absolute;
-  inset: 8px 12px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  opacity: 0;
-  transition: opacity 0.35s ease, transform 0.35s ease;
-}
-
-.sidebar .brand .logo-full img {
+.sidebar .brand .brand-logo {
   height: 40px;
   width: auto;
-}
-
-.sidebar .brand .logo-eagle {
-  height: 36px;
-  width: auto;
-}
-
-.sidebar-expanded .sidebar .brand .logo-full {
-  opacity: 1;
-  transform: translateX(0);
-}
-
-.sidebar-expanded .sidebar .brand .logo-eagle {
-  opacity: 0;
-  transform: translateX(-6px);
-}
-
-.sidebar-collapsed .sidebar .brand .logo-full {
-  opacity: 0;
-  transform: translateX(6px);
-}
-
-.sidebar-collapsed .sidebar .brand .logo-eagle {
-  opacity: 1;
-  transform: translateX(0);
+  max-width: none;
+  display: block;
+  flex: 0 0 auto;
 }
 
 .nav-list {

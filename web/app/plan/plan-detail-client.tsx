@@ -3250,7 +3250,7 @@ export default function PlanDetailClient({ planId, rollupBa }: PlanDetailClientP
               title="Collapse/Expand"
               onClick={() => setUpperCollapsed((prev) => !prev)}
             >
-              ▼
+              <Icon name="chevron-down" size={16} style={{ transform: upperCollapsed ? "rotate(-90deg)" : "none", transition: "transform 150ms" }} />
             </button>
           </div>
         </div>
