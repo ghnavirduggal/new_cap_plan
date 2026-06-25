@@ -3938,13 +3938,24 @@ def list_saved_runs():
 def get_forecast_accuracy(scope: str = Query("global")):
     from app.pipeline import accuracy_store
 
-    return sanitize_for_json(
-        {
-            "scopes": accuracy_store.list_scopes(),
-            "leaderboard": accuracy_store.leaderboard(scope),
-            "history": accuracy_store.load_history(scope),
+    try:
+        return sanitize_for_json(
+            {
+                "scopes": accuracy_store.list_scopes(),
+                "leaderboard": accuracy_store.leaderboard(scope),
+                "history": accuracy_store.load_history(scope),
+            }
+        )
+    except Exception:
+        # Never 500 the accuracy view on malformed/legacy history — return an
+        # empty-but-valid payload so the page renders its "no data yet" state.
+        logger.exception("get_forecast_accuracy failed for scope=%s", scope)
+        return {
+            "scopes": [],
+            "leaderboard": {"scope": str(scope or "global").strip().lower() or "global",
+                            "latest": None, "models": [], "trend": []},
+            "history": [],
         }
-    )
 
 
 @app.post("/api/forecast/accuracy/record")

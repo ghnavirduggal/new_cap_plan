@@ -190,7 +190,12 @@ def list_scopes() -> list[str]:
 
 
 def load_history(scope: str) -> list[dict]:
-    return list(_load_all().get(_scope_key(scope)) or [])
+    raw = _load_all().get(_scope_key(scope))
+    if not isinstance(raw, list):
+        return []
+    # Only keep well-formed snapshot dicts so downstream consumers can't choke
+    # on a legacy/corrupt entry.
+    return [s for s in raw if isinstance(s, dict)]
 
 
 def leaderboard(scope: str) -> dict:
@@ -205,7 +210,12 @@ def leaderboard(scope: str) -> dict:
     for snap in history:
         point = {"ts": snap.get("ts"), "run_label": snap.get("run_label")}
         for m in snap.get("models") or []:
-            point[m["model"]] = m.get("primary_value")
+            if not isinstance(m, dict):
+                continue
+            name = m.get("model")
+            if not name:
+                continue
+            point[str(name)] = m.get("primary_value")
         trend.append(point)
     return {
         "scope": _scope_key(scope),
