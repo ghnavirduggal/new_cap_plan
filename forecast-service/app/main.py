@@ -1220,12 +1220,22 @@ def health():
 
 @app.on_event("startup")
 def _startup():
-    ensure_budget_schema()
-    ensure_ops_schema()
-    ensure_newhire_schema()
-    ensure_roster_schema()
-    ensure_shrinkage_schema()
-    ensure_planning_schema()
+    # Best-effort schema bootstrap. If the database isn't reachable yet (e.g. the
+    # container started before Postgres finished initialising), don't crash the
+    # whole service — each read/write path calls ensure_*_schema() lazily, so the
+    # schema is created on first use once the DB is up.
+    for ensure in (
+        ensure_budget_schema,
+        ensure_ops_schema,
+        ensure_newhire_schema,
+        ensure_roster_schema,
+        ensure_shrinkage_schema,
+        ensure_planning_schema,
+    ):
+        try:
+            ensure()
+        except Exception:
+            logger.exception("startup schema bootstrap failed for %s (will retry lazily)", getattr(ensure, "__name__", ensure))
 
 
 @app.get("/api/forecast/config")

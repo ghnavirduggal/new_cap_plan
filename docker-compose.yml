@@ -81,6 +81,10 @@ services:
 
   forecast-service:
     build: ./forecast-service
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
     environment:
       DATABASE_URL: postgres://${POSTGRES_USER:-cap}:${POSTGRES_PASSWORD:-cap}@db:5432/${POSTGRES_DB:-cap_planner}?sslmode=disable
       CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:3000}
