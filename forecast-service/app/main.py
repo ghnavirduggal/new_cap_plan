@@ -108,6 +108,7 @@ from app.pipeline import monte_carlo as monte_carlo_mod
 from app.pipeline import risk_band as risk_band_mod
 from app.pipeline import accuracy_store
 from app.pipeline import hiring_solver
+from app.pipeline import dimension_store
 from app.pipeline.ba_rollup_plan import compute_ba_rollup_tables, invalidate_rollup_cache, month_cols_for_ba, week_cols_for_ba
 from app.pipeline.plan_detail._common import (
     clone_plan,
@@ -2417,6 +2418,82 @@ def list_plan_segments(status: Optional[str] = Query(None)):
         plans = []
     segs = sorted({str(p.get("segment") or "").strip() for p in plans if str(p.get("segment") or "").strip()})
     return {"segments": segs}
+
+
+# --- Flexible dimensions (registry + per-plan dimension map) ----------------
+# A configurable, ordered set of custom dimensions (Phase 1). Generalises the
+# single 'segment' tag above to an N-dimension map. Plan-organising only: it does
+# NOT touch the calc core, rollups, or ingest. See docs/FLEXIBLE_DIMENSIONS_DESIGN.md.
+
+@app.get("/api/planning/dimensions")
+def get_dimension_registry():
+    """The registered custom dimensions (ordered)."""
+    return {"dimensions": dimension_store.load_registry()}
+
+
+@app.post("/api/planning/dimensions")
+def set_dimension_registry(payload: dict, request: Request):
+    """Replace the dimension registry. Admin-gated when authz is enabled."""
+    if security.authz_enabled():
+        principal = security.require_user(request)
+        if not getattr(principal, "is_admin", False):
+            raise HTTPException(status_code=403, detail="Only an admin can edit the dimension registry.")
+    raw = payload.get("dimensions") if isinstance(payload, dict) else None
+    registry = dimension_store.save_registry(raw)
+    return {"status": "saved", "dimensions": registry}
+
+
+@app.post("/api/planning/plan/dimensions")
+def set_plan_dimensions(payload: dict, request: Request):
+    """Set/merge a plan's custom-dimension values (a {key: value} map).
+
+    Blank values clear that dimension; only registered keys are kept. Stored in
+    plan metadata (hierarchy_json.dimensions) — no calc impact."""
+    if not isinstance(payload, dict):
+        raise HTTPException(status_code=400, detail="Dimensions payload must be a JSON object.")
+    plan_id = payload.get("plan_id")
+    if not plan_id:
+        raise HTTPException(status_code=400, detail="plan_id is required.")
+    plan = _authorize_plan_access(plan_id, request)
+    registry = dimension_store.load_registry()
+    incoming = payload.get("dimensions")
+    if not isinstance(incoming, dict):
+        raise HTTPException(status_code=400, detail="'dimensions' must be an object of key:value pairs.")
+    # Merge over the plan's existing map, then drop blanks / unregistered keys.
+    merged = dict(plan.get("dimensions") or {})
+    for k, v in incoming.items():
+        merged[dimension_store.slug(k)] = v
+    dims = dimension_store.normalize_dimensions(merged, registry) if registry else \
+        dimension_store.normalize_dimensions(merged)
+    save_plan_meta(int(plan_id), {"dimensions": dims})
+    try:
+        record_activity(
+            plan_id=int(plan_id),
+            action=f"updated dimensions ({', '.join(sorted(dims)) or 'none'})",
+            actor=current_user_fallback(),
+            entity_type="dimensions",
+        )
+    except Exception:
+        pass
+    return {"status": "saved", "dimensions": dims}
+
+
+@app.get("/api/planning/dimension-values")
+def list_dimension_values(key: str = Query(...), status: Optional[str] = Query(None)):
+    """Distinct, non-empty values used for a given dimension across plans."""
+    dim_key = dimension_store.slug(key)
+    if not dim_key:
+        return {"key": "", "values": []}
+    try:
+        plans = list_plans(status_filter=status, limit=500)
+    except Exception:
+        plans = []
+    values = sorted({
+        str((p.get("dimensions") or {}).get(dim_key) or "").strip()
+        for p in plans
+        if str((p.get("dimensions") or {}).get(dim_key) or "").strip()
+    })
+    return {"key": dim_key, "values": values}
 
 
 @app.post("/api/planning/plan")

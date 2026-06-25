@@ -155,23 +155,49 @@ def _to_json(value: object) -> Optional[Json]:
     return Json(value)
 
 
-def _plan_segment(hierarchy_json: object) -> str:
-    """Extract the optional 'segment' tag from a plan's hierarchy_json blob."""
+def _hier_dict(hierarchy_json: object) -> dict:
+    """Parse a plan's hierarchy_json blob into a dict (empty on failure)."""
     raw = hierarchy_json
     if isinstance(raw, str) and raw.strip():
         try:
             raw = json.loads(raw)
         except Exception:
-            return ""
+            return {}
+    return raw if isinstance(raw, dict) else {}
+
+
+def _plan_segment(hierarchy_json: object) -> str:
+    """Extract the optional 'segment' tag from a plan's hierarchy_json blob."""
+    return str(_hier_dict(hierarchy_json).get("segment") or "").strip()
+
+
+def _plan_dimensions(hierarchy_json: object) -> dict:
+    """Extract the plan's custom-dimension map from hierarchy_json.
+
+    Generalises 'segment' (Phase 0) to an N-dimension map. The legacy top-level
+    'segment' key is merged in as dimensions['segment'] for back-compat so older
+    plans keep working without a rewrite. Values are coerced to trimmed strings.
+    """
+    hier = _hier_dict(hierarchy_json)
+    dims: dict[str, str] = {}
+    raw = hier.get("dimensions")
     if isinstance(raw, dict):
-        return str(raw.get("segment") or "").strip()
-    return ""
+        for k, v in raw.items():
+            key = str(k or "").strip().lower()
+            val = str(v or "").strip()
+            if key and val:
+                dims[key] = val
+    seg = str(hier.get("segment") or "").strip()
+    if seg:
+        dims.setdefault("segment", seg)
+    return dims
 
 
 def _with_segment(d: dict) -> dict:
-    """Surface the segment tag as a top-level field on a plan dict."""
+    """Surface the segment tag + custom-dimension map on a plan dict."""
     if isinstance(d, dict):
         d["segment"] = _plan_segment(d.get("hierarchy_json"))
+        d["dimensions"] = _plan_dimensions(d.get("hierarchy_json"))
     return d
 
 

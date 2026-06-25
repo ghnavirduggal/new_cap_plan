@@ -5120,6 +5120,31 @@ summary:focus-visible,
 .plan-segment-controls .input {
   flex: 1 1 auto;
 }
+.plan-options-dimensions {
+  margin-top: 16px;
+  padding-top: 14px;
+  border-top: 1px solid var(--border);
+}
+.plan-options-dimensions h5 {
+  margin: 0 0 4px;
+  font-size: 13px;
+  font-weight: 700;
+  color: #1f2937;
+}
+.plan-dim-controls {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-bottom: 10px;
+}
+.plan-dim-field {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  font-size: 12px;
+  color: #475569;
+  min-width: 150px;
+}
 .ws-segment-filter {
   max-width: 200px;
 }
@@ -5131,6 +5156,18 @@ summary:focus-visible,
   background: rgba(37, 99, 235, 0.12);
   border-radius: 999px;
   padding: 1px 8px;
+}
+.ws-dim-row {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  margin-bottom: 8px;
+}
+.ws-dim-row .input:first-child {
+  flex: 0 0 200px;
+}
+.ws-dim-row .input:nth-child(2) {
+  flex: 1 1 auto;
 }
 .plan-approval-status {
   display: flex;

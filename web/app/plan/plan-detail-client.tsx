@@ -30,6 +30,14 @@ type PlanRecord = {
   created_at?: string;
   updated_at?: string;
   segment?: string;
+  dimensions?: Record<string, string>;
+};
+
+type DimensionDef = {
+  key: string;
+  label: string;
+  order?: number;
+  values?: string[];
 };
 
 type PlanTableConfig = {
@@ -976,6 +984,9 @@ export default function PlanDetailClient({ planId, rollupBa }: PlanDetailClientP
   const [mcCv, setMcCv] = useState("");
   const [segmentInput, setSegmentInput] = useState("");
   const [segmentBusy, setSegmentBusy] = useState(false);
+  const [dimRegistry, setDimRegistry] = useState<DimensionDef[]>([]);
+  const [dimValues, setDimValues] = useState<Record<string, string>>({});
+  const [dimBusy, setDimBusy] = useState(false);
   const [approval, setApproval] = useState<ApprovalState | null>(null);
   const [approvalNote, setApprovalNote] = useState("");
   const [approvalBusy, setApprovalBusy] = useState(false);
@@ -2314,6 +2325,53 @@ export default function PlanDetailClient({ planId, rollupBa }: PlanDetailClientP
       notify("error", error?.message || "Could not save segment.");
     } finally {
       setSegmentBusy(false);
+    }
+  };
+
+  // --- Custom dimensions (registry-driven plan tags) ----------------------
+  useEffect(() => {
+    let active = true;
+    apiGet<{ dimensions?: DimensionDef[] }>("/api/planning/dimensions")
+      .then((res) => {
+        if (active) setDimRegistry(res.dimensions ?? []);
+      })
+      .catch(() => {
+        if (active) setDimRegistry([]);
+      });
+    return () => {
+      active = false;
+    };
+  }, []);
+
+  useEffect(() => {
+    setDimValues({ ...((planMeta?.dimensions as Record<string, string>) || {}) });
+  }, [planMeta?.dimensions]);
+
+  // Dimensions to edit here exclude 'segment' — it keeps its own panel above.
+  const editableDims = useMemo(
+    () => dimRegistry.filter((d) => d.key !== "segment"),
+    [dimRegistry]
+  );
+
+  const handleSaveDimensions = async () => {
+    if (!planId || isRollup) return;
+    const payload: Record<string, string> = {};
+    editableDims.forEach((d) => {
+      payload[d.key] = String(dimValues[d.key] || "").trim();
+    });
+    setDimBusy(true);
+    try {
+      const res = await apiPost<{ dimensions?: Record<string, string> }>(
+        "/api/planning/plan/dimensions",
+        { plan_id: planId, dimensions: payload }
+      );
+      const saved = res.dimensions ?? {};
+      setPlanMeta((prev) => (prev ? { ...prev, dimensions: saved } : prev));
+      setMessage("Dimensions updated.");
+    } catch (error: any) {
+      notify("error", error?.message || "Could not save dimensions.");
+    } finally {
+      setDimBusy(false);
     }
   };
 
@@ -3832,6 +3890,56 @@ export default function PlanDetailClient({ planId, rollupBa }: PlanDetailClientP
                     disabled={segmentBusy || isLocked}
                   >
                     {segmentBusy ? "Saving…" : "Save"}
+                  </button>
+                </div>
+              </div>
+            ) : null}
+
+            {!isRollup && editableDims.length ? (
+              <div className="plan-options-dimensions">
+                <h5>Dimensions</h5>
+                <p className="plan-scenarios-hint">
+                  Optional custom tags for this plan (configured in the Planning workspace). They organise and filter
+                  plans and do not affect any calculation.
+                </p>
+                <div className="plan-dim-controls">
+                  {editableDims.map((dim) => (
+                    <label key={dim.key} className="plan-dim-field">
+                      <span>{dim.label}</span>
+                      {dim.values && dim.values.length ? (
+                        <select
+                          className="input"
+                          value={dimValues[dim.key] || ""}
+                          onChange={(e) => setDimValues((prev) => ({ ...prev, [dim.key]: e.target.value }))}
+                          disabled={dimBusy || isLocked}
+                        >
+                          <option value="">—</option>
+                          {dim.values.map((v) => (
+                            <option key={v} value={v}>
+                              {v}
+                            </option>
+                          ))}
+                        </select>
+                      ) : (
+                        <input
+                          className="input"
+                          type="text"
+                          value={dimValues[dim.key] || ""}
+                          onChange={(e) => setDimValues((prev) => ({ ...prev, [dim.key]: e.target.value }))}
+                          disabled={dimBusy || isLocked}
+                        />
+                      )}
+                    </label>
+                  ))}
+                </div>
+                <div className="plan-whatif-actions">
+                  <button
+                    type="button"
+                    className="btn btn-primary"
+                    onClick={handleSaveDimensions}
+                    disabled={dimBusy || isLocked}
+                  >
+                    {dimBusy ? "Saving…" : "Save dimensions"}
                   </button>
                 </div>
               </div>
