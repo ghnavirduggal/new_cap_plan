@@ -180,7 +180,7 @@ summary:focus-visible,
   position: fixed;
   top: 0;
   left: 0;
-  height: 100vh;
+  height: 110vh;
   overflow-x: hidden;
   overflow-y: auto;
 }
@@ -210,14 +210,11 @@ summary:focus-visible,
   height: 56px;
   width: calc(100% - 24px);
   margin: 2px 0 6px;
-  padding: 0 16px 0 14px;
+  padding: 0 16px 0 8px;
   display: flex;
   align-items: center;
   justify-content: flex-start;
   overflow: hidden;
-  background: rgba(255, 255, 255, 0.97);
-  border-radius: 16px;
-  box-shadow: 0 8px 22px rgba(0, 0, 0, 0.24), inset 0 0 0 1px rgba(255, 255, 255, 0.55);
   transition: width 0.22s var(--ease);
 }
 

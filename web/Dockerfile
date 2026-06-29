@@ -3,6 +3,10 @@ WORKDIR /app
 COPY package.json package-lock.json* ./
 RUN npm install
 COPY . .
+ARG FORECAST_URL=http://forecast-service:8080
+ARG API_URL=http://api:8080
+ENV FORECAST_URL=${FORECAST_URL}
+ENV API_URL=${API_URL}
 RUN npm run build
 
 FROM node:20-alpine AS run
