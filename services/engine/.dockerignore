@@ -1,0 +1,8 @@
+.git
+.gitignore
+Dockerfile
+
+engine
+engine.exe
+*.test
+*.out
