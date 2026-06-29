@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useState, type ReactNode } from "react";
+import { useMemo, useState, type MouseEvent, type ReactNode } from "react";
 
 type ChartPoint = { x: string; y: number | null };
 type ChartSeries = { name: string; points: ChartPoint[]; color?: string };
@@ -42,6 +42,39 @@ function buildPath(points: ChartPoint[], xMap: Map<string, number>, height: numb
 }
 
 type Tip = { x: number; y: number; content: ReactNode } | null;
+
+const TIP_OFFSET = 12;
+const TIP_MAX_WIDTH = 260;
+const TIP_ESTIMATED_HEIGHT = 90;
+const TIP_EDGE_GAP = 8;
+
+function clamp(value: number, min: number, max: number) {
+  return Math.min(Math.max(value, min), Math.max(min, max));
+}
+
+function getTipPosition(e: MouseEvent<SVGElement>) {
+  const chartEl = e.currentTarget.closest(".forecast-chart");
+  const rect = chartEl?.getBoundingClientRect();
+  if (!rect) return { x: TIP_EDGE_GAP, y: TIP_EDGE_GAP };
+
+  const localX = e.clientX - rect.left;
+  const localY = e.clientY - rect.top;
+  const preferredX = localX + TIP_OFFSET;
+  const preferredY = localY + TIP_OFFSET;
+  const x =
+    preferredX + TIP_MAX_WIDTH > rect.width - TIP_EDGE_GAP
+      ? localX - TIP_MAX_WIDTH - TIP_OFFSET
+      : preferredX;
+  const y =
+    preferredY + TIP_ESTIMATED_HEIGHT > rect.height - TIP_EDGE_GAP
+      ? localY - TIP_ESTIMATED_HEIGHT - TIP_OFFSET
+      : preferredY;
+
+  return {
+    x: clamp(x, TIP_EDGE_GAP, rect.width - TIP_MAX_WIDTH - TIP_EDGE_GAP),
+    y: clamp(y, TIP_EDGE_GAP, rect.height - TIP_ESTIMATED_HEIGHT - TIP_EDGE_GAP),
+  };
+}
 
 export default function LineChart({ data, height = 260, className }: LineChartProps) {
   const [tip, setTip] = useState<Tip>(null);
@@ -118,7 +151,7 @@ export default function LineChart({ data, height = 260, className }: LineChartPr
                     ) : null}
                   </>
                 );
-                const show = (e: React.MouseEvent) => setTip({ x: e.clientX, y: e.clientY, content });
+                const show = (e: MouseEvent<SVGElement>) => setTip({ ...getTipPosition(e), content });
                 return (
                   <g key={`${series.name}-${pIdx}`}>
                     <circle cx={x} cy={y} r={3} fill={color} className="chart-dot" />
@@ -140,7 +173,7 @@ export default function LineChart({ data, height = 260, className }: LineChartPr
         })}
       </svg>
       {tip ? (
-        <div className="chart-tip" style={{ position: "fixed", left: tip.x + 14, top: tip.y + 14 }}>
+        <div className="chart-tip" style={{ position: "absolute", left: tip.x, top: tip.y }}>
           {tip.content}
         </div>
       ) : null}
