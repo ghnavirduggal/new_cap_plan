@@ -953,6 +953,7 @@ export default function PlanDetailClient({ planId, rollupBa }: PlanDetailClientP
   const pollRef = useRef<number | null>(null);
   const computePollRef = useRef<number | null>(null);
   const computeQueueRef = useRef<Promise<void>>(Promise.resolve());
+  const computeAbortRef = useRef<AbortController | null>(null);
   const tablesReqRef = useRef(0);
   // Editable tables (attr/ratio/seat) the user has changed but not yet saved.
   // Protected from being silently clobbered when a background recompute merges
@@ -1323,6 +1324,9 @@ export default function PlanDetailClient({ planId, rollupBa }: PlanDetailClientP
   const computePlanTables = useCallback(
     async (options?: { wait?: boolean; silent?: boolean; force?: boolean; forceToken?: string }): Promise<void> => {
     if (!planId) return;
+    computeAbortRef.current?.abort();
+    const abortController = new AbortController();
+    computeAbortRef.current = abortController;
     const silent = Boolean(options?.silent);
     if (!silent) {
       setLoading(true);
@@ -1349,7 +1353,7 @@ export default function PlanDetailClient({ planId, rollupBa }: PlanDetailClientP
     }
 
     const run = async (): Promise<void> => {
-      const res = await apiPost<PlanComputeResponse>("/api/planning/plan/detail/compute", payload);
+      const res = await apiPost<PlanComputeResponse>("/api/planning/plan/detail/compute", payload, { signal: abortController.signal });
         if (res.status === "ready") {
           const resGrain = String(res.data?.grain || "").toLowerCase();
           if (resGrain && resGrain !== String(grain).toLowerCase()) {
@@ -1425,6 +1429,7 @@ export default function PlanDetailClient({ planId, rollupBa }: PlanDetailClientP
     try {
       await computePlanTables();
     } catch (error: any) {
+      if (error?.name === "AbortError") return;
       notify("error", error?.message || "Plan detail calculations failed.");
     }
   }, [computePlanTables, isRollup, notify, planId]);
@@ -1656,6 +1661,7 @@ export default function PlanDetailClient({ planId, rollupBa }: PlanDetailClientP
       }
       setMessage("Refreshed.");
     } catch (error: any) {
+      if (error?.name === "AbortError") return;
       notify("error", error?.message || "Could not refresh plan.");
     } finally {
       setLoading(false);
