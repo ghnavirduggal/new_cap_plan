@@ -19,3 +19,4 @@ forecast-service/exports/forecast_accuracy_history.json
 forecast-service/exports/dimension_registry.json
 forecast-service/exports/scope_dimensions_map.json
 forecast-service/exports/plan_tables/
+.vscode
