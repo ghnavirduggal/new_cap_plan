@@ -2500,8 +2500,8 @@ summary:focus-visible,
   --ops-border: rgba(15, 23, 42, 0.08);
   display: flex;
   flex-direction: column;
-  gap: 24px;
-  padding: 0 18px 36px;
+  gap: 16px;
+  padding: 0 14px 32px;
   font-family: "Space Grotesk", "Inter", system-ui, sans-serif;
   color: var(--ops-ink);
   position: relative;
@@ -2520,52 +2520,59 @@ summary:focus-visible,
 
 .ops-hero {
   display: grid;
-  grid-template-columns: minmax(280px, 1.2fr) minmax(280px, 1fr);
-  gap: 20px;
-  padding: 24px;
+  grid-template-columns: minmax(360px, 1.55fr) minmax(260px, 0.75fr);
+  gap: 14px;
+  padding: 16px;
+  align-items: stretch;
   background: rgba(255, 255, 255, 0.88);
   border: 1px solid var(--ops-border);
-  border-radius: 20px;
-  box-shadow: 0 24px 40px rgba(15, 23, 42, 0.08);
+  border-radius: 16px;
+  box-shadow: 0 14px 26px rgba(15, 23, 42, 0.07);
   animation: ops-rise 0.8s ease both;
+}
+
+.ops-hero__content {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
 }
 
 .ops-hero__tag {
   display: inline-flex;
   align-items: center;
   gap: 8px;
-  padding: 6px 12px;
+  padding: 5px 9px;
   border-radius: 999px;
   background: rgba(15, 118, 110, 0.1);
   color: #0f766e;
-  font-size: 12px;
+  font-size: 10px;
   font-weight: 600;
   text-transform: uppercase;
   letter-spacing: 0.08em;
 }
 
 .ops-hero__content h1 {
-  margin: 12px 0 8px;
+  margin: 8px 0 4px;
   font-family: "Fraunces", "Space Grotesk", serif;
-  font-size: 34px;
+  font-size: 30px;
   line-height: 1.15;
   color: var(--ops-ink);
 }
 
 .ops-hero__content p {
-  margin: 0 0 16px;
+  margin: 0 0 10px;
   color: var(--ops-muted);
-  font-size: 15px;
+  font-size: 13px;
   max-width: 520px;
 }
 
 .ops-hero__meta {
   display: inline-flex;
   align-items: center;
-  gap: 10px;
-  font-size: 13px;
+  gap: 8px;
+  font-size: 11px;
   color: var(--ops-muted);
-  padding: 6px 12px;
+  padding: 4px 9px;
   border-radius: 999px;
   background: rgba(15, 23, 42, 0.04);
 }
@@ -2580,17 +2587,17 @@ summary:focus-visible,
 .ops-chip-row {
   display: flex;
   flex-wrap: wrap;
-  gap: 8px;
-  margin-top: 14px;
+  gap: 6px;
+  margin-top: 10px;
 }
 
 .ops-chip {
   display: inline-flex;
   align-items: center;
-  gap: 6px;
-  padding: 6px 10px;
+  gap: 5px;
+  padding: 5px 8px;
   border-radius: 999px;
-  font-size: 12px;
+  font-size: 11px;
   background: rgba(15, 23, 42, 0.06);
   color: var(--ops-ink);
 }
@@ -2602,7 +2609,9 @@ summary:focus-visible,
 
 .ops-hero__kpis {
   display: grid;
-  gap: 12px;
+  grid-template-rows: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+  min-height: 0;
 }
 
 .ops-panel {
@@ -2670,7 +2679,7 @@ summary:focus-visible,
 }
 
 .ops-kpi-value {
-  margin-top: 6px;
+  margin-top: 4px;
   font-size: 30px;
   font-weight: 600;
   color: var(--ops-ink);
@@ -2686,9 +2695,61 @@ summary:focus-visible,
 .ops-hero .stat-card {
   background: #ffffff;
   border: 1px solid var(--ops-border);
-  border-radius: 14px;
-  padding: 16px 16px 14px;
-  box-shadow: 0 10px 20px rgba(15, 23, 42, 0.06);
+  border-radius: 12px;
+  padding: 12px;
+  box-shadow: 0 8px 16px rgba(15, 23, 42, 0.055);
+}
+
+.ops-hero .stat-card {
+  height: auto !important;
+  min-height: 0;
+}
+
+.ops-hero .stat-card::before {
+  border-radius: 12px 0 0 12px;
+  width: 5px;
+}
+
+.ops-hero .stat-header {
+  font-size: 12px;
+}
+
+.ops-hero .ops-kpi-value {
+  font-size: 24px;
+  line-height: 1.1;
+}
+
+.ops-hero .ops-kpi-sub {
+  font-size: 10px;
+}
+
+.ops-hero .ops-kpi-spark {
+  margin-top: 4px;
+  min-height: 28px;
+}
+
+.ops-hero .ops-delta {
+  font-size: 9px;
+  padding: 2px 6px;
+}
+
+.ops-hero .ops-health-score {
+  margin-top: 4px;
+  font-size: 24px;
+  line-height: 1.1;
+}
+
+.ops-hero .ops-health-score span {
+  font-size: 11px;
+}
+
+.ops-hero .ops-health-bar {
+  margin-top: 8px;
+  height: 7px;
+}
+
+.ops-health-card--hero {
+  margin-top: auto;
 }
 
 .stat-card--green {
@@ -2922,6 +2983,7 @@ summary:focus-visible,
   }
   .ops-hero__kpis {
     grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+    grid-template-rows: none;
   }
   .ops-chart-layout {
     grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));

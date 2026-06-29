@@ -400,6 +400,19 @@ export default function OpsPage() {
                 <span className="ops-chip ops-chip--muted">All scopes included</span>
               </div>
             )}
+            <div className="stat-card ops-health-card ops-health-card--hero" data-tone={health.tone}>
+              <div className="ops-kpi-top">
+                <div className="stat-header">Capacity Health</div>
+              </div>
+              <div className="ops-health-score">
+                {kpisLoading ? "—" : health.score}
+                <span>/100</span>
+              </div>
+              <div className="ops-health-bar">
+                <span style={{ width: `${kpisLoading ? 0 : health.score}%` }} />
+              </div>
+              <div className="ops-kpi-sub">{kpisLoading ? "Scoring…" : health.label}</div>
+            </div>
           </div>
           <div className="ops-hero__kpis">
             <div className="stat-card stat-card--teal">
@@ -431,19 +444,6 @@ export default function OpsPage() {
               <div className="ops-kpi-spark">{kpisLoading ? null : <Sparkline points={trends.gap.spark} color={gapIsSurplus ? "#16a34a" : "#dc2626"} />}</div>
               <div className="ops-kpi-sub">{`${formatNumber(coverage)}% coverage`}</div>
               {kpisUpdating ? <div className="ops-kpi-loading">Updating…</div> : null}
-            </div>
-            <div className="stat-card ops-health-card" data-tone={health.tone}>
-              <div className="ops-kpi-top">
-                <div className="stat-header">Capacity Health</div>
-              </div>
-              <div className="ops-health-score">
-                {kpisLoading ? "—" : health.score}
-                <span>/100</span>
-              </div>
-              <div className="ops-health-bar">
-                <span style={{ width: `${kpisLoading ? 0 : health.score}%` }} />
-              </div>
-              <div className="ops-kpi-sub">{kpisLoading ? "Scoring…" : health.label}</div>
             </div>
           </div>
         </section>
