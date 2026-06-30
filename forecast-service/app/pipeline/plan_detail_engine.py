@@ -8,6 +8,7 @@ from concurrent.futures import ThreadPoolExecutor
 
 import pandas as pd
 
+from app.cap_db import load_df_cache
 from app.pipeline.plan_detail._calc import _fill_tables_fixed
 from app.pipeline.plan_detail._common import _month_cols, _week_cols, _week_span, resolve_settings
 from app.pipeline.plan_detail._fill_tables_fixed_daily import _fill_tables_fixed_daily
@@ -135,6 +136,40 @@ def _table_suffix(grain: str, interval_date: Optional[str]) -> str:
     return f"_{grain}"
 
 
+def _meta_table_name(grain: str, interval_date: Optional[str]) -> str:
+    return f"__detail_meta{_table_suffix(grain, interval_date)}"
+
+
+def _snapshot_meta(plan_id: int, grain: str, interval_date: Optional[str]) -> dict:
+    try:
+        rows = load_plan_table(int(plan_id), _meta_table_name(grain, interval_date))
+    except Exception:
+        rows = []
+    if not rows:
+        return {}
+    row = rows[0] if isinstance(rows[0], dict) else {}
+    return row if isinstance(row, dict) else {}
+
+
+def is_plan_detail_snapshot_current(
+    plan_id: int,
+    *,
+    grain: Optional[str] = None,
+    interval_date: Optional[str] = None,
+) -> bool:
+    g = _normalize_grain(grain)
+    meta = _snapshot_meta(int(plan_id), g, interval_date)
+    if not meta:
+        return False
+    if int(meta.get("calc_version") or 0) != CALC_VERSION:
+        return False
+    expected = meta.get("dep_all")
+    if not isinstance(expected, dict):
+        return False
+    current = dep_snapshot_all(int(plan_id))
+    return {str(k): int(v) for k, v in expected.items()} == {str(k): int(v) for k, v in current.items()}
+
+
 def compute_plan_detail_tables(
     plan_id: int,
     *,
@@ -189,16 +224,17 @@ def compute_plan_detail_tables(
         }
 
     def _builder():
-        if g == "month":
-            result = _fill_tables_fixed_monthly(plan_type, plan_id, fw_cols, tick, whatif)
-        elif g == "day":
-            result = _fill_tables_fixed_daily(plan_type, plan_id, fw_cols, tick, whatif)
-        elif g == "interval":
-            result = _fill_tables_fixed_interval(
-                plan_type, plan_id, fw_cols, tick, whatif, ivl_min=ivl_min, sel_date=interval_date 
-            )
-        else:
-            result = _fill_tables_fixed(plan_type, plan_id, fw_cols, tick, whatif, grain="week")
+        with load_df_cache():
+            if g == "month":
+                result = _fill_tables_fixed_monthly(plan_type, plan_id, fw_cols, tick, whatif)
+            elif g == "day":
+                result = _fill_tables_fixed_daily(plan_type, plan_id, fw_cols, tick, whatif)
+            elif g == "interval":
+                result = _fill_tables_fixed_interval(
+                    plan_type, plan_id, fw_cols, tick, whatif, ivl_min=ivl_min, sel_date=interval_date
+                )
+            else:
+                result = _fill_tables_fixed(plan_type, plan_id, fw_cols, tick, whatif, grain="week")
 
         if persist and not whatif and result:
             payload = _build_payload(result)
@@ -297,6 +333,20 @@ def persist_plan_detail_tables(
     upper_rows = payload.get("upper")
     if isinstance(upper_rows, list):
         save_plan_table(int(plan_id), f"upper{suffix}", upper_rows, record_activity=False)
+    save_plan_table(
+        int(plan_id),
+        _meta_table_name(g, interval_date),
+        [
+            {
+                "calc_version": CALC_VERSION,
+                "grain": g,
+                "interval_date": _parse_date(interval_date).isoformat() if g == "interval" else "",
+                "dep_all": dep_snapshot_all(int(plan_id)),
+                "created_at": dt.datetime.utcnow().isoformat(timespec="seconds"),
+            }
+        ],
+        record_activity=False,
+    )
 
 
 def load_plan_detail_tables(

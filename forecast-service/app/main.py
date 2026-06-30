@@ -6,6 +6,7 @@ import re
 import numpy as np
 import pandas as pd
 import logging
+import threading
 from typing import Any, Optional
 from concurrent.futures import ThreadPoolExecutor
 
@@ -96,8 +97,8 @@ from app.pipeline.capacity_core import required_fte_daily, voice_requirements_in
 from app.pipeline.planning_calc_engine import ensure_plan_calc
 from app.pipeline.plan_detail_engine import (
     compute_plan_detail_tables,
+    is_plan_detail_snapshot_current,
     load_plan_detail_tables,
-    persist_plan_detail_tables,
     extract_upper_rows,
     prefetch_plan_detail_grains,
 )
@@ -494,10 +495,44 @@ def _plans_matching_scope(scope: dict) -> list[dict]:
 
 
 _PRECOMPUTE_EXECUTOR = ThreadPoolExecutor(max_workers=2, thread_name_prefix="plan-precompute")
+_PRECOMPUTE_LOCK = threading.Lock()
+_PRECOMPUTE_INFLIGHT: set[tuple] = set()
 
 
-def _precompute_plan_detail(pid: int) -> None:
+def _has_plan_detail_payload(data: dict) -> bool:
     try:
+        if data.get("upper"):
+            return True
+        return any(len(rows or []) for rows in (data.get("tables") or {}).values())
+    except Exception:
+        return False
+
+
+def _precompute_key(pid: int) -> tuple:
+    try:
+        dep_items = tuple(sorted((dep_snapshot_all(int(pid)) or {}).items()))
+    except Exception:
+        dep_items = ()
+    return (int(pid), dep_items)
+
+
+def _submit_precompute_plan_detail(pid: int) -> None:
+    job_key = _precompute_key(int(pid))
+    with _PRECOMPUTE_LOCK:
+        if job_key in _PRECOMPUTE_INFLIGHT:
+            return
+        _PRECOMPUTE_INFLIGHT.add(job_key)
+    try:
+        _PRECOMPUTE_EXECUTOR.submit(_precompute_plan_detail, int(pid), job_key)
+    except Exception:
+        with _PRECOMPUTE_LOCK:
+            _PRECOMPUTE_INFLIGHT.discard(job_key)
+
+
+def _precompute_plan_detail(pid: int, job_key: tuple | None = None) -> None:
+    try:
+        if job_key is not None and _precompute_key(int(pid)) != job_key:
+            return
         data, status, _meta = compute_plan_detail_tables(
             int(pid),
             grain="week",
@@ -506,8 +541,9 @@ def _precompute_plan_detail(pid: int) -> None:
             version_token=None,
             persist=True,
         )
+        if job_key is not None and _precompute_key(int(pid)) != job_key:
+            return
         if status == "ready" and data:
-            persist_plan_detail_tables(int(pid), data, grain="week")
             for g in ("month", "day"):
                 data_g, status_g, _ = compute_plan_detail_tables(
                     int(pid),
@@ -517,10 +553,14 @@ def _precompute_plan_detail(pid: int) -> None:
                     version_token=None,
                     persist=True,
                 )
-                if status_g == "ready" and data_g:
-                    persist_plan_detail_tables(int(pid), data_g, grain=g)
+                if job_key is not None and _precompute_key(int(pid)) != job_key:
+                    return
     except Exception:
         return
+    finally:
+        if job_key is not None:
+            with _PRECOMPUTE_LOCK:
+                _PRECOMPUTE_INFLIGHT.discard(job_key)
 
 
 def _invalidate_plan_detail_for_scope(scope: dict, dep: str | None = None) -> None:
@@ -536,7 +576,7 @@ def _invalidate_plan_detail_for_scope(scope: dict, dep: str | None = None) -> No
             except Exception:
                 continue
             try:
-                _PRECOMPUTE_EXECUTOR.submit(_precompute_plan_detail, int(pid))
+                _submit_precompute_plan_detail(int(pid))
             except Exception:
                 continue
 
@@ -2770,7 +2810,7 @@ def save_plan_whatif(payload: dict, request: Request):
     save_plan_meta(int(plan_id), {"last_updated_on": rec["ts"], "last_updated_by": current_user_fallback()})
     try:
         mark_plan_detail_dirty_deps(int(plan_id), "whatif")
-        _PRECOMPUTE_EXECUTOR.submit(_precompute_plan_detail, int(plan_id))
+        _submit_precompute_plan_detail(int(plan_id))
     except Exception:
         pass
     try:
@@ -2883,7 +2923,7 @@ def apply_plan_scenario(payload: dict, request: Request):
     save_plan_meta(int(plan_id), {"last_updated_on": rec["ts"], "last_updated_by": current_user_fallback()})
     try:
         mark_plan_detail_dirty_deps(int(plan_id), "whatif")
-        _PRECOMPUTE_EXECUTOR.submit(_precompute_plan_detail, int(plan_id))
+        _submit_precompute_plan_detail(int(plan_id))
     except Exception:
         pass
     try:
@@ -2958,7 +2998,7 @@ def save_plan_new_hire_classes(payload: dict, request: Request):
     save_nh_classes(int(plan_id), df)
     try:
         mark_plan_detail_dirty_deps(int(plan_id), "newhire")
-        _PRECOMPUTE_EXECUTOR.submit(_precompute_plan_detail, int(plan_id))
+        _submit_precompute_plan_detail(int(plan_id))
     except Exception:
         pass
     try:
@@ -3011,7 +3051,7 @@ def add_plan_new_hire_class(payload: dict, request: Request):
     save_nh_classes(int(plan_id), df)
     try:
         mark_plan_detail_dirty_deps(int(plan_id), "newhire")
-        _PRECOMPUTE_EXECUTOR.submit(_precompute_plan_detail, int(plan_id))
+        _submit_precompute_plan_detail(int(plan_id))
     except Exception:
         pass
     try:
@@ -3051,7 +3091,7 @@ def confirm_plan_new_hire_classes(payload: dict, request: Request):
             save_nh_classes(int(plan_id), df)
             try:
                 mark_plan_detail_dirty_deps(int(plan_id), "newhire")
-                _PRECOMPUTE_EXECUTOR.submit(_precompute_plan_detail, int(plan_id))
+                _submit_precompute_plan_detail(int(plan_id))
             except Exception:
                 pass
             try:
@@ -3245,7 +3285,7 @@ def apply_hiring_plan(payload: dict, request: Request):
     save_nh_classes(int(plan_id), df)
     try:
         mark_plan_detail_dirty_deps(int(plan_id), "newhire")
-        _PRECOMPUTE_EXECUTOR.submit(_precompute_plan_detail, int(plan_id))
+        _submit_precompute_plan_detail(int(plan_id))
     except Exception:
         pass
     try:
@@ -3446,7 +3486,7 @@ def save_plan_table_endpoint(payload: dict, request: Request):
         base = str(name or "").split("_")[0].lower()
         if base in {"notes", "bulk_files"}:
             return result
-        _PRECOMPUTE_EXECUTOR.submit(_precompute_plan_detail, int(plan_id))
+        _submit_precompute_plan_detail(int(plan_id))
     except Exception:
         pass
     return result
@@ -3483,12 +3523,24 @@ def compute_plan_detail_endpoint(payload: dict, request: Request):
     force_recompute = bool(payload.get("force_recompute"))
     allow_cached = bool(payload.get("allow_cached", True))
     persist = bool(payload.get("persist", True))
-    if str(grain).lower() in {"interval", "day", "week", "month"}:
-        allow_cached = False
 
     if force_recompute and version_token is None:
         # Force a fresh compute by bumping the version token.
         version_token = f"force:{time.time()}"
+
+    if allow_cached and not force_recompute and not whatif:
+        try:
+            cached = load_plan_detail_tables(int(plan_id), grain=grain, interval_date=interval_date)
+            if _has_plan_detail_payload(cached) and is_plan_detail_snapshot_current(
+                int(plan_id),
+                grain=grain,
+                interval_date=interval_date,
+            ):
+                return sanitize_for_json(
+                    {"status": "ready", "job": {"cached": True, "source": "snapshot"}, "data": cached}
+                )
+        except Exception:
+            pass
 
     try:
         data, status, meta = compute_plan_detail_tables(
@@ -3532,8 +3584,6 @@ def compute_plan_detail_endpoint(payload: dict, request: Request):
             whatif=None,
             version_token=version_token,
         )
-    if persist:
-        persist_plan_detail_tables(int(plan_id), data or {}, grain=grain, interval_date=interval_date)
     return sanitize_for_json({"status": "ready", "job": meta, "data": data})
 
 

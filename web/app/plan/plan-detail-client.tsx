@@ -953,7 +953,7 @@ export default function PlanDetailClient({ planId, rollupBa }: PlanDetailClientP
   const pollRef = useRef<number | null>(null);
   const computePollRef = useRef<number | null>(null);
   const computeQueueRef = useRef<Promise<void>>(Promise.resolve());
-  const computeAbortRef = useRef<AbortController | null>(null);
+  const computeRunRef = useRef(0);
   const tablesReqRef = useRef(0);
   // Editable tables (attr/ratio/seat) the user has changed but not yet saved.
   // Protected from being silently clobbered when a background recompute merges
@@ -1324,9 +1324,7 @@ export default function PlanDetailClient({ planId, rollupBa }: PlanDetailClientP
   const computePlanTables = useCallback(
     async (options?: { wait?: boolean; silent?: boolean; force?: boolean; forceToken?: string }): Promise<void> => {
     if (!planId) return;
-    computeAbortRef.current?.abort();
-    const abortController = new AbortController();
-    computeAbortRef.current = abortController;
+    const runId = ++computeRunRef.current;
     const silent = Boolean(options?.silent);
     if (!silent) {
       setLoading(true);
@@ -1353,7 +1351,10 @@ export default function PlanDetailClient({ planId, rollupBa }: PlanDetailClientP
     }
 
     const run = async (): Promise<void> => {
-      const res = await apiPost<PlanComputeResponse>("/api/planning/plan/detail/compute", payload, { signal: abortController.signal });
+      const res = await apiPost<PlanComputeResponse>("/api/planning/plan/detail/compute", payload);
+        if (runId !== computeRunRef.current) {
+          return;
+        }
         if (res.status === "ready") {
           const resGrain = String(res.data?.grain || "").toLowerCase();
           if (resGrain && resGrain !== String(grain).toLowerCase()) {
@@ -1653,7 +1654,6 @@ export default function PlanDetailClient({ planId, rollupBa }: PlanDetailClientP
       if (rollupBa) {
         await loadRollupTables();
       } else {
-        await loadTablesForGrain(grain, intervalDate);
         // Force a fresh recompute so edits made elsewhere (e.g. Settings →
         // Planned Shrinkage %) are reflected immediately on Refresh.
         await computePlanTables({ force: true, wait: true });
@@ -1666,7 +1666,7 @@ export default function PlanDetailClient({ planId, rollupBa }: PlanDetailClientP
     } finally {
       setLoading(false);
     }
-  }, [computePlanTables, grain, intervalDate, loadPlan, loadRollupTables, loadTablesForGrain, notify, rollupBa, setLoading]);
+  }, [computePlanTables, loadPlan, loadRollupTables, notify, rollupBa, setLoading]);
 
   const saveAll = useCallback(async () => {
     if (!planId || isRollup) return;
@@ -2577,7 +2577,6 @@ export default function PlanDetailClient({ planId, rollupBa }: PlanDetailClientP
         setLoading(false);
       }
       void computePlanTables({ wait: true, silent: true })
-        .then(() => loadTablesForGrain(grain, intervalDate))
         .then(() => loadPlan())
         .catch(() => {});
     } catch (error: any) {
@@ -2695,9 +2694,6 @@ export default function PlanDetailClient({ planId, rollupBa }: PlanDetailClientP
       lastRosterSaveAtRef.current = Date.now();
       setMessage("Roster saved.");
       void computePlanTables();
-      window.setTimeout(() => {
-        void loadTablesForGrain(grain, intervalDate);
-      }, 800);
     } catch (error: any) {
       notify("error", error?.message || "Could not save roster.");
     } finally {
@@ -2832,7 +2828,6 @@ export default function PlanDetailClient({ planId, rollupBa }: PlanDetailClientP
       setNhModalOpen(false);
       setNhMessage("New hire class added.");
       await computePlanTables();
-      void loadTablesForGrain(grain, intervalDate);
     } catch (error: any) {
       setNhMessage(error?.message || "Could not add class.");
     } finally {
@@ -2854,7 +2849,6 @@ export default function PlanDetailClient({ planId, rollupBa }: PlanDetailClientP
       setNhDetailsOpen(false);
       setNhMessage("Selected classes confirmed.");
       await computePlanTables();
-      void loadTablesForGrain(grain, intervalDate);
     } catch (error: any) {
       setNhMessage(error?.message || "Could not confirm classes.");
     } finally {

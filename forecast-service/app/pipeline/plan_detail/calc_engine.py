@@ -10,6 +10,7 @@ from typing import Any, Callable, Dict, Iterable, Tuple
 
 _MAX_WORKERS = max(1, int(os.getenv("PLAN_CALC_WORKERS", "2")))
 _REALTIME = os.getenv("PLAN_CALC_REALTIME", "1").strip().lower() not in {"0", "false", "no"}
+_CACHE_LIMIT = max(32, int(os.getenv("PLAN_DETAIL_CACHE_LIMIT", os.getenv("PLAN_CALC_CACHE_LIMIT", "128"))))
 _EXECUTOR: ThreadPoolExecutor | None = None
 if not _REALTIME:
     # Background workers remain available when realtime mode is disabled.
@@ -136,7 +137,7 @@ def ensure_plan_calc(
     if _REALTIME:
         with _LOCK:
             if key in _CACHE:
-                meta = _record_job(pid_int, key, "ready", finished=time.time())
+                meta = _record_job(pid_int, key, "ready", finished=time.time(), cached=True)
                 return _CACHE[key], "ready", meta
 
             existing = _JOBS.get(key)
@@ -172,11 +173,12 @@ def ensure_plan_calc(
                 finished=finished,
                 duration=max(0.0, finished - started),
             )
+            _trim_cache_locked()
         return result, "ready", meta
 
     with _LOCK:
         if key in _CACHE:
-            meta = _record_job(pid_int, key, "ready", finished=time.time())
+            meta = _record_job(pid_int, key, "ready", finished=time.time(), cached=True)
             return _CACHE[key], "ready", meta
 
         existing = _JOBS.get(key)
@@ -216,6 +218,30 @@ def _run_job(pid: int, key: str, builder: Callable[[], Tuple], started: float | 
             finished=finished,
             duration=max(0.0, finished - started_at),
         )
+        _trim_cache_locked()
+
+
+def _forget_key_locked(key: str) -> None:
+    _CACHE.pop(key, None)
+    meta = _JOBS.get(key) or {}
+    if meta.get("status") != "running":
+        _JOBS.pop(key, None)
+    try:
+        pid_int = int(str(key).split(":", 1)[0])
+        keys = _PLAN_KEYS.get(pid_int)
+        if keys is not None:
+            keys.discard(key)
+            if not keys:
+                _PLAN_KEYS.pop(pid_int, None)
+    except Exception:
+        pass
+
+
+def _trim_cache_locked() -> None:
+    if len(_CACHE) <= _CACHE_LIMIT:
+        return
+    for key in list(_CACHE.keys())[: max(1, len(_CACHE) - _CACHE_LIMIT)]:
+        _forget_key_locked(key)
 
 
 def mark_plan_dirty(pid: Any):

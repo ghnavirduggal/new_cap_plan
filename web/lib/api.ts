@@ -4,6 +4,7 @@ const API_BASE = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8080";
 const FORECAST_BASE = process.env.NEXT_PUBLIC_FORECAST_URL || API_BASE;
 const BROWSER_API_BASE = process.env.NEXT_PUBLIC_BROWSER_API_URL || "";
 const BROWSER_FORECAST_BASE = process.env.NEXT_PUBLIC_BROWSER_FORECAST_URL || "";
+const LOCAL_BROWSER_FORECAST_BASE = process.env.NEXT_PUBLIC_LOCAL_FORECAST_URL || "http://localhost:8082";
 
 // The forecast service hosts the bulk of the protected resources, so mint the
 // session token there too — otherwise, in a split-host deployment, the token
@@ -23,7 +24,12 @@ function isForecastScoped(path: string) {
 function resolveBase(path: string) {
   if (typeof window !== "undefined") {
     if (isForecastScoped(path)) {
-      return BROWSER_FORECAST_BASE;
+      if (BROWSER_FORECAST_BASE) return BROWSER_FORECAST_BASE;
+      const host = window.location.hostname;
+      if (host === "localhost" || host === "127.0.0.1") {
+        return LOCAL_BROWSER_FORECAST_BASE;
+      }
+      return "";
     }
     return BROWSER_API_BASE;
   }
