@@ -741,9 +741,13 @@ def _fill_tables_fixed_interval(
     except Exception:
         pass
 
-    upper = pd.DataFrame({"metric": upper_rows})
-    for lab in ivl_ids:
-        upper[lab] = 0.0
+    upper = pd.concat(
+        [
+            pd.DataFrame({"metric": upper_rows}),
+            pd.DataFrame(0.0, index=range(len(upper_rows)), columns=ivl_ids),
+        ],
+        axis=1,
+    )
 
 
     ivl_sec = max(60, int(ivl_min) * 60)
@@ -885,6 +889,12 @@ def _fill_tables_fixed_interval(
         has_actual_aht = "Actual AHT/SUT" in mser.values
         has_budget_aht = "Budgeted AHT/SUT" in mser.values
 
+        tooltip_rows = [{} for _ in range(len(upper))]
+        m_req_forecast_idx = upper.index[m_req_forecast].tolist()
+        m_req_actual_idx = upper.index[m_req_actual].tolist()
+        m_cap_idx = upper.index[m_cap].tolist()
+        m_sl_idx = upper.index[m_sl].tolist()
+
         for lab in ivl_ids:
             if has_forecast and lab in volF:
                 # Reflect the what-if volume dial in the displayed Forecast row.
@@ -1000,18 +1010,12 @@ def _fill_tables_fixed_interval(
             # Tooltips for required rows
             if m_req_forecast.any() and calls_round > 0 and aht_round > 0:
                 tip = f"Shrinkage included. Base FTE (pre-shrink): {base_nf:.1f}"
-                if "__tooltips" not in upper.columns:
-                    upper["__tooltips"] = [{} for _ in range(len(upper))]
-                upper.loc[m_req_forecast, "__tooltips"] = upper.loc[m_req_forecast, "__tooltips"].apply(
-                    lambda d: {**(d or {}), lab: tip}
-                )
+                for row_idx in m_req_forecast_idx:
+                    tooltip_rows[upper.index.get_loc(row_idx)][lab] = tip
             if m_req_actual.any() and calls_a_round > 0 and aht_a_round > 0:
                 tip = f"Shrinkage included. Base FTE (pre-shrink): {base_na:.1f}"
-                if "__tooltips" not in upper.columns:
-                    upper["__tooltips"] = [{} for _ in range(len(upper))]
-                upper.loc[m_req_actual, "__tooltips"] = upper.loc[m_req_actual, "__tooltips"].apply(
-                    lambda d: {**(d or {}), lab: tip}
-                )
+                for row_idx in m_req_actual_idx:
+                    tooltip_rows[upper.index.get_loc(row_idx)][lab] = tip
 
             # Projected Supply HC
             if m_supply.any():
@@ -1044,31 +1048,25 @@ def _fill_tables_fixed_interval(
                 upper.loc[m_cap, lab] = cap
                 # Tooltip for debugging capacity inputs
                 try:
-                    if "__tooltips" not in upper.columns:
-                        upper["__tooltips"] = [{} for _ in range(len(upper))]
                     tip = (
                         f"Cap: {cap:.1f}; base_agents={agents_for_cap:.2f}; "
                         f"agents_int={agents_int}; ivl_sec={int(ivl_sec)}; "
                         f"aht={aht_round}; sl={target_sl:.3f}; T={int(T_sec)}"
                     )
-                    upper.loc[m_cap, "__tooltips"] = upper.loc[m_cap, "__tooltips"].apply(
-                        lambda d: {**(d or {}), lab: tip}
-                    )
+                    for row_idx in m_cap_idx:
+                        tooltip_rows[upper.index.get_loc(row_idx)][lab] = tip
                 except Exception:
                     pass
             if m_sl.any():
                 upper.loc[m_sl, lab] = sl_val
                 try:
-                    if "__tooltips" not in upper.columns:
-                        upper["__tooltips"] = [{} for _ in range(len(upper))]
                     tip = (
                         f"SL={sl_val:.2f}% calls_per_hour={calls_round_for_sl} "
                         f"aht={aht_round} agents={agents_for_cap:.2f} "
                         f"ivl_sec=3600 T={int(T_sec)}"
                     )
-                    upper.loc[m_sl, "__tooltips"] = upper.loc[m_sl, "__tooltips"].apply(
-                        lambda d: {**(d or {}), lab: tip}
-                    )
+                    for row_idx in m_sl_idx:
+                        tooltip_rows[upper.index.get_loc(row_idx)][lab] = tip
                 except Exception:
                     pass
 
@@ -1079,6 +1077,9 @@ def _fill_tables_fixed_interval(
             )
             if fw_has_occ and fw_m_occ is not None:
                 fw_i.loc[fw_m_occ, lab] = occ
+
+        if any(tooltip_rows):
+            upper = pd.concat([upper.copy(), pd.Series(tooltip_rows, index=upper.index, name="__tooltips")], axis=1)
 
     elif ch == "chat":
         cF = vF

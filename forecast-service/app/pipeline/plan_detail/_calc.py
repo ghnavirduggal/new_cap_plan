@@ -3946,8 +3946,6 @@ def _fill_tables_fixed(ptype, pid, fw_cols, _tick, whatif=None, grain: str = 'we
 
     # Attach hover tooltips for FTE rows (pre-shrink base)
     try:
-        new_cols = pd.DataFrame({"__tooltips": [{} for _ in range(len(upper_df))]})
-        upper_df = pd.concat([upper_df, new_cols], axis=1)
         def _to_frac_local(val):
             try:
                 v = float(val)
@@ -3971,6 +3969,10 @@ def _fill_tables_fixed(ptype, pid, fw_cols, _tick, whatif=None, grain: str = 'we
 
         today = dt.date.today()
         cur_week = (today - dt.timedelta(days=today.weekday()))
+        metric_text = upper_df["metric"].astype(str).str.strip()
+        forecast_idx = upper_df.index[metric_text.eq("FTE Required @ Forecast Volume")].tolist()
+        actual_idx = upper_df.index[metric_text.eq("FTE Required @ Actual Volume")].tolist()
+        tooltip_rows = [{} for _ in range(len(upper_df))]
         for w in week_ids:
             s_plan = _to_frac_local(plan_row.get(w)) if isinstance(plan_row, dict) and (w in plan_row) else None
             if s_plan is None:
@@ -3983,12 +3985,11 @@ def _fill_tables_fixed(ptype, pid, fw_cols, _tick, whatif=None, grain: str = 'we
 
             # Forecast tooltip (planned shrink)
             try:
-                f_val = float(pd.to_numeric(upper_df.loc[upper_df["metric"].astype(str).str.strip().eq("FTE Required @ Forecast Volume"), w], errors="coerce").fillna(0.0).iloc[0])
-                base_f = f_val * max(0.0, 1.0 - float(s_plan or 0.0))
-                upper_df.loc[upper_df["metric"].astype(str).str.strip().eq("FTE Required @ Forecast Volume"), "__tooltips"] = \
-                    upper_df.loc[upper_df["metric"].astype(str).str.strip().eq("FTE Required @ Forecast Volume"), "__tooltips"].apply(
-                        lambda d: {**d, w: f"Shrinkage included. Base FTE (pre-shrink): {base_f:.1f}"}
-                    )
+                if forecast_idx:
+                    row_idx = forecast_idx[0]
+                    f_val = float(pd.to_numeric(pd.Series([upper_df.at[row_idx, w]]), errors="coerce").fillna(0.0).iloc[0])
+                    base_f = f_val * max(0.0, 1.0 - float(s_plan or 0.0))
+                    tooltip_rows[upper_df.index.get_loc(row_idx)][w] = f"Shrinkage included. Base FTE (pre-shrink): {base_f:.1f}"
             except Exception:
                 pass
 
@@ -3997,14 +3998,14 @@ def _fill_tables_fixed(ptype, pid, fw_cols, _tick, whatif=None, grain: str = 'we
             if w_date is not None and w_date <= cur_week and s_act is not None:
                 s_used = s_act
             try:
-                a_val = float(pd.to_numeric(upper_df.loc[upper_df["metric"].astype(str).str.strip().eq("FTE Required @ Actual Volume"), w], errors="coerce").fillna(0.0).iloc[0])
-                base_a = a_val * max(0.0, 1.0 - float(s_used or 0.0))
-                upper_df.loc[upper_df["metric"].astype(str).str.strip().eq("FTE Required @ Actual Volume"), "__tooltips"] = \
-                    upper_df.loc[upper_df["metric"].astype(str).str.strip().eq("FTE Required @ Actual Volume"), "__tooltips"].apply(
-                        lambda d: {**d, w: f"Shrinkage included. Base FTE (pre-shrink): {base_a:.1f}"}
-                    )
+                if actual_idx:
+                    row_idx = actual_idx[0]
+                    a_val = float(pd.to_numeric(pd.Series([upper_df.at[row_idx, w]]), errors="coerce").fillna(0.0).iloc[0])
+                    base_a = a_val * max(0.0, 1.0 - float(s_used or 0.0))
+                    tooltip_rows[upper_df.index.get_loc(row_idx)][w] = f"Shrinkage included. Base FTE (pre-shrink): {base_a:.1f}"
             except Exception:
                 pass
+        upper_df = pd.concat([upper_df.copy(), pd.Series(tooltip_rows, index=upper_df.index, name="__tooltips")], axis=1)
     except Exception:
         pass
 

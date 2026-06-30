@@ -1107,9 +1107,11 @@ def _fill_tables_fixed_daily(ptype, pid, _fw_cols_unused, _tick, whatif=None):
         if not isinstance(df, pd.DataFrame) or df.empty:
             return df if isinstance(df, pd.DataFrame) else pd.DataFrame()
         out = df.copy()
-        for c in day_ids:
-            if c in out.columns:
-                out[c] = pd.to_numeric(out[c], errors="coerce").fillna(0.0).round(1)
+        cols = [c for c in day_ids if c in out.columns]
+        if cols:
+            rounded = out[cols].apply(lambda col: pd.to_numeric(col, errors="coerce")).fillna(0.0).round(1)
+            original_cols = list(out.columns)
+            out = pd.concat([out.drop(columns=cols), rounded], axis=1).loc[:, original_cols]
         return out
 
     upper_df = _round1(upper_df[["metric"] + day_ids])
@@ -1135,7 +1137,10 @@ def _fill_tables_fixed_daily(ptype, pid, _fw_cols_unused, _tick, whatif=None):
             if (m == "planned shrinkage %").any():
                 plan_row = shr.loc[m == "planned shrinkage %"].iloc[0].to_dict()
         today = pd.Timestamp.today().date()
-        upper_df["__tooltips"] = [{} for _ in range(len(upper_df))]
+        metric_text = upper_df["metric"].astype(str).str.strip()
+        forecast_idx = upper_df.index[metric_text.eq("FTE Required @ Forecast Volume")].tolist()
+        actual_idx = upper_df.index[metric_text.eq("FTE Required @ Actual Volume")].tolist()
+        tooltip_rows = [{} for _ in range(len(upper_df))]
         for d in day_ids:
             try:
                 dd = pd.to_datetime(d).date()
@@ -1150,43 +1155,41 @@ def _fill_tables_fixed_daily(ptype, pid, _fw_cols_unused, _tick, whatif=None):
             s_act_use = s_act if (dd <= today and s_act is not None) else s_plan
             # Forecast row tooltip
             try:
-                f_val = float(upper_df.loc[upper_df["metric"].astype(str).str.strip().eq("FTE Required @ Forecast Volume"), d].iloc[0])
-                base_f = f_val * max(0.0, (1.0 - float(s_plan or 0.0)))
-                tip_f = f"Shrinkage included. Base FTE (pre-shrink): {base_f:.1f}"
-                upper_df.loc[upper_df["metric"].astype(str).str.strip().eq("FTE Required @ Forecast Volume"), "__tooltips"] = \
-                    upper_df.loc[upper_df["metric"].astype(str).str.strip().eq("FTE Required @ Forecast Volume"), "__tooltips"].apply(
-                        lambda t: {**(t or {}), d: tip_f}
-                    )
+                if forecast_idx:
+                    row_idx = forecast_idx[0]
+                    f_val = float(upper_df.at[row_idx, d])
+                    base_f = f_val * max(0.0, (1.0 - float(s_plan or 0.0)))
+                    tooltip_rows[upper_df.index.get_loc(row_idx)][d] = f"Shrinkage included. Base FTE (pre-shrink): {base_f:.1f}"
             except Exception:
                 pass
             # Actual row tooltip
             try:
-                a_val = float(upper_df.loc[upper_df["metric"].astype(str).str.strip().eq("FTE Required @ Actual Volume"), d].iloc[0])
-                base_a = a_val * max(0.0, (1.0 - float(s_act_use or 0.0)))
-                tip_a = f"Shrinkage included. Base FTE (pre-shrink): {base_a:.1f}"
-                upper_df.loc[upper_df["metric"].astype(str).str.strip().eq("FTE Required @ Actual Volume"), "__tooltips"] = \
-                    upper_df.loc[upper_df["metric"].astype(str).str.strip().eq("FTE Required @ Actual Volume"), "__tooltips"].apply(
-                        lambda t: {**(t or {}), d: tip_a}
-                    )
+                if actual_idx:
+                    row_idx = actual_idx[0]
+                    a_val = float(upper_df.at[row_idx, d])
+                    base_a = a_val * max(0.0, (1.0 - float(s_act_use or 0.0)))
+                    tooltip_rows[upper_df.index.get_loc(row_idx)][d] = f"Shrinkage included. Base FTE (pre-shrink): {base_a:.1f}"
             except Exception:
                 pass
+        upper_df = pd.concat([upper_df.copy(), pd.Series(tooltip_rows, index=upper_df.index, name="__tooltips")], axis=1)
     except Exception:
         pass
     # Add % sign to percentage metrics (1 decimal)
     try:
         msk = upper_df["metric"].astype(str).str.strip().eq("Projected Service Level")
         if msk.any():
-            # ensure object dtype before assigning string values
-            for c in day_ids:
-                if c in upper_df.columns:
-                    upper_df[c] = upper_df[c].astype(object)
-            for c in day_ids:
-                if c in upper_df.columns:
+            cols = [c for c in day_ids if c in upper_df.columns]
+            if cols:
+                day_block = upper_df[cols].astype(object)
+                row_idx = upper_df.index[msk][0]
+                for c in cols:
                     try:
-                        v = float(pd.to_numeric(upper_df.loc[msk, c], errors="coerce").fillna(0.0).iloc[0])
+                        v = float(pd.to_numeric(pd.Series([day_block.at[row_idx, c]]), errors="coerce").fillna(0.0).iloc[0])
                     except Exception:
                         v = 0.0
-                    upper_df.loc[msk, c] = f"{v:.1f}%"
+                    day_block.at[row_idx, c] = f"{v:.1f}%"
+                original_cols = list(upper_df.columns)
+                upper_df = pd.concat([upper_df.drop(columns=cols), day_block], axis=1).loc[:, original_cols]
     except Exception:
         pass
     upper_tbl = _make_upper_table(upper_df, day_cols_meta)

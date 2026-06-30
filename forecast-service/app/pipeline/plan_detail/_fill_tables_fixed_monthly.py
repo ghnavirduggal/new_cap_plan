@@ -3293,9 +3293,11 @@ def _fill_tables_fixed_monthly(ptype, pid, fw_cols, _tick, whatif=None):
 
     # Attach hover tooltips for FTE rows (pre-shrink base)
     try:
-        if "__tooltips" not in upper_df.columns:
-            upper_df["__tooltips"] = [{} for _ in range(len(upper_df))]
         cur_month = dt.date.today().replace(day=1)
+        metric_text = upper_df["metric"].astype(str).str.strip()
+        forecast_idx = upper_df.index[metric_text.eq("FTE Required @ Forecast Volume")].tolist()
+        actual_idx = upper_df.index[metric_text.eq("FTE Required @ Actual Volume")].tolist()
+        tooltip_rows = [{} for _ in range(len(upper_df))]
         for mm in month_ids:
             sh_plan_pct = float(shr_planned_pct_m.get(mm, np.nan))
             sh_plan = (sh_plan_pct / 100.0) if not pd.isna(sh_plan_pct) else float(planned_shrink_fraction)
@@ -3308,24 +3310,23 @@ def _fill_tables_fixed_monthly(ptype, pid, fw_cols, _tick, whatif=None):
             sh_act = (sh_act_pct / 100.0) if not pd.isna(sh_act_pct) else sh_plan
 
             try:
-                f_val = float(pd.to_numeric(upper_df.loc[upper_df["metric"].astype(str).str.strip().eq("FTE Required @ Forecast Volume"), mm], errors="coerce").fillna(0.0).iloc[0])
-                base_f = f_val * max(0.0, 1.0 - float(sh_plan or 0.0))
-                upper_df.loc[upper_df["metric"].astype(str).str.strip().eq("FTE Required @ Forecast Volume"), "__tooltips"] = \
-                    upper_df.loc[upper_df["metric"].astype(str).str.strip().eq("FTE Required @ Forecast Volume"), "__tooltips"].apply(
-                        lambda d: {**d, mm: f"Shrinkage included. Base FTE (pre-shrink): {base_f:.1f}"}
-                    )
+                if forecast_idx:
+                    row_idx = forecast_idx[0]
+                    f_val = float(pd.to_numeric(pd.Series([upper_df.at[row_idx, mm]]), errors="coerce").fillna(0.0).iloc[0])
+                    base_f = f_val * max(0.0, 1.0 - float(sh_plan or 0.0))
+                    tooltip_rows[upper_df.index.get_loc(row_idx)][mm] = f"Shrinkage included. Base FTE (pre-shrink): {base_f:.1f}"
             except Exception:
                 pass
 
             try:
-                a_val = float(pd.to_numeric(upper_df.loc[upper_df["metric"].astype(str).str.strip().eq("FTE Required @ Actual Volume"), mm], errors="coerce").fillna(0.0).iloc[0])
-                base_a = a_val * max(0.0, 1.0 - float(sh_act or 0.0))
-                upper_df.loc[upper_df["metric"].astype(str).str.strip().eq("FTE Required @ Actual Volume"), "__tooltips"] = \
-                    upper_df.loc[upper_df["metric"].astype(str).str.strip().eq("FTE Required @ Actual Volume"), "__tooltips"].apply(
-                        lambda d: {**d, mm: f"Shrinkage included. Base FTE (pre-shrink): {base_a:.1f}"}
-                    )
+                if actual_idx:
+                    row_idx = actual_idx[0]
+                    a_val = float(pd.to_numeric(pd.Series([upper_df.at[row_idx, mm]]), errors="coerce").fillna(0.0).iloc[0])
+                    base_a = a_val * max(0.0, 1.0 - float(sh_act or 0.0))
+                    tooltip_rows[upper_df.index.get_loc(row_idx)][mm] = f"Shrinkage included. Base FTE (pre-shrink): {base_a:.1f}"
             except Exception:
                 pass
+        upper_df = pd.concat([upper_df.copy(), pd.Series(tooltip_rows, index=upper_df.index, name="__tooltips")], axis=1)
     except Exception:
         pass
     # Precompute seat variance (pp) for monthly

@@ -1815,9 +1815,12 @@ def _blank_grid(metrics: List[str], week_ids: List[str]) -> pd.DataFrame:
 def _load_or_blank(key: str, metrics: List[str], week_ids: List[str]) -> pd.DataFrame:
     df = load_df(key)
     if isinstance(df, pd.DataFrame) and not df.empty:
-        for wid in week_ids:
-            if wid not in df.columns:
-                df[wid] = 0.0
+        missing = [wid for wid in week_ids if wid not in df.columns]
+        if missing:
+            df = pd.concat(
+                [df.copy(), pd.DataFrame(0.0, index=df.index, columns=missing)],
+                axis=1,
+            )
         if "metric" not in df.columns:
             df.insert(0, "metric", metrics[: len(df)])
         return df[["metric"] + week_ids].copy()
